@@ -1,0 +1,30 @@
+ version: "3.9"
+ 
+ services:
+   postgres:
+     image: postgres:16-alpine
+     container_name: aistock-pg
+     environment:
+       POSTGRES_USER: aistock
+       POSTGRES_PASSWORD: aistock_dev
+       POSTGRES_DB: aistock
+     ports:
+       - "5433:5432"
+     volumes:
+       - ./data/pg:/var/lib/postgresql/data
+     healthcheck:
+       test: ["CMD-SHELL", "pg_isready -U aistock"]
+       interval: 5s
+       retries: 5
+ 
+   redis:
+     image: redis:7-alpine
+     container_name: aistock-redis
+     ports:
+       - "6380:6379"
+     volumes:
+       - ./data/redis:/data
+     healthcheck:
+       test: ["CMD", "redis-cli", "ping"]
+       interval: 5s
+       retries: 5

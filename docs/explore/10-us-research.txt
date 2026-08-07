@@ -1,0 +1,169 @@
+→
+靖界
+free会员
+👤
+ssfighter
+美股隔夜研报
+
+总结前一交易日美股、美债与新闻变化，研判对 A 股市场的潜在影响
+
+重新生成
+美股交易日：2026-08-06
+·
+生成时间：2026/8/7 03:47:50
+美股隔夜研报：美股震荡/分化，关注红利防御、银行
+
+隔夜美股整体表现震荡/分化，市场风格偏向风格均衡，美债收益率小幅上行。对今日 A 股影响判断为中性偏结构性，建议重点关注红利防御、银行、电力、AI应用等方向，同时留意汇率、北向资金与国内政策预期的共振情况。
+
+美股情绪
+震荡/分化
+三大指数与纳指权重综合判断
+A股影响
+中性偏结构性
+情绪与风格映射
+风险等级
+中等
+美债/指数/曲线综合
+关注方向
+红利防御 / 银行
+电力 / AI应用 / 云计算 / 保险
+道琼斯
+--
+-- / --
+标普500
+--
+-- / --
+纳斯达克
+--
+-- / --
+一、核心结论
+
+隔夜美股整体表现震荡/分化，市场风格偏向风格均衡，美债收益率小幅上行。对今日 A 股影响判断为中性偏结构性，建议重点关注红利防御、银行、电力、AI应用等方向，同时留意汇率、北向资金与国内政策预期的共振情况。
+
+二、隔夜美股市场表现
+道琼斯(^DJI)：收盘 --，涨跌幅 --，涨跌额 --
+标普500(^GSPC)：收盘 --，涨跌幅 --，涨跌额 --
+纳斯达克(^IXIC)：收盘 --，涨跌幅 --，涨跌额 --
+三、风格与板块变化
+
+美股市场风格判断为 风格均衡。板块样本分布如下：
+
+Financial Services：样本数 1785
+Healthcare：样本数 1350
+Basic Materials：样本数 1176
+Industrials：样本数 1150
+Technology：样本数 1019
+Consumer Cyclical：样本数 776
+Consumer Defensive：样本数 485
+Energy：样本数 471
+四、重点个股与涨跌幅榜
+A股映射度较高的核心美股
+英伟达(NVDA)：涨跌幅 -0.10%，A股映射：AI算力 / CPO / 液冷 / 服务器
+苹果(AAPL)：涨跌幅 +0.45%，A股映射：消费电子 / 果链 / 端侧AI
+微软(MSFT)：涨跌幅 +2.54%，A股映射：AI应用 / 云计算
+特斯拉(TSLA)：涨跌幅 -0.63%，A股映射：新能源车 / 智能驾驶 / 机器人
+AMD(AMD)：涨跌幅 +1.50%，A股映射：芯片 / 算力
+谷歌(GOOGL)：涨跌幅 -1.29%，A股映射：AI应用 / 互联网
+Meta(META)：涨跌幅 +0.19%，A股映射：AI应用 / 广告 / 互联网
+亚马逊(AMZN)：涨跌幅 -0.14%，A股映射：云计算 / 跨境电商
+涨幅榜 Top 5
+涨幅榜数据暂缺
+跌幅榜 Top 5
+ACET.O：-13.43%，收盘 7.93
+ADNT.O：-8.14%，收盘 18.85
+SPKLW.O：-6.72%，收盘 1.25
+ABTC.O：-5.35%，收盘 6.19
+ACHC.O：-4.71%，收盘 30.72
+五、美债收益率与风险偏好
+
+最新 10 年期美债收益率 4.69%，2 年期 4.25%，2Y-10Y 利差 0.44%。
+
+从规则判断看，当前风险等级为 中等。
+
+六、重要新闻
+CNBC：Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+CNBC：Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+CNBC：Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+CNBC：Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+CNBC：Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+CNBC：Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+七、对 A 股市场的影响
+
+综合指数、风格、美债和重点个股表现，隔夜美股对今日 A 股影响判断为：中性偏结构性。
+
+重点关注方向：红利防御、银行、电力、AI应用、云计算、保险。如果 A 股开盘后量能不足或人民币汇率承压，美股正面映射可能被削弱。
+
+八、今日关注方向与风险提示
+1. 关注美股科技龙头对 A 股 AI、半导体、消费电子的情绪映射。
+2. 关注 10 年期美债收益率变化对成长股估值的影响。
+3. 关注人民币汇率、北向资金和国内政策预期是否与外盘情绪共振。
+4. 本报告仅作市场研究参考，不构成投资建议。
+核心美股个股
+股票	涨跌幅	A股映射方向	状态
+英伟达(NVDA)	-0.10%	AI算力 / CPO / 液冷 / 服务器	正常
+苹果(AAPL)	+0.45%	消费电子 / 果链 / 端侧AI	正常
+微软(MSFT)	+2.54%	AI应用 / 云计算	正常
+特斯拉(TSLA)	-0.63%	新能源车 / 智能驾驶 / 机器人	正常
+AMD(AMD)	+1.50%	芯片 / 算力	正常
+谷歌(GOOGL)	-1.29%	AI应用 / 互联网	正常
+Meta(META)	+0.19%	AI应用 / 广告 / 互联网	正常
+亚马逊(AMZN)	-0.14%	云计算 / 跨境电商	正常
+涨幅榜 Top 5
+
+暂无数据
+
+跌幅榜 Top 5
+1
+ACET.O
+7.93
+-13.43%
+2
+ADNT.O
+18.85
+-8.14%
+3
+SPKLW.O
+1.25
+-6.72%
+4
+ABTC.O
+6.19
+-5.35%
+5
+ACHC.O
+30.72
+-4.71%
+板块样本
+Financial Services
+1785
+Healthcare
+1350
+Basic Materials
+1176
+Industrials
+1150
+Technology
+1019
+Consumer Cyclical
+776
+Consumer Defensive
+485
+Energy
+471
+美债收益率
+2年
+4.25%
+10年
+4.69%
+30年
+5.22%
+日期
+2026-08-06
+重要新闻
+Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+Jim Cramer highlights 5 investing themes — and the stocks to buy for each
+数据源状态诊断（展开查看详情）

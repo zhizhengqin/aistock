@@ -1,0 +1,133 @@
+import pandas as pd
+import akshare as ak
+from app.datasource.cache import cache_get, cache_set, make_key
+from app.core.logger import logger
+
+
+MARKET_INDICES = [
+    "000001",  # 上证指数
+    "000300",  # 沪深300
+    "000688",  # 科创50
+    "399001",  # 深证成指
+    "399006",  # 创业板指
+]
+
+
+def get_market_indices():
+    cache_key = make_key("index", "list")
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    results = []
+    for code in MARKET_INDICES:
+        try:
+            df = ak.stock_zh_index_spot_em(symbol="000001")
+            row = df[df["代码"] == code].iloc[0]
+            results.append({
+                "code": code,
+                "name": row.get("名称", ""),
+                "price": float(row.get("最新价", 0)),
+                "change_pct": float(row.get("涨跌幅", 0)),
+            })
+        except Exception as e:
+            logger.warning(f"get_market_indices failed for {code}: {e}")
+            results.append({"code": code, "name": "", "price": 0.0, "change_pct": 0.0})
+
+    cache_set(cache_key, results, ttl=60)
+    return results
+
+
+SECTOR_CATEGORIES = {
+    "银行金融": ["银行", "证券", "保险"],
+    "科技互联网": ["计算机", "半导体", "通信"],
+    "新能源": ["光伏", "锂电", "风电"],
+    "大消费": ["食品饮料", "家电", "消费"],
+    "高端制造": ["机械", "军工", "汽车"],
+    "周期资源": ["煤炭", "有色", "钢铁"],
+}
+
+
+def get_sector_kline(category: str, period: str = "1月"):
+    cache_key = make_key("sector", category, period)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    sectors = SECTOR_CATEGORIES.get(category, [])
+    kline_data = []
+    for sec in sectors:
+        try:
+            df = ak.stock_board_industry_name_em()
+            row = df[df["板块名称"] == sec]
+            if not row.empty:
+                r = row.iloc[0]
+                kline_data.append({
+                    "name": sec,
+                    "change_pct": float(r.get("涨跌幅", 0)),
+                    "price": float(r.get("最新价", 0)),
+                })
+        except Exception as e:
+            logger.warning(f"get_sector_kline failed for {sec}: {e}")
+
+    representative_stocks = _get_representative_stocks(sectors)
+
+    result = {
+        "category": category,
+        "period": period,
+        "sectors": kline_data,
+        "stocks": representative_stocks,
+        "updated_at": pd.Timestamp.now().isoformat(),
+    }
+    cache_set(cache_key, result, ttl=300)
+    return result
+
+
+def _get_representative_stocks(sectors: list) -> list:
+    stocks = []
+    try:
+        for sec in sectors[:3]:
+            try:
+                df = ak.stock_board_industry_cons_em(symbol=sec)
+                top = df.head(5)[["代码", "名称", "最新价", "涨跌幅"]].to_dict("records")
+                for s in top:
+                    stocks.append({
+                        "code": s["代码"],
+                        "name": s["名称"],
+                        "price": float(s.get("最新价", 0)),
+                        "change_pct": float(s.get("涨跌幅", 0)),
+                    })
+            except Exception as e:
+                logger.warning(f"_get_representative_stocks failed for {sec}: {e}")
+    except Exception as e:
+        logger.warning(f"_get_representative_stocks outer: {e}")
+    return stocks
+
+
+def get_stock_info(code: str):
+    cache_key = make_key("stock", code)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    info = {"code": code, "name": "", "price": 0.0, "change_pct": 0.0,
+            "pe_ttm": 0.0, "pb": 0.0, "market_cap": 0.0, "industry": ""}
+    try:
+        df = ak.stock_individual_info_em(symbol=code)
+        for _, row in df.iterrows():
+            key = row["item"]
+            val = row["value"]
+            if "股票简称" in key:
+                info["name"] = val
+            elif "行业" in key:
+                info["industry"] = val
+            elif "总市值" in key:
+                info["market_cap"] = float(val) / 1e8 if val else 0
+        spot = ak.stock_bid_ask_em(symbol=code)
+        if not spot.empty:
+            info["price"] = float(spot.iloc[0].get("latest", 0))
+    except Exception as e:
+        logger.warning(f"get_stock_info failed for {code}: {e}")
+
+    cache_set(cache_key, info, ttl=30)
+    return info

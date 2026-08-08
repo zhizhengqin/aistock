@@ -30,8 +30,12 @@ class Settings(BaseSettings):
     VERIFY_CODE_TTL_SECONDS: int = 300
     VERIFY_CODE_LENGTH: int = 6
 
-    # LLM (M2+ will use)
+    # LLM
     DEEPSEEK_API_KEY: str = ""
+    LLM_MOCK: bool = True
+    LLM_MODEL: str = "deepseek-chat"
+    LLM_BASE_URL: str = "https://api.deepseek.com/v1"
+    TASK_INLINE: bool = True
 
     # LLM cost guard
     DAILY_TOKEN_LIMIT: int = 2_000_000

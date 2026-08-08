@@ -131,3 +131,125 @@ def get_stock_info(code: str):
 
     cache_set(cache_key, info, ttl=30)
     return info
+
+
+def get_stock_kline(code: str, days: int = 120) -> pd.DataFrame:
+    """Get daily OHLCV kline data for a stock."""
+    cache_key = make_key("kline", code, str(days))
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return pd.DataFrame(cached)
+    try:
+        end = pd.Timestamp.now().strftime("%Y%m%d")
+        start = (pd.Timestamp.now() - pd.Timedelta(days=int(days * 1.8))).strftime("%Y%m%d")
+        df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
+        df = df.rename(columns={
+            "日期": "date", "开盘": "open", "收盘": "close",
+            "最高": "high", "最低": "low", "成交量": "volume",
+        })
+        for col in ["open", "close", "high", "low", "volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.tail(days).reset_index(drop=True)
+        cache_set(cache_key, df.to_dict("records"), ttl=300)
+        return df
+    except Exception as e:
+        logger.warning(f"get_stock_kline failed for {code}: {e}")
+        return pd.DataFrame()
+
+
+def get_stock_financial_summary(code: str) -> dict:
+    """Get financial summary for fundamental analysis."""
+    cache_key = make_key("financial", code)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = {
+        "revenue": 0, "net_profit": 0, "roe": 0, "pe_ttm": 0,
+        "pb": 0, "market_cap": 0, "gross_margin": 0, "debt_ratio": 0,
+    }
+    try:
+        df = ak.stock_financial_abstract(symbol=code)
+        if df is not None and not df.empty:
+            latest = df.iloc[0]
+            result["revenue"] = float(latest.get("营业总收入", 0) or 0)
+            result["net_profit"] = float(latest.get("净利润", 0) or 0)
+            result["roe"] = float(latest.get("净资产收益率", 0) or 0)
+            result["gross_margin"] = float(latest.get("销售毛利率", 0) or 0)
+            result["debt_ratio"] = float(latest.get("资产负债率", 0) or 0)
+    except Exception as e:
+        logger.warning(f"get_stock_financial_summary failed for {code}: {e}")
+
+    try:
+        info = ak.stock_individual_info_em(symbol=code)
+        for _, row in info.iterrows():
+            key = row["item"]
+            val = row["value"]
+            if "市盈率" in key:
+                result["pe_ttm"] = float(val) if val else 0
+            elif "市净率" in key:
+                result["pb"] = float(val) if val else 0
+            elif "总市值" in key:
+                result["market_cap"] = float(val) / 1e8 if val else 0
+    except Exception as e:
+        logger.warning(f"get_stock_financial_summary info failed for {code}: {e}")
+
+    cache_set(cache_key, result, ttl=3600)
+    return result
+
+
+def get_stock_capital_flow(code: str, days: int = 20) -> dict:
+    """Get capital flow data for capital analysis."""
+    cache_key = make_key("capital_flow", code, str(days))
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = {
+        "net_main_flow": 0, "net_super_large": 0, "net_large": 0,
+        "net_medium": 0, "net_small": 0, "daily_flows": [],
+    }
+    try:
+        df = ak.stock_individual_fund_flow(stock=code, market="")
+        if df is not None and not df.empty:
+            df = df.tail(days)
+            for col in ["主力净流入-净额", "超大单净流入-净额", "大单净流入-净额",
+                        "中单净流入-净额", "小单净流入-净额"]:
+                if col in df.columns:
+                    vals = pd.to_numeric(df[col], errors="coerce")
+                    key_map = {
+                        "主力净流入-净额": "net_main_flow",
+                        "超大单净流入-净额": "net_super_large",
+                        "大单净流入-净额": "net_large",
+                        "中单净流入-净额": "net_medium",
+                        "小单净流入-净额": "net_small",
+                    }
+                    result[key_map[col]] = float(vals.sum())
+            result["daily_flows"] = df.tail(5).to_dict("records")
+    except Exception as e:
+        logger.warning(f"get_stock_capital_flow failed for {code}: {e}")
+
+    cache_set(cache_key, result, ttl=300)
+    return result
+
+
+def get_stock_news_titles(code: str, limit: int = 10) -> list[dict]:
+    """Get recent news titles for a stock."""
+    cache_key = make_key("news", code, str(limit))
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = []
+    try:
+        df = ak.stock_news_em(symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.head(limit).iterrows():
+                result.append({
+                    "title": str(row.get("新闻标题", "")),
+                    "content": str(row.get("新闻内容", ""))[:200],
+                    "date": str(row.get("发布时间", "")),
+                })
+    except Exception as e:
+        logger.warning(f"get_stock_news_titles failed for {code}: {e}")
+
+    cache_set(cache_key, result, ttl=1800)
+    return result

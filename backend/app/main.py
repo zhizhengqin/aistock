@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.api import health, auth, market
+from app.api import health, auth, market, tasks
 
 
 @asynccontextmanager
@@ -32,3 +32,4 @@ app.add_middleware(
 app.include_router(health.router, prefix=settings.API_PREFIX)
 app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(market.router, prefix=settings.API_PREFIX)
+app.include_router(tasks.router, prefix=settings.API_PREFIX)

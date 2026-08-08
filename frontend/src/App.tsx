@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/auth'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import Home from './pages/Home'
+import Analysis from './pages/Analysis'
 import Placeholder from './pages/Placeholder'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -23,7 +24,7 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route index element={<Home />} />
-          <Route path="analysis" element={<Placeholder title="股票分析" />} />
+          <Route path="analysis" element={<Analysis />} />
           <Route path="main-force" element={<Placeholder title="主力选股" />} />
           <Route path="sector" element={<Placeholder title="智策板块" />} />
           <Route path="dragon-tiger" element={<Placeholder title="智瞰龙虎榜" />} />

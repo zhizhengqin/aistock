@@ -78,6 +78,102 @@ MOCK_RESPONSES = {
         "key_watchpoints": ["MA20支撑有效性", "主力资金流向变化", "成交量能否放大"],
         "meeting_summary": "技术面箱体震荡偏多，基本面稳健，资金面主力吸筹，情绪面偏热，综合建议持有。",
     },
+
+    # --- M3: main-force selection analysts ---
+    "main_force_capital": {
+        "focus_stocks": ["600519", "000858", "600036"],
+        "analysis": "主力资金持续净流入，超大单买入明显，资金与价格配合度良好。",
+        "score": 8,
+        "flow_concentration": "资金集中于头白酒白马板块",
+    },
+    "main_force_industry": {
+        "focus_stocks": ["600519", "000858"],
+        "analysis": "白酒板块持续受资金关注，消费复苏主线明确，新兴机会在AI应用端。",
+        "score": 7,
+        "sector_trend": "消费+科技双轮驱动",
+    },
+    "main_force_fundamental": {
+        "focus_stocks": ["600519", "600036"],
+        "analysis": "茅台ROE保持30%以上，招行资产质量稳健，估值处于合理区间。",
+        "score": 8,
+        "health_rating": "优秀",
+    },
+    "main_force_technical": {
+        "focus_stocks": ["600519", "000858"],
+        "analysis": "均线多头排列，MACD金叉，量价配合良好。",
+        "score": 7,
+        "pattern": "上升趋势",
+    },
+    "main_force_quant": {
+        "focus_stocks": ["600519", "600036"],
+        "analysis": "量化信号偏多，量价关系健康，统计特征显示动量效应显著。",
+        "score": 7,
+        "quant_signals": ["动量正", "波动率适中", "换手率正常"],
+    },
+    "main_force_researcher": {
+        "companies": [
+            {"code": "600519", "name": "贵州茅台", "buy_range": "1680-1700", "sell_range": "1820-1880", "confidence": 82, "position": "8-12%", "logic": "主力资金持续流入，基本面优秀，技术面多头排列，股东户数减少18.5%筹码集中。"},
+            {"code": "000858", "name": "五粮液", "buy_range": "145-148", "sell_range": "162-168", "confidence": 75, "position": "5-8%", "logic": "资金面配合，板块轮动受益，估值修复空间明确。"},
+            {"code": "600036", "name": "招商银行", "buy_range": "32.5-33.0", "sell_range": "36.0-38.0", "confidence": 78, "position": "6-10%", "logic": "银行板块资金流入，资产质量稳健，高股息防御属性。"},
+        ],
+        "excluded": [
+            {"code": "601398", "name": "工商银行", "reason": "流通市值过大，资金流入占比不足"},
+            {"code": "601288", "name": "农业银行", "reason": "股东户数增加，筹码趋于分散"},
+        ],
+        "meeting_summary": "茅台最优，五粮液次之，招行防御配置。建议组合配置，控制仓位。",
+    },
+    # --- M3: sector analysis agents ---
+    "sector_macro": {
+        "report": "货币政策维持宽松基调，财政发力基建，下半年重点关注消费复苏+科技自主可控双主线。",
+        "score": 7,
+    },
+    "sector_diagnosis": {
+        "sectors": [
+            {"name": "白酒", "health": "良好", "trend": "复苏"},
+            {"name": "半导体", "health": "优秀", "trend": "上行"},
+            {"name": "煤炭", "health": "一般", "trend": "回落"},
+        ],
+        "score": 7,
+    },
+    "sector_capital": {
+        "inflow_sectors": ["半导体", "消费电子", "银行"],
+        "outflow_sectors": ["煤炭", "钢铁"],
+        "report": "资金流向集中于科技与金融，周期板块资金流出。",
+        "score": 6,
+    },
+    "sector_sentiment": {
+        "sentiment_score": 65,
+        "width": "涨跌比2.1，市场宽度健康",
+        "assessment": "情绪中性偏多，赚钱效应回升。",
+    },
+    "sector_chief": {
+        "bull_sectors": [
+            {"name": "半导体", "confidence": 9, "logic": "资金持续流入，政策受益，景气周期向上", "risk": "短期估值偏高需注意回调"},
+            {"name": "消费电子", "confidence": 8, "logic": "新品发布季催化，资金流入明显", "risk": "需求不及预期"},
+            {"name": "银行", "confidence": 7, "logic": "高股息防御属性，资金轮动受益", "risk": "息差收窄"},
+        ],
+        "bear_sectors": [
+            {"name": "煤炭", "confidence": 8, "logic": "供需格局转弱，价格下行，资金流出", "risk": "冬季补库存或短期反弹"},
+            {"name": "钢铁", "confidence": 7, "logic": "需求疲软，成本承压", "risk": "基建刺激政策"},
+        ],
+        "neutral_sectors": [
+            {"name": "食品饮料", "confidence": 5, "logic": "消费温和复苏，缺乏强催化", "risk": "低"},
+        ],
+        "operation_advice": "短期(1-2周)关注半导体回调后的加仓机会；中期(1-3月)持有消费复苏标的。",
+        "risk_triggers": "上证指数放量跌破3850点则仓位降至五成以下",
+        "key_indicators": ["北向资金净流入", "两市成交额", "半导体制程突破进展"],
+    },
+    # --- M3: dragon-tiger analyst ---
+    "dragon_tiger_analyst": {
+        "summary": "近5日龙虎榜活跃度较高，游资集中于科技与消费板块，主力操作偏短线。",
+        "confidence_score": 82.5,
+        "active_institutions": [
+            {"name": "东方财富拉萨", "success_rate": 48.2, "appearances": 12, "style": "短线"},
+            {"name": "华泰证券总部", "success_rate": 52.1, "appearances": 8, "style": "波段"},
+        ],
+        "strategy_advice": "仓位纪律：单笔亏损5%无条件止损；情绪退潮信号：连板率低于30%减仓；注意T+1数据滞后陷阱；规避无名称及可转债标的。",
+        "risk_level": "高风险",
+    },
 }
 
 
@@ -90,7 +186,7 @@ async def chat(messages: list[dict], model: str = None, temperature: float = 0.3
         import re
         key = "chief"
         first_msg = messages[0]["content"] if messages else ""
-        m = re.search(r"\{\{ANALYST_KEY:(\w+)\}\}", first_msg)
+        m = re.search(r"{ANALYST_KEY:(\w+)}", first_msg)
         if m:
             key = m.group(1)
         content = json.dumps(MOCK_RESPONSES[key], ensure_ascii=False)

@@ -253,3 +253,212 @@ def get_stock_news_titles(code: str, limit: int = 10) -> list[dict]:
 
     cache_set(cache_key, result, ttl=1800)
     return result
+
+
+# ---------------------------------------------------------------------------
+# M3 data collectors: main-force selection, sector analysis, dragon-tiger
+# ---------------------------------------------------------------------------
+
+
+def get_market_capital_flow_rank(limit: int = 50) -> list[dict]:
+    """Full-market capital flow ranking sorted by net main inflow."""
+    cache_key = make_key("mkt_flow_rank", str(limit))
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = []
+    try:
+        df = ak.stock_market_fund_flow()
+        if df is not None and not df.empty:
+            col_map = {
+                "代码": "code", "名称": "name", "今日主力净流入-净额": "net_main_flow",
+                "今日涨跌幅": "change_pct", "今日主力净流入-净占比": "net_main_pct",
+            }
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+            if "net_main_flow" in df.columns:
+                df = df.sort_values("net_main_flow", ascending=False).head(limit)
+            for _, row in df.iterrows():
+                result.append({
+                    "code": str(row.get("code", "")),
+                    "name": str(row.get("name", "")),
+                    "net_main_flow": float(row.get("net_main_flow", 0) or 0),
+                    "change_pct": float(row.get("change_pct", 0) or 0),
+                    "net_main_pct": float(row.get("net_main_pct", 0) or 0),
+                })
+    except Exception as e:
+        logger.warning(f"get_market_capital_flow_rank failed: {e}")
+    cache_set(cache_key, result, ttl=300)
+    return result
+
+
+def get_stock_shareholder_count(code: str) -> dict:
+    """Shareholder count history to detect concentration (decreasing = concentration)."""
+    cache_key = make_key("gdhs", code)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = {"latest": None, "previous": None, "change_pct": 0, "history": []}
+    try:
+        df = ak.stock_zh_a_gdhs(symbol_em=code)
+        if df is not None and not df.empty:
+            for col in df.columns:
+                if "股东户数" in col or "人数" in col:
+                    df = df.rename(columns={col: "count"})
+                    break
+            if "count" in df.columns:
+                df["count"] = pd.to_numeric(df["count"], errors="coerce")
+                df = df.sort_values("count", ascending=False)
+                counts = df["count"].tolist()
+                result["history"] = counts[:4]
+                if len(counts) >= 2:
+                    result["latest"] = int(counts[0])
+                    result["previous"] = int(counts[1])
+                    if counts[1] > 0:
+                        result["change_pct"] = round((counts[0] - counts[1]) / counts[1] * 100, 2)
+    except Exception as e:
+        logger.warning(f"get_stock_shareholder_count failed for {code}: {e}")
+    cache_set(cache_key, result, ttl=86400)
+    return result
+
+
+def get_sw_sector_list() -> list[dict]:
+    """Shenwan (SW) sector index spot data."""
+    cache_key = make_key("sw_sector_list")
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = []
+    try:
+        df = ak.sw_index_spot()
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                result.append({
+                    "code": str(row.get("板块代码", "")),
+                    "name": str(row.get("板块名称", "")),
+                    "change_pct": float(row.get("涨跌幅", 0) or 0),
+                    "price": float(row.get("最新价", 0) or 0),
+                    "turnover": float(row.get("成交额", 0) or 0),
+                })
+    except Exception as e:
+        logger.warning(f"get_sw_sector_list failed: {e}")
+    cache_set(cache_key, result, ttl=3600)
+    return result
+
+
+def get_sw_sector_detail(code: str, days: int = 20) -> list[dict]:
+    """SW sector daily kline data."""
+    cache_key = make_key("sw_sector", code, str(days))
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = []
+    try:
+        end = pd.Timestamp.now().strftime("%Y%m%d")
+        start = (pd.Timestamp.now() - pd.Timedelta(days=int(days * 2))).strftime("%Y%m%d")
+        df = ak.sw_index_daily(symbol=code, start_date=start, end_date=end)
+        if df is not None and not df.empty:
+            df = df.tail(days)
+            result = df.to_dict("records")
+    except Exception as e:
+        logger.warning(f"get_sw_sector_detail failed for {code}: {e}")
+    cache_set(cache_key, result, ttl=1800)
+    return result
+
+
+def get_sector_capital_flow() -> list[dict]:
+    """Sector-level capital flow ranking."""
+    cache_key = make_key("sector_flow")
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = []
+    try:
+        df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
+        if df is not None and not df.empty:
+            col_map = {
+                "名称": "name", "今日涨跌幅": "change_pct",
+                "今日主力净流入-净额": "net_main_flow", "今日主力净流入-净占比": "net_main_pct",
+            }
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+            if "net_main_flow" in df.columns:
+                df = df.sort_values("net_main_flow", ascending=False)
+            for _, row in df.iterrows():
+                result.append({
+                    "name": str(row.get("name", "")),
+                    "change_pct": float(row.get("change_pct", 0) or 0),
+                    "net_main_flow": float(row.get("net_main_flow", 0) or 0),
+                    "net_main_pct": float(row.get("net_main_pct", 0) or 0),
+                })
+    except Exception as e:
+        logger.warning(f"get_sector_capital_flow failed: {e}")
+    cache_set(cache_key, result, ttl=300)
+    return result
+
+
+def get_dragon_tiger_list(days: int = 5) -> list[dict]:
+    """Dragon-tiger (lhb) detailed records for recent N days."""
+    cache_key = make_key("dragon_tiger", str(days))
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = []
+    try:
+        end = pd.Timestamp.now().strftime("%Y%m%d")
+        start = (pd.Timestamp.now() - pd.Timedelta(days=days)).strftime("%Y%m%d")
+        df = ak.stock_lhb_detail_em(start_date=start, end_date=end)
+        if df is not None and not df.empty:
+            col_map = {
+                "代码": "code", "名称": "name", "上榜日": "date",
+                "解读": "reason", "收价": "close", "涨跌幅": "change_pct",
+                "买入额": "buy_amount", "卖出额": "sell_amount", "净额": "net_amount",
+            }
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+            for _, row in df.iterrows():
+                result.append({
+                    "code": str(row.get("code", "")),
+                    "name": str(row.get("name", "")),
+                    "date": str(row.get("date", "")),
+                    "reason": str(row.get("reason", "")),
+                    "close": float(row.get("close", 0) or 0),
+                    "change_pct": float(row.get("change_pct", 0) or 0),
+                    "buy_amount": float(row.get("buy_amount", 0) or 0) / 1e8,
+                    "sell_amount": float(row.get("sell_amount", 0) or 0) / 1e8,
+                    "net_amount": float(row.get("net_amount", 0) or 0) / 1e8,
+                })
+    except Exception as e:
+        logger.warning(f"get_dragon_tiger_list failed: {e}")
+    cache_set(cache_key, result, ttl=1800)
+    return result
+
+
+def get_dragon_tiger_institution(code: str = None) -> list[dict]:
+    """Dragon-tiger institution (broker) seat detail for a single stock."""
+    cache_key = make_key("dragon_tiger_inst", code or "all")
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = []
+    try:
+        if code:
+            df = ak.stock_lhb_stock_detail_em(symbol=code)
+        else:
+            df = ak.stock_lhb_stock_detail_em(symbol="")
+        if df is not None and not df.empty:
+            col_map = {
+                "营业部名称": "name", "买入额": "buy_amount", "卖出额": "sell_amount",
+                "净额": "net_amount", "上榜次数": "appearances", "最近上榜日": "last_date",
+            }
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+            for _, row in df.iterrows():
+                result.append({
+                    "name": str(row.get("name", "")),
+                    "buy_amount": float(row.get("buy_amount", 0) or 0) / 1e8,
+                    "sell_amount": float(row.get("sell_amount", 0) or 0) / 1e8,
+                    "net_amount": float(row.get("net_amount", 0) or 0) / 1e8,
+                    "appearances": int(row.get("appearances", 0) or 0),
+                    "last_date": str(row.get("last_date", "")),
+                })
+    except Exception as e:
+        logger.warning(f"get_dragon_tiger_institution failed: {e}")
+    cache_set(cache_key, result, ttl=1800)
+    return result

@@ -7,9 +7,10 @@
  alembic==1.14.0
  psycopg2-binary==2.9.10
  
- # Cache & queue
- redis==5.2.1
- arq==0.26.0
+# Cache & queue
+redis==5.2.1
+arq==0.26.0
+apscheduler==3.10.4
  
  # Data source
  akshare==1.15.7

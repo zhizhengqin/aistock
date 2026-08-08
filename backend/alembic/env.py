@@ -6,6 +6,7 @@ from app.models.base import Base
 from app.models import user, llm_usage, task_record, analysis_report  # noqa: F401
 
 config = context.config
+from app.models import main_force_run, sector_report, dragon_tiger_report  # noqa: F401
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 if config.config_file_name is not None:

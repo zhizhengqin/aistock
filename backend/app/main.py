@@ -4,13 +4,16 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.api import health, auth, market, tasks
+from app.api import health, auth, market, tasks, m3
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"{settings.APP_NAME} starting in {settings.ENV} mode")
+    from app.tasks.scheduler import start_scheduler, shutdown_scheduler
+    start_scheduler()
     yield
+    shutdown_scheduler()
     logger.info(f"{settings.APP_NAME} shutting down")
 
 
@@ -33,3 +36,4 @@ app.include_router(health.router, prefix=settings.API_PREFIX)
 app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(market.router, prefix=settings.API_PREFIX)
 app.include_router(tasks.router, prefix=settings.API_PREFIX)
+app.include_router(m3.router, prefix=settings.API_PREFIX)

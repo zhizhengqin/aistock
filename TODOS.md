@@ -12,8 +12,8 @@
  | M0 | 开发环境搭建 | 2 天 | `[x]` 已确认 |
 | M1 | 项目骨架 + 用户系统 + 首页行情 | 1 周 | `[x]` 已完成 |
 | M2 | 股票分析（核心 AI 流程） | 1.5 周 | `[x]` 已完成 |
-| M3 | 主力选股 + 智策板块 + 龙虎榜 | 1.5 周 | `[ ]` |
- | M4 | 持仓分析 + 实时监测 + 风险预警 | 1 周 | `[ ]` |
+| M3 | 主力选股 + 智策板块 + 龙虎榜 | 1.5 周 | `[x]` 已完成 |
+| M4 | 持仓分析 + 实时监测 + 风险预警 | 1 周 | `[ ]` |
  | M5 | 实时新闻 + 美股研报 + 定时任务 | 1 周 | `[ ]` |
  | M6 | 会员体系 + 配额 + 充值页 | 1 周 | `[ ]` |
  | M7 | 京东云部署 + 域名 + HTTPS + 备份 | 1 周 | `[ ]` |
@@ -96,14 +96,24 @@
 
 ---
  
- ## M3 — 主力选股 + 智策板块 + 龙虎榜
- 
- - `[ ]` 主力选股流水线（资金流排行 → 策略过滤 → 5 分析师 → 资深研究员）
- - `[ ]` 智策板块（4 智能体 + 多空预测 + 定时任务）
- - `[ ]` 智瞰龙虎榜（评分引擎 + TOP10 + 游资画像）
- - `[ ]` APScheduler 定时任务框架接入
- 
- ---
+## M3 — 主力选股 + 智策板块 + 龙虎榜
+
+- `[x]` M3-1: akshare 数据采集扩展（7 个新函数：资金流排行/股东户数/申万板块/板块资金流/龙虎榜明细/游资席位）✅
+- `[x]` M3-2: DB 迁移 — main_force_runs / sector_reports / dragon_tiger_reports 三张表 ✅
+- `[x]` M3-3: 主力选股编排服务（资金流排行→策略过滤→5 分析师并行→资深研究员）+ 4 项测试 ✅
+- `[x]` M3-4: 智策板块编排服务（4 智能体 + 多空预测 + 首席汇总）+ 1 项测试 ✅
+- `[x]` M3-5: 龙虎榜评分引擎（纯函数 score_stock/rank_top_stocks/compute_stats/rank_institutions）+ 编排服务 + 10 项测试 ✅
+- `[x]` M3-6: APScheduler 定时任务框架（板块分析每日 09:30 自动执行）✅
+- `[x]` M3-7: 前端三页面（MainForce 漏斗+分析师+研究员/Sector 4 智能体+多空/DragonTiger TOP10+游资画像）+ 路由替换 ✅
+- `[x]` M3-8: Playwright E2E 全验证通过（0 console errors）+ 52 pytest 全绿 ✅
+- `[x]` LLM Mock 正则修复（{{ANALYST_KEY:x}} f-string 转义后 → 单花括号匹配）✅
+
+### M3 新增文件
+- backend: main_force_orchestrator.py / sector_orchestrator.py / dragon_tiger_scorer.py / dragon_tiger_orchestrator.py / scheduler.py / tasks/main_force.py / tasks/sector_analysis.py / tasks/dragon_tiger.py / api/m3.py / models (3) / tests (3)
+- frontend: pages/MainForce.tsx / pages/Sector.tsx / pages/DragonTiger.tsx / App.tsx 路由替换
+- docs: M3-engineering-plan.md / screenshots/m3/ (6 张 E2E 截图)
+
+---
  
  ## M4 — 持仓分析 + 实时监测 + 风险预警
  
@@ -141,6 +151,5 @@
  
  ---
  
-> 最后更新：2026-08-07
 > 最后更新：2026-08-08
-> 当前阶段：M2 已完成 ✅ → 下一步 M3 主力选股 + 智策板块 + 龙虎榜（需 /plan-eng-review）
+> 当前阶段：M3 已完成 ✅ → 下一步 M4 持仓分析 + 实时监测 + 风险预警（需 /plan-eng-review）

@@ -28,7 +28,20 @@ def get_redis_settings() -> RedisSettings:
     return RedisSettings(host=host, port=port, database=db)
 
 
+async def _on_worker_startup(ctx):
+    """arq worker boots the timed-job scheduler (prod owns scheduling here)."""
+    from app.tasks.scheduler import start_scheduler
+    start_scheduler(force=True)
+
+
+async def _on_worker_shutdown(ctx):
+    from app.tasks.scheduler import shutdown_scheduler
+    shutdown_scheduler()
+
+
 class WorkerSettings:
+    on_startup = _on_worker_startup
+    on_shutdown = _on_worker_shutdown
     functions = [analyze_stock_task, main_force_task, sector_analysis_task, dragon_tiger_task, portfolio_diagnosis_task, stock_risk_task, portfolio_risk_task, news_collect_task, us_research_task]
     redis_settings = get_redis_settings()
     max_jobs = 2

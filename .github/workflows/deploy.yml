@@ -1,0 +1,61 @@
+name: CI + Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # 允许在 GitHub 页面手动触发
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backend — pytest
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements.txt
+      - run: cd backend && pytest -q
+        env:
+          LLM_MOCK: "true"
+          TASK_INLINE: "true"
+
+      - name: Frontend — typecheck + build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: cd frontend && npm ci && npm run build
+
+  deploy:
+    needs: test                     # 测试全绿才允许部署（硬性关卡）
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to JD Cloud via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/aistock
+            git pull origin main
+            docker compose -f deploy/docker-compose.yml up -d --build
+            docker image prune -f
+
+      - name: Smoke check /api/health
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            sleep 8
+            curl -fsS http://localhost/api/health
+            docker compose -f /opt/aistock/deploy/docker-compose.yml ps

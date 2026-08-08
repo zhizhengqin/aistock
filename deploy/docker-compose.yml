@@ -1,0 +1,99 @@
+# 睿见投研 production stack — 京东云 4C8G single host.
+# Usage (from repo root on the server):
+#   cp deploy/.env.example deploy/.env   # fill in secrets
+#   docker compose -f deploy/docker-compose.yml up -d --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aistock-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aistock
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in deploy/.env}
+      POSTGRES_DB: aistock
+    volumes:
+      - /data/aistock/pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aistock"]
+      interval: 10s
+      retries: 5
+    networks: [internal]
+    # no host port — reachable only inside the compose network
+
+  redis:
+    image: redis:7-alpine
+    container_name: aistock-redis
+    restart: unless-stopped
+    volumes:
+      - /data/aistock/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+    networks: [internal]
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: aistock-backend:latest
+    container_name: aistock-api
+    restart: unless-stopped
+    environment:
+      ENV: prod
+      DEBUG: "false"
+      TASK_INLINE: "false"          # scheduler runs in the worker container
+      LLM_MOCK: ${LLM_MOCK:-true}
+      DATABASE_URL: postgresql+psycopg2://aistock:${POSTGRES_PASSWORD}@postgres:5432/aistock
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?set it in deploy/.env}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      DAILY_TOKEN_LIMIT: ${DAILY_TOKEN_LIMIT:-2000000}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [internal]
+
+  worker:
+    image: aistock-backend:latest
+    container_name: aistock-worker
+    restart: unless-stopped
+    command: ["./docker-entrypoint.sh"]
+    environment:
+      CONTAINER_ROLE: worker
+      ENV: prod
+      DEBUG: "false"
+      TASK_INLINE: "false"
+      LLM_MOCK: ${LLM_MOCK:-true}
+      DATABASE_URL: postgresql+psycopg2://aistock:${POSTGRES_PASSWORD}@postgres:5432/aistock
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      DAILY_TOKEN_LIMIT: ${DAILY_TOKEN_LIMIT:-2000000}
+    depends_on:
+      api: {condition: service_started}   # api runs alembic migrations first
+      redis: {condition: service_healthy}
+    networks: [internal]
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+    image: aistock-frontend:latest
+    container_name: aistock-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /data/aistock/nginx/certs:/etc/nginx/certs:ro   # acme.sh certs land here
+    depends_on:
+      - api
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge

@@ -119,8 +119,13 @@ async def _run_membership_expire_scheduled():
         logger.info(f"Membership expire job: downgraded {n} user(s) to free")
 
 
-def start_scheduler(app=None):
-    """Register timed jobs and start the scheduler."""
+def start_scheduler(app=None, force: bool = False):
+    """Register timed jobs and start the scheduler.
+
+    In dev the api process runs jobs inline (TASK_INLINE=true). In prod the api
+    container sets TASK_INLINE=false and the arq worker container starts the
+    scheduler via its on_startup hook with force=True, so jobs run exactly once.
+    """
 
     sched = get_scheduler()
     sched.add_job(
@@ -153,9 +158,10 @@ def start_scheduler(app=None):
         CronTrigger(hour=0, minute=30),
         id="membership_expire_daily", replace_existing=True,
     )
-    if settings.TASK_INLINE:
-        sched.start()
-        logger.info("APScheduler started (inline mode): 6 jobs registered")
+    if settings.TASK_INLINE or force:
+        if not sched.running:
+            sched.start()
+        logger.info("APScheduler started: 6 jobs registered")
     else:
         logger.info("APScheduler jobs registered (will run in arq worker)")
 

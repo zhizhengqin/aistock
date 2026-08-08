@@ -16,7 +16,7 @@
 | M4 | 持仓分析 + 实时监测 + 风险预警 | 1 周 | `[x] 已完成` |
  | M5 | 实时新闻 + 美股研报 + 定时任务 | 1 周 | `[x] 已完成` |
  | M6 | 会员体系 + 配额 + 充值页 | 1 周 | `[x]` |
- | M7 | 京东云部署 + 域名 + HTTPS + 备份 | 1 周 | `[ ]` |
+ | M7 | 京东云部署 + 域名 + HTTPS + 备份 | 1 周 | `[x]` 配置完成，待服务器 |
  
  ---
  
@@ -143,13 +143,13 @@
  
  ## M7 — 部署上京东云
  
- - `[ ]` docker-compose.prod.yml（全容器化 + nginx）
- - `[ ]` GitHub Actions CI/CD
- - `[ ]` 域名解析 + HTTPS（Let's Encrypt）
- - `[ ]` 上线检查清单逐项验证
- - `[ ]` 数据库每日备份脚本
+ - `[x]` docker-compose.prod.yml（全容器化 + nginx）→ `deploy/docker-compose.yml`
+ - `[x]` GitHub Actions CI/CD（测试全绿才部署）→ `.github/workflows/deploy.yml`
+ - `[x]` 域名解析 + HTTPS 配置就绪（nginx 443 块 + acme.sh 步骤，见 deploy/README.md；待买服务器+备案后执行）
+ - `[x]` 上线检查清单已写入手册（deploy/README.md 第六节；待服务器就绪后逐项打勾）
+ - `[x]` 数据库每日备份脚本 → `deploy/backup.sh`（pg_dump + 保留 14 天 + crontab 一行）
  
  ---
  
 > 最后更新：2026-08-08
-> 当前阶段：M6 已完成 ✅ → 下一步 M7 部署上京东云
+> 当前阶段：M7 代码与配置已完成 ✅ → 待购买京东云服务器后按 `deploy/README.md` 执行上线（备案尽早启动）

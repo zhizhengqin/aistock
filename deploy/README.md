@@ -1,0 +1,132 @@
+# 睿见投研 · 部署手册（京东云）
+
+> 给技术小白的全流程部署指引。每一步照抄命令即可，遇到报错把原文发给 AI 助手。
+
+## 一、服务器准备（一次性）
+
+1. 京东云控制台买云主机：**4C8G / Ubuntu 24.04 / 系统盘 100G**，记下公网 IP。
+2. 安全组（防火墙）只放行三个端口：**80（HTTP）、443（HTTPS）、22（SSH）**。
+3. SSH 登录后安装 Docker：
+
+```bash
+ssh root@你的服务器IP
+curl -fsSL https://get.docker.com | bash
+```
+
+4. **配置 Docker 镜像加速器**（国内服务器直连 Docker Hub 很慢/不通，必做）：
+
+```bash
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << 'JSON'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.net"
+  ]
+}
+JSON
+systemctl restart docker
+```
+
+## 二、首次部署
+
+```bash
+# 1. 拉代码
+git clone https://github.com/你的名字/aistock.git /opt/aistock
+cd /opt/aistock
+
+# 2. 配置环境变量（密码、密钥）
+cp deploy/.env.example deploy/.env
+openssl rand -hex 32        # 把输出填进 deploy/.env 的 JWT_SECRET
+nano deploy/.env            # 填 POSTGRES_PASSWORD、DEEPSEEK_API_KEY
+
+# 3. 一键构建启动（首次构建约 10-15 分钟，去喝杯水）
+docker compose -f deploy/docker-compose.yml up -d --build
+
+# 4. 验证
+curl http://localhost/api/health
+# 看到 {"code":0,"data":{"status":"healthy"}} 就成功了
+docker compose -f deploy/docker-compose.yml ps   # 5 个容器都该是 Up
+```
+
+浏览器打开 `http://服务器IP` 就能看到系统。
+
+## 三、日常更新（推到 GitHub 后自动部署）
+
+仓库已带 GitHub Actions（`.github/workflows/deploy.yml`）：
+**本地 push 到 main → 自动跑全部测试 → 全绿后 SSH 上服务器自动更新**。
+
+首次使用需在 GitHub 仓库 → Settings → Secrets and variables → Actions 添加三个密钥：
+
+| Secret 名 | 内容 |
+|---|---|
+| `SERVER_HOST` | 服务器公网 IP |
+| `SERVER_USER` | `root` |
+| `SERVER_SSH_KEY` | 本机 `~/.ssh/id_rsa` 私钥全文（服务器 `authorized_keys` 里要有对应公钥） |
+
+服务器首次要允许 GitHub Actions 拉代码：
+
+```bash
+cd /opt/aistock
+git config --global credential.helper store   # 私有仓库需配 token；公开仓库跳过
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_rsa  # 如果还没有密钥
+cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+```
+
+## 四、HTTPS（域名备案通过后）
+
+1. 域名解析：A 记录指向服务器 IP。
+2. 申请免费证书并安装到挂载目录：
+
+```bash
+curl https://get.acme.sh | sh
+~/.acme.sh/acme.sh --issue --standalone -d 你的域名.com --pre-hook "docker stop aistock-nginx" --post-hook "docker start aistock-nginx"
+mkdir -p /data/aistock/nginx/certs/你的域名.com
+~/.acme.sh/acme.sh --install-cert -d 你的域名.com \
+  --fullchain-file /data/aistock/nginx/certs/你的域名.com/fullchain.pem \
+  --key-file       /data/aistock/nginx/certs/你的域名.com/key.pem \
+  --reloadcmd     "docker restart aistock-nginx"
+```
+
+3. 编辑 `deploy/nginx.conf`：取消 443 server 块的注释、把 `your-domain.com` 换成真实域名、打开 80 端口的 301 跳转，然后：
+
+```bash
+docker compose -f deploy/docker-compose.yml restart nginx
+```
+
+## 五、数据库每日备份
+
+```bash
+crontab -e
+# 加一行（每天凌晨 3:30 备份，保留 14 天）：
+30 3 * * * /opt/aistock/deploy/backup.sh >> /data/aistock/backups/cron.log 2>&1
+```
+
+备份文件在 `/data/aistock/backups/`，每周瞄一眼文件是否在增长。
+
+恢复方法（需要时）：
+
+```bash
+gunzip -c /data/aistock/backups/aistock_日期.sql.gz | docker exec -i aistock-pg psql -U aistock aistock
+```
+
+## 六、上线检查清单（逐项打勾）
+
+- [ ] 注册/登录正常
+- [ ] 首页行情刷新正常
+- [ ] 每个 AI 模块各跑通一次（分析报告页能看到结果）
+- [ ] 定时任务连续 2 天无失败（通知铃铛无失败告警）
+- [ ] 备份脚本在跑（`/data/aistock/backups/` 有新文件）
+- [ ] 手机浏览器（或 Chrome 开发者工具切 390px）逐页面检查无错位
+- [ ] 所有 AI 报告底部有免责声明
+- [ ] DeepSeek 账户设了消费上限
+- [ ] 安全组只开 80/443/22
+
+## 七、常见故障自救
+
+| 症状 | 处理 |
+|---|---|
+| 网站打不开 | `docker compose -f deploy/docker-compose.yml ps` 看哪个容器挂了 → `... restart 容器名` |
+| 首页行情不更新 | `docker logs aistock-worker --tail=100`，多半是数据源接口变了 |
+| AI 报告失败 | 看任务记录的错误信息；DeepSeek 余额不足或限流居多 |
+| 磁盘满 | `docker system prune -a` 清旧镜像；清旧备份 |

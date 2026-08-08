@@ -9,6 +9,9 @@ import Placeholder from './pages/Placeholder'
 import MainForce from './pages/MainForce'
 import Sector from './pages/Sector'
 import DragonTiger from './pages/DragonTiger'
+import Portfolio from './pages/Portfolio'
+import Realtime from './pages/Realtime'
+import RiskWarning from './pages/RiskWarning'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loaded } = useAuthStore()
@@ -31,9 +34,9 @@ export default function App() {
           <Route path="main-force" element={<MainForce />} />
           <Route path="sector" element={<Sector />} />
           <Route path="dragon-tiger" element={<DragonTiger />} />
-          <Route path="portfolio" element={<Placeholder title="持仓分析" />} />
-          <Route path="realtime" element={<Placeholder title="实时监测" />} />
-          <Route path="risk-warning" element={<Placeholder title="风险预警" />} />
+          <Route path="portfolio" element={<Portfolio />} />
+          <Route path="realtime" element={<Realtime />} />
+          <Route path="risk-warning" element={<RiskWarning />} />
           <Route path="news" element={<Placeholder title="实时新闻" />} />
           <Route path="us-research" element={<Placeholder title="美股研报" />} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import client from '../api/client'
+import { errMsg } from '../utils/errors'
 import { useAuthStore } from '../stores/auth'
 
 type Tab = 'login' | 'register' | 'forgot'
@@ -74,7 +75,7 @@ export default function Login() {
         setTab('login')
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || '操作失败')
+      setError(errMsg(err, '操作失败'))
     } finally {
       setLoading(false)
     }

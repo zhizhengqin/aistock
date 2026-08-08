@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -47,10 +48,13 @@ async def register(req: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="该邮箱已注册")
     if db.query(User).filter(User.username == req.username).first():
         raise HTTPException(status_code=409, detail="该用户名已存在")
+    from app.services import membership as membership_svc
     user = User(
         username=req.username,
         email=req.email.lower(),
         password_hash=hash_password(req.password),
+        tier=membership_svc.TRIAL_TIER,
+        tier_expire_at=datetime.now(timezone.utc) + timedelta(days=membership_svc.TRIAL_DAYS),
     )
     db.add(user)
     db.commit()

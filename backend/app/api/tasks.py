@@ -10,6 +10,7 @@ from app.models.user import User
 from app.models.task_record import TaskRecord
 from app.tasks.queue import get_redis_settings
 from app.core.logger import logger
+from app.services import membership as membership_svc
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -17,10 +18,6 @@ router = APIRouter()
 
 class AnalyzeRequest(BaseModel):
     stock_codes: list[str]
-
-
-# Simple quota: free=1/day, D=5/day, etc. (M6 will wire full matrix)
-TIER_QUOTA = {"free": 1, "D": 5, "C": 8, "B": 20, "A": -1}
 
 
 async def _enqueue_task(task_type: str, args: list) -> str:
@@ -35,17 +32,7 @@ async def submit_analysis(req: AnalyzeRequest, user: User = Depends(get_current_
     if not req.stock_codes or len(req.stock_codes) > 50:
         raise HTTPException(status_code=400, detail="股票代码数量需在1-50之间")
 
-    quota = TIER_QUOTA.get(user.tier, 1)
-    if quota != -1:
-        from sqlalchemy import func
-        today_count = db.query(func.count(TaskRecord.id)).filter(
-            TaskRecord.user_id == user.id,
-            TaskRecord.task_type == "stock_analysis",
-            TaskRecord.status.in_(["success", "running", "pending"]),
-            func.date(TaskRecord.created_at) == func.current_date(),
-        ).scalar() or 0
-        if today_count + len(req.stock_codes) > quota:
-            raise HTTPException(status_code=403, detail=f"今日配额已用尽（{quota}次/日），请升级会员")
+    membership_svc.check_and_consume(db, user, "stock_analysis", cost=len(req.stock_codes))
 
     tasks = []
     for code in req.stock_codes:

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Outlet, NavLink } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 
 const NAV_ITEMS = [
@@ -13,11 +13,27 @@ const NAV_ITEMS = [
   { path: '/risk-warning', label: '风险预警', icon: '⚠' },
   { path: '/news', label: '实时新闻', icon: '📰' },
   { path: '/us-research', label: '美股研报', icon: '🇺🇸' },
+  { path: '/membership', label: '会员中心', icon: '💎' },
 ]
+
+interface UpgradeDetail {
+  code: string
+  feature: string
+  tier: string
+  message: string
+}
 
 export default function Layout() {
   const [collapsed, setCollapsed] = useState(false)
   const { user, logout } = useAuthStore()
+  const navigate = useNavigate()
+  const [upgrade, setUpgrade] = useState<UpgradeDetail | null>(null)
+
+  useEffect(() => {
+    const handler = (e: Event) => setUpgrade((e as CustomEvent).detail)
+    window.addEventListener('membership:upgrade', handler)
+    return () => window.removeEventListener('membership:upgrade', handler)
+  }, [])
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -75,6 +91,31 @@ export default function Layout() {
         <main className="flex-1 overflow-y-auto p-6">
           <Outlet />
         </main>
+
+        {upgrade && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setUpgrade(null)}>
+            <div className="bg-white rounded-lg shadow-xl p-6 w-96" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-base font-semibold text-gray-800">
+                {upgrade.code === 'quota_exceeded' ? '今日次数已用完' : '该功能需要升级'}
+              </h3>
+              <p className="mt-3 text-sm text-gray-600 leading-relaxed">{upgrade.message}</p>
+              <div className="mt-5 flex gap-3">
+                <button
+                  onClick={() => setUpgrade(null)}
+                  className="flex-1 py-2 rounded border border-gray-200 text-sm text-gray-600 hover:bg-gray-50"
+                >
+                  知道了
+                </button>
+                <button
+                  onClick={() => { setUpgrade(null); navigate('/membership') }}
+                  className="flex-1 py-2 rounded bg-brand-600 text-white text-sm hover:bg-brand-700"
+                >
+                  查看套餐
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

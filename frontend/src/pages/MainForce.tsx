@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
+import { errMsg } from '../utils/errors'
 
 type Tab = 'analysis' | 'history'
 
@@ -85,7 +86,7 @@ function AnalysisView() {
       const resp = await client.post('/stocks/main-force/run')
       pollTask(resp.data.data.task_id)
     } catch (err: any) {
-      setError(err.response?.data?.detail || '提交失败')
+      setError(errMsg(err, '提交失败'))
       setLoading(false)
     }
   }

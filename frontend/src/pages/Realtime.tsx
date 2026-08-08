@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
+import { errMsg } from '../utils/errors'
 
 type Tab = 'configs' | 'notifications'
 
@@ -87,7 +88,7 @@ function ConfigsView() {
       setNotice(`检查完成，触发 ${r.data.data.triggered} 条提醒`)
       await load()
     } catch (err: any) {
-      setError(err.response?.data?.detail || '检查失败')
+      setError(errMsg(err, '检查失败'))
     } finally {
       setChecking(false)
     }
@@ -113,7 +114,7 @@ function ConfigsView() {
       setForm({ stock_code: '', stock_name: '', entry_price: '', target_price: '', stop_price: '', profit_pct: '10', loss_pct: '5', interval_min: '10', channels: 'in_app', ai_enabled: false })
       await load()
     } catch (err: any) {
-      setError(err.response?.data?.detail || '添加失败')
+      setError(errMsg(err, '添加失败'))
     } finally {
       setAdding(false)
     }

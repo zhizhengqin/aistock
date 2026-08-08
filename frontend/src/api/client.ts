@@ -47,6 +47,11 @@ client.interceptors.response.use(
         refreshing = false
       }
     }
+    const detail = error.response?.data?.detail
+    if (error.response?.status === 403 && detail && typeof detail === 'object'
+        && (detail.code === 'quota_exceeded' || detail.code === 'feature_locked')) {
+      window.dispatchEvent(new CustomEvent('membership:upgrade', { detail }))
+    }
     return Promise.reject(error)
   },
 )

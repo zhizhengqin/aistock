@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
+import { errMsg } from '../utils/errors'
 
 type Tab = 'stock' | 'portfolio' | 'active'
 
@@ -104,7 +105,7 @@ function StockRiskView() {
       const resp = await client.post('/stocks/risk/analyze', { stock_code: code.trim(), days: parseInt(days, 10) || 30 })
       pollTask(resp.data.data.task_id, code.trim())
     } catch (err: any) {
-      setError(err.response?.data?.detail || '提交失败')
+      setError(errMsg(err, '提交失败'))
       setLoading(false)
     }
   }
@@ -216,7 +217,7 @@ function PortfolioRiskView() {
       // otherwise show existing. For a fresh scan we re-run through analyze flow per holding.
       await load()
     } catch (err: any) {
-      setError(err.response?.data?.detail || '扫描失败')
+      setError(errMsg(err, '扫描失败'))
       setLoading(false)
     }
   }
@@ -295,7 +296,7 @@ function ActiveWarningsView() {
   useEffect(() => {
     client.get('/stocks/risk/active')
       .then((r) => setItems(r.data.data))
-      .catch((err) => setError(err.response?.data?.detail || '加载失败'))
+      .catch((err) => setError(errMsg(err, '加载失败')))
       .finally(() => setLoading(false))
   }, [])
 

@@ -11,6 +11,7 @@ from app.models.main_force_run import MainForceRun
 from app.models.sector_report import SectorReport
 from app.models.dragon_tiger_report import DragonTigerReport
 from app.core.logger import logger
+from app.services import membership as membership_svc
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -46,15 +47,7 @@ def _start_task(db: Session, task_type: str, user_id: int, inline_func, args: li
 
 @router.post("/stocks/main-force/run")
 async def run_main_force(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Quota check: free=1/day for main force
-    today_count = db.query(func.count(TaskRecord.id)).filter(
-        TaskRecord.user_id == user.id,
-        TaskRecord.task_type == "main_force",
-        TaskRecord.status.in_(["success", "running", "pending"]),
-        func.date(TaskRecord.created_at) == func.current_date(),
-    ).scalar() or 0
-    if today_count >= 2:
-        raise HTTPException(status_code=403, detail="今日主力选股额度已用尽（2次/日）")
+    membership_svc.check_and_consume(db, user, "stock_pick")
 
     task = _start_task(db, "main_force", user.id,
                        __import__("app.tasks.main_force", fromlist=["main_force_task"]).main_force_task,
@@ -95,6 +88,7 @@ async def main_force_detail(run_id: int, user: User = Depends(get_current_user),
 
 @router.post("/stocks/sectors/analyze")
 async def run_sector_analysis(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    membership_svc.check_and_consume(db, user, "sector")
     task = _start_task(db, "sector_analysis", user.id,
                        __import__("app.tasks.sector_analysis", fromlist=["sector_analysis_task"]).sector_analysis_task,
                        [user.id])
@@ -139,14 +133,7 @@ async def run_dragon_tiger(req: DragonTigerRequest,
                            user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if req.period_days not in [3, 5, 10, 15, 20, 30]:
         raise HTTPException(status_code=400, detail="时间范围仅支持 3/5/10/15/20/30 天")
-    today_count = db.query(func.count(TaskRecord.id)).filter(
-        TaskRecord.user_id == user.id,
-        TaskRecord.task_type == "dragon_tiger",
-        TaskRecord.status.in_(["success", "running", "pending"]),
-        func.date(TaskRecord.created_at) == func.current_date(),
-    ).scalar() or 0
-    if today_count >= 3:
-        raise HTTPException(status_code=403, detail="今日龙虎榜分析额度已用尽（3次/日）")
+    membership_svc.check_and_consume(db, user, "dragon_tiger")
 
     task = _start_task(db, "dragon_tiger", user.id,
                        __import__("app.tasks.dragon_tiger", fromlist=["dragon_tiger_task"]).dragon_tiger_task,

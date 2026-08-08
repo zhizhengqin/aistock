@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
+import { errMsg } from '../utils/errors'
 
 type Tab = 'holdings' | 'diagnosis' | 'history'
 
@@ -105,7 +106,7 @@ function HoldingsView() {
       setForm({ stock_code: '', stock_name: '', shares: '', cost_price: '', auto_monitor: false })
       await load()
     } catch (err: any) {
-      setError(err.response?.data?.detail || '添加失败')
+      setError(errMsg(err, '添加失败'))
     } finally {
       setAdding(false)
     }
@@ -253,7 +254,7 @@ function DiagnosisView() {
       const resp = await client.post('/stocks/portfolio/analyze')
       pollTask(resp.data.data.task_id)
     } catch (err: any) {
-      setError(err.response?.data?.detail || '提交失败')
+      setError(errMsg(err, '提交失败'))
       setLoading(false)
     }
   }

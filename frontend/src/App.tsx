@@ -13,6 +13,7 @@ import Realtime from './pages/Realtime'
 import RiskWarning from './pages/RiskWarning'
 import News from './pages/News'
 import USResearch from './pages/USResearch'
+import Membership from './pages/Membership'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loaded } = useAuthStore()
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="risk-warning" element={<RiskWarning />} />
           <Route path="news" element={<News />} />
           <Route path="us-research" element={<USResearch />} />
+          <Route path="membership" element={<Membership />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

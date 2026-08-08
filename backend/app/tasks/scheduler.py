@@ -102,8 +102,26 @@ async def _run_monitor_poll_scheduled():
     logger.info(f"Monitor poll done, triggered={count}")
 
 
+async def _run_membership_expire_scheduled():
+    import asyncio
+    from app.core.database import SessionLocal
+    from app.services.membership import expire_memberships
+
+    def _run():
+        db = SessionLocal()
+        try:
+            return expire_memberships(db)
+        finally:
+            db.close()
+
+    n = await asyncio.to_thread(_run)
+    if n:
+        logger.info(f"Membership expire job: downgraded {n} user(s) to free")
+
+
 def start_scheduler(app=None):
     """Register timed jobs and start the scheduler."""
+
     sched = get_scheduler()
     sched.add_job(
         _run_sector_analysis_scheduled,
@@ -130,9 +148,14 @@ def start_scheduler(app=None):
         CronTrigger(minute="*/5"),
         id="monitor_poll_5min", replace_existing=True,
     )
+    sched.add_job(
+        _run_membership_expire_scheduled,
+        CronTrigger(hour=0, minute=30),
+        id="membership_expire_daily", replace_existing=True,
+    )
     if settings.TASK_INLINE:
         sched.start()
-        logger.info("APScheduler started (inline mode): 5 jobs registered")
+        logger.info("APScheduler started (inline mode): 6 jobs registered")
     else:
         logger.info("APScheduler jobs registered (will run in arq worker)")
 

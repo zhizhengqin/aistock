@@ -5,13 +5,14 @@ import Layout from './components/Layout'
 import Login from './pages/Login'
 import Home from './pages/Home'
 import Analysis from './pages/Analysis'
-import Placeholder from './pages/Placeholder'
 import MainForce from './pages/MainForce'
 import Sector from './pages/Sector'
 import DragonTiger from './pages/DragonTiger'
 import Portfolio from './pages/Portfolio'
 import Realtime from './pages/Realtime'
 import RiskWarning from './pages/RiskWarning'
+import News from './pages/News'
+import USResearch from './pages/USResearch'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loaded } = useAuthStore()
@@ -37,8 +38,8 @@ export default function App() {
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="realtime" element={<Realtime />} />
           <Route path="risk-warning" element={<RiskWarning />} />
-          <Route path="news" element={<Placeholder title="实时新闻" />} />
-          <Route path="us-research" element={<Placeholder title="美股研报" />} />
+          <Route path="news" element={<News />} />
+          <Route path="us-research" element={<USResearch />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

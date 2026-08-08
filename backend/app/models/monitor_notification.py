@@ -7,7 +7,7 @@ class MonitorNotification(Base, TimestampMixin):
     __tablename__ = "monitor_notifications"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    config_id: Mapped[int] = mapped_column(Integer, ForeignKey("monitor_configs.id"), nullable=False, index=True)
+    config_id: Mapped[int] = mapped_column(Integer, ForeignKey("monitor_configs.id"), nullable=True, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     stock_code: Mapped[str] = mapped_column(String(16), nullable=False)
     stock_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)

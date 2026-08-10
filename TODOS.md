@@ -159,9 +159,11 @@
 - `[x]` 前端分析报告页导出按钮（Blob 下载）
 - `[x]` 6 项后端测试全绿 + Playwright E2E 验证
 
-### b. F-08-04 AI 交易计划 + AI 决策记录
-- `[ ]` 数据模型 + API
-- `[ ]` 前端列表展示
+### b. F-08-04 AI 交易计划 + AI 决策记录 ✅
+- `[x]` 数据模型 ai_trade_plans / ai_decision_records + alembic 迁移
+- `[x]` API GET /stocks/ai-monitoring/trade-plans + /decisions（分页 + 用户隔离）
+- `[x]` 前端 Realtime.tsx 两个新 Tab（空态 + 卡片列表）
+- `[x]` 7 项 pytest + Playwright E2E 验证
 
 ### c. SMTP 邮件发送
 - `[ ]` 替换 console 打印为真实邮件

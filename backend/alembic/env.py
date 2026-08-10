@@ -10,6 +10,7 @@ from app.models import main_force_run, sector_report, dragon_tiger_report  # noq
 from app.models import portfolio_stock, portfolio_report, monitor_config, monitor_notification, risk_warning  # noqa: F401
 from app.models import news_item, us_research_report  # noqa: F401
 from app.models import membership_plan, usage_log  # noqa: F401
+from app.models import ai_trade_plan, ai_decision_record  # noqa: F401
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 if config.config_file_name is not None:

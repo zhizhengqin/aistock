@@ -11,6 +11,8 @@ from app.models.portfolio_stock import PortfolioStock
 from app.models.portfolio_report import PortfolioReport
 from app.models.monitor_config import MonitorConfig
 from app.models.monitor_notification import MonitorNotification
+from app.models.ai_trade_plan import AiTradePlan
+from app.models.ai_decision_record import AiDecisionRecord
 from app.models.risk_warning import RiskWarning
 from app.core.logger import logger
 from app.services import membership as membership_svc
@@ -235,6 +237,50 @@ async def update_notification(notif_id: int, req: dict, user: User = Depends(get
     if "status" in req: n.status = req["status"]
     db.commit()
     return success(message="更新成功")
+
+
+# ---------------------------------------------------------------------------
+# AI trade plans & decision records (F-08-04)
+# ---------------------------------------------------------------------------
+
+@router.get("/stocks/ai-monitoring/trade-plans")
+async def list_trade_plans(page: int = 1, page_size: int = 20,
+                           user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    total = db.query(func.count(AiTradePlan.id)).filter(AiTradePlan.user_id == user.id).scalar() or 0
+    plans = (db.query(AiTradePlan)
+             .filter(AiTradePlan.user_id == user.id)
+             .order_by(AiTradePlan.created_at.desc())
+             .offset((page - 1) * page_size).limit(page_size).all())
+    return success(data={
+        "total": total, "page": page, "page_size": page_size,
+        "items": [{
+            "id": p.id, "config_id": p.config_id, "stock_code": p.stock_code,
+            "stock_name": p.stock_name, "action": p.action,
+            "suggested_price": p.suggested_price, "target_price": p.target_price,
+            "stop_loss": p.stop_loss, "confidence": p.confidence,
+            "reasoning": p.reasoning, "plan_json": p.plan_json,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        } for p in plans],
+    })
+
+
+@router.get("/stocks/ai-monitoring/decisions")
+async def list_decisions(page: int = 1, page_size: int = 20,
+                         user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    total = db.query(func.count(AiDecisionRecord.id)).filter(AiDecisionRecord.user_id == user.id).scalar() or 0
+    records = (db.query(AiDecisionRecord)
+               .filter(AiDecisionRecord.user_id == user.id)
+               .order_by(AiDecisionRecord.created_at.desc())
+               .offset((page - 1) * page_size).limit(page_size).all())
+    return success(data={
+        "total": total, "page": page, "page_size": page_size,
+        "items": [{
+            "id": r.id, "config_id": r.config_id, "stock_code": r.stock_code,
+            "stock_name": r.stock_name, "decision_type": r.decision_type,
+            "summary": r.summary, "detail_json": r.detail_json,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        } for r in records],
+    })
 
 
 @router.post("/stocks/ai-monitoring/check")

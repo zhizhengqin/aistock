@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
 
-type Tab = 'configs' | 'notifications'
+type Tab = 'configs' | 'notifications' | 'plans' | 'decisions'
 
 interface MonitorConfig {
   id: number
@@ -44,16 +44,18 @@ export default function Realtime() {
   const [tab, setTab] = useState<Tab>('configs')
   return (
     <div className="space-y-6">
-      <div className="flex gap-2 border-b border-gray-200">
-        {(['configs', 'notifications'] as Tab[]).map((t) => (
+      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto">
+        {(['configs', 'notifications', 'plans', 'decisions'] as Tab[]).map((t) => (
           <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t ? 'border-brand-600 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {t === 'configs' ? '监测配置' : '消息通知'}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${tab === t ? 'border-brand-600 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            {t === 'configs' ? '监测配置' : t === 'notifications' ? '消息通知' : t === 'plans' ? 'AI 交易计划' : 'AI 决策记录'}
           </button>
         ))}
       </div>
       {tab === 'configs' && <ConfigsView />}
       {tab === 'notifications' && <NotificationsView />}
+      {tab === 'plans' && <TradePlansView />}
+      {tab === 'decisions' && <DecisionsView />}
     </div>
   )
 }
@@ -290,6 +292,100 @@ function NotificationsView() {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function TradePlansView() {
+  const [items, setItems] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    client.get('/stocks/ai-monitoring/trade-plans').then((r) => {
+      setItems(r.data.data.items || [])
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [])
+
+  if (loading) return <p className="text-gray-400 text-sm">加载中…</p>
+
+  if (items.length === 0) {
+    return (
+      <div className="text-center py-12 text-gray-400 text-sm">
+        暂无 AI 交易计划。开启带 AI 分析的监测配置后，AI 会自动生成交易建议。
+      </div>
+    )
+  }
+
+  const ACTION_LABEL: Record<string, string> = {
+    buy: '买入', sell: '卖出', hold: '持有', watch: '观望',
+  }
+  const ACTION_COLOR: Record<string, string> = {
+    buy: 'text-red-600 bg-red-50', sell: 'text-green-600 bg-green-50',
+    hold: 'text-yellow-600 bg-yellow-50', watch: 'text-blue-600 bg-blue-50',
+  }
+
+  return (
+    <div className="space-y-3">
+      {items.map((p) => (
+        <div key={p.id} className="border border-gray-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-gray-800">{p.stock_name || p.stock_code}</span>
+              <span className={`px-2 py-0.5 text-xs rounded ${ACTION_COLOR[p.action] || 'text-gray-600 bg-gray-50'}`}>
+                {ACTION_LABEL[p.action] || p.action}
+              </span>
+              <span className="text-xs text-gray-400">置信度 {(p.confidence * 100).toFixed(0)}%</span>
+            </div>
+            <span className="text-xs text-gray-400">{(p.created_at || '').slice(0, 19).replace('T', ' ')}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-4 text-sm mb-2">
+            <div><span className="text-gray-400">建议价</span> <span className="font-medium">{p.suggested_price}</span></div>
+            <div><span className="text-gray-400">目标价</span> <span className="font-medium text-red-500">{p.target_price}</span></div>
+            <div><span className="text-gray-400">止损价</span> <span className="font-medium text-green-500">{p.stop_loss}</span></div>
+          </div>
+          {p.reasoning && <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded">{p.reasoning}</p>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function DecisionsView() {
+  const [items, setItems] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    client.get('/stocks/ai-monitoring/decisions').then((r) => {
+      setItems(r.data.data.items || [])
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [])
+
+  if (loading) return <p className="text-gray-400 text-sm">加载中…</p>
+
+  if (items.length === 0) {
+    return (
+      <div className="text-center py-12 text-gray-400 text-sm">
+        暂无 AI 决策记录。监测运行时 AI 的每次判断会记录在这里。
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      {items.map((d) => (
+        <div key={d.id} className="border border-gray-200 rounded-lg p-3 flex items-start justify-between">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-medium text-gray-800 text-sm">{d.stock_name || d.stock_code}</span>
+              <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded">{d.decision_type}</span>
+            </div>
+            <p className="text-sm text-gray-600">{d.summary}</p>
+          </div>
+          <span className="text-xs text-gray-400 whitespace-nowrap ml-3">{(d.created_at || '').slice(0, 19).replace('T', ' ')}</span>
+        </div>
+      ))}
     </div>
   )
 }

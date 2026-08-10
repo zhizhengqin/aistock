@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # LLM cost guard
     DAILY_TOKEN_LIMIT: int = 2_000_000
 
+    # Email / SMTP
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 465
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_USE_SSL: bool = True
+    EMAIL_ENABLED: bool = False  # false = log to console (dev mode)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

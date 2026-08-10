@@ -165,8 +165,12 @@
 - `[x]` 前端 Realtime.tsx 两个新 Tab（空态 + 卡片列表）
 - `[x]` 7 项 pytest + Playwright E2E 验证
 
-### c. SMTP 邮件发送
-- `[ ]` 替换 console 打印为真实邮件
+### c. SMTP 邮件发送 ✅
+- `[x]] email_sender.py（aiosmtplib，EMAIL_ENABLED 开关控制 dev/prod）
+- `[x]` verify_code.py 改为 async + 调用 send_email
+- `[x]` auth.py 两处调用改为 await
+- `[x]` config.py 新增 SMTP_* 配置项 + .env.example
+- `[x]` 4 项 pytest + 120 全量测试全绿
 
 ### d. 移动端 390px 全页面体检
 - `[ ]` 12 页截图 + 修错位

@@ -36,8 +36,8 @@ def _issue_tokens(user: User) -> dict:
 
 @router.post("/send-verification-code")
 async def send_verification_code(req: SendVerificationCodeRequest):
-    gen_and_send_code(req.email)
-    return success(message="验证码已发送（开发模式打印到控制台）")
+    await gen_and_send_code(req.email)
+    return success(message="验证码已发送，请查收邮箱")
 
 
 @router.post("/register")
@@ -104,8 +104,8 @@ async def me(user: User = Depends(get_current_user)):
 
 @router.post("/forgot-password")
 async def forgot_password(req: ForgotPasswordRequest):
-    gen_and_send_code(req.email)
-    return success(message="重置验证码已发送（开发模式打印到控制台）")
+    await gen_and_send_code(req.email)
+    return success(message="重置验证码已发送，请查收邮箱")
 
 
 @router.post("/reset-password")

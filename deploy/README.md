@@ -1,11 +1,14 @@
 # 睿见投研 · 部署手册（京东云）
 
 > 给技术小白的全流程部署指引。每一步照抄命令即可，遇到报错把原文发给 AI 助手。
+>
+> **服务器上已运行 GS-Tracker（占用 80/443）**：本系统对外端口为 **8080（HTTP）/ 8443（HTTPS）**，
+> compose 项目名固定为 `aistock`，两套系统互不影响。完整手把手教程见仓库根目录 `DEPLOY.md`。
 
 ## 一、服务器准备（一次性）
 
-1. 京东云控制台买云主机：**4C8G / Ubuntu 24.04 / 系统盘 100G**，记下公网 IP。
-2. 安全组（防火墙）只放行三个端口：**80（HTTP）、443（HTTPS）、22（SSH）**。
+1. 京东云控制台买云主机：**4C16G / Ubuntu 24.04 / 系统盘 100G**，记下公网 IP。
+2. 安全组（防火墙）放行：**8080（HTTP）、8443（HTTPS）、22（SSH）**；若同机还有其他系统，保留其原有端口。
 3. SSH 登录后安装 Docker：
 
 ```bash
@@ -44,12 +47,12 @@ nano deploy/.env            # 填 POSTGRES_PASSWORD、DEEPSEEK_API_KEY
 docker compose -f deploy/docker-compose.yml up -d --build
 
 # 4. 验证
-curl http://localhost/api/health
+curl http://localhost:8080/api/health
 # 看到 {"code":0,"data":{"status":"healthy"}} 就成功了
 docker compose -f deploy/docker-compose.yml ps   # 5 个容器都该是 Up
 ```
 
-浏览器打开 `http://服务器IP` 就能看到系统。
+浏览器打开 `http://服务器IP:8080` 就能看到系统。
 
 ## 三、日常更新（推到 GitHub 后自动部署）
 
@@ -73,26 +76,13 @@ ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_rsa  # 如果还没有密钥
 cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
 ```
 
-## 四、HTTPS（域名备案通过后）
+## 四、HTTPS（8443 端口，免备案可用）
 
-1. 域名解析：A 记录指向服务器 IP。
-2. 申请免费证书并安装到挂载目录：
-
-```bash
-curl https://get.acme.sh | sh
-~/.acme.sh/acme.sh --issue --standalone -d 你的域名.com --pre-hook "docker stop aistock-nginx" --post-hook "docker start aistock-nginx"
-mkdir -p /data/aistock/nginx/certs/你的域名.com
-~/.acme.sh/acme.sh --install-cert -d 你的域名.com \
-  --fullchain-file /data/aistock/nginx/certs/你的域名.com/fullchain.pem \
-  --key-file       /data/aistock/nginx/certs/你的域名.com/key.pem \
-  --reloadcmd     "docker restart aistock-nginx"
-```
-
-3. 编辑 `deploy/nginx.conf`：取消 443 server 块的注释、把 `your-domain.com` 换成真实域名、打开 80 端口的 301 跳转，然后：
-
-```bash
-docker compose -f deploy/docker-compose.yml restart nginx
-```
+> 完整步骤见根目录 `DEPLOY.md` 第 9 步。要点：域名 A 记录指向服务器 IP →
+> acme.sh 用 **DNS-01**（dns_ali / dns_dp，不占任何端口，不碰 GS-Tracker）签发证书 →
+> 安装到 `/data/aistock/nginx/certs/你的域名/` → 编辑 `deploy/nginx.conf` 取消 443 server 块注释并替换域名 →
+> `docker compose -f deploy/docker-compose.yml restart nginx`。
+> 访问地址为 `https://你的域名:8443`。国内云对未备案域名只拦截 80/443，8443 不受影响。
 
 ## 五、数据库每日备份
 
@@ -120,7 +110,7 @@ gunzip -c /data/aistock/backups/aistock_日期.sql.gz | docker exec -i aistock-p
 - [ ] 手机浏览器（或 Chrome 开发者工具切 390px）逐页面检查无错位
 - [ ] 所有 AI 报告底部有免责声明
 - [ ] DeepSeek 账户设了消费上限
-- [ ] 安全组只开 80/443/22
+- [ ] 安全组只开 8080/8443/22（加上 GS-Tracker 原有的 80/443）
 
 ## 七、常见故障自救
 

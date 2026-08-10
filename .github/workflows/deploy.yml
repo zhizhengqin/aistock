@@ -57,5 +57,5 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             sleep 8
-            curl -fsS http://localhost/api/health
+            curl -fsS http://localhost:8080/api/health   # 80 是 GS-Tracker，本系统在 8080
             docker compose -f /opt/aistock/deploy/docker-compose.yml ps

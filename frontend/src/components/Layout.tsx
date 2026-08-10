@@ -62,6 +62,19 @@ export default function Layout() {
               {!collapsed && <span>{item.label}</span>}
             </NavLink>
           ))}
+          {user?.role === 'admin' && (
+            <NavLink
+              to="/admin"
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+                  isActive ? 'bg-brand-600 text-white' : 'text-gray-300 hover:bg-slate-700'
+                }`
+              }
+            >
+              <span className="text-base">⚙️</span>
+              {!collapsed && <span>系统配置</span>}
+            </NavLink>
+          )}
         </nav>
         <div className="p-4 border-t border-slate-700 text-xs text-gray-400">
           {!collapsed && <span>客服微信: 扫码联系</span>}

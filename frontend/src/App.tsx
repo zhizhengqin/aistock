@@ -15,6 +15,7 @@ import News from './pages/News'
 import USResearch from './pages/USResearch'
 import Membership from './pages/Membership'
 import Guide from './pages/Guide'
+import Admin from './pages/Admin'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loaded } = useAuthStore()
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="us-research" element={<USResearch />} />
           <Route path="guide" element={<Guide />} />
           <Route path="membership" element={<Membership />} />
+          <Route path="admin" element={<Admin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

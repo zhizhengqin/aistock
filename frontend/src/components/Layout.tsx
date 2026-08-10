@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { path: '/risk-warning', label: '风险预警', icon: '⚠' },
   { path: '/news', label: '实时新闻', icon: '📰' },
   { path: '/us-research', label: '美股研报', icon: '🇺🇸' },
+  { path: '/guide', label: '使用指南', icon: '📖' },
   { path: '/membership', label: '会员中心', icon: '💎' },
 ]
 

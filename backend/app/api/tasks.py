@@ -135,6 +135,28 @@ async def get_analysis_detail(report_id: int, user: User = Depends(get_current_u
     })
 
 
+@router.get("/stocks/user/results/{report_id}/pdf")
+async def download_analysis_pdf(report_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """F-03-06: download an analysis report as PDF."""
+    from fastapi.responses import Response
+    from app.models.analysis_report import AnalysisReport
+    from app.services.report_pdf import build_analysis_pdf
+
+    report = db.query(AnalysisReport).filter(
+        AnalysisReport.id == report_id, AnalysisReport.user_id == user.id
+    ).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+
+    pdf = build_analysis_pdf(report.report_json or {})
+    filename = f"report_{report.stock_code}_{report.id}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/stocks/{code}/snapshot")
 async def stock_snapshot(code: str, user: User = Depends(get_current_user)):
     """Return real-time snapshot + indicators for a stock (no AI call)."""

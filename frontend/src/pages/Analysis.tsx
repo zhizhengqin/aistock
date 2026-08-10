@@ -26,6 +26,7 @@ interface TaskStatus {
 }
 
 interface ReportData {
+  _id?: number
   stock_code: string
   stock_name: string
   stock_info: { price: number; change_pct: number; pe_ttm: number; pb: number; market_cap: number; industry: string }
@@ -82,7 +83,7 @@ function SingleAnalysis() {
         setStatus(data.status)
         if (data.status === 'success' && data.result?.report_id) {
           const r2 = await client.get(`/stocks/user/results/${data.result.report_id}`)
-          setReport(r2.data.data.report)
+          setReport({ ...r2.data.data.report, _id: r2.data.data.id })
           setLoading(false)
           return
         }
@@ -242,7 +243,7 @@ function HistoryView() {
 
   const viewDetail = async (id: number) => {
     const r = await client.get(`/stocks/user/results/${id}`)
-    setSelected(r.data.data.report)
+    setSelected({ ...r.data.data.report, _id: r.data.data.id })
   }
 
   if (selected) return <ReportView report={selected} onBack={() => setSelected(null)} />
@@ -284,6 +285,30 @@ function HistoryView() {
         </table>
       )}
     </div>
+  )
+}
+
+function ExportPdfButton({ reportId, stockCode }: { reportId: number; stockCode: string }) {
+  const [downloading, setDownloading] = useState(false)
+  const download = async () => {
+    setDownloading(true)
+    try {
+      const resp = await client.get(`/stocks/user/results/${reportId}/pdf`, { responseType: 'blob' })
+      const url = URL.createObjectURL(resp.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${stockCode}_report_${reportId}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setDownloading(false)
+    }
+  }
+  return (
+    <button onClick={download} disabled={downloading}
+      className="px-4 py-1.5 text-sm border border-brand-500 text-brand-600 rounded-lg hover:bg-brand-50 disabled:opacity-50">
+      {downloading ? '生成中...' : '导出PDF'}
+    </button>
   )
 }
 
@@ -386,9 +411,7 @@ function ReportView({ report, onBack }: { report: ReportData; onBack?: () => voi
         )}
         <div className="mt-6 flex items-center justify-between">
           <p className="text-xs text-gray-400">{report.disclaimer}</p>
-          <button className="px-4 py-1.5 text-sm border border-gray-300 rounded-lg text-gray-500" disabled>
-            导出PDF (即将开放)
-          </button>
+          {report._id && <ExportPdfButton reportId={report._id} stockCode={report.stock_code} />}
         </div>
       </div>
     </div>

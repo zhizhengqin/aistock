@@ -33,3 +33,6 @@ apscheduler==3.10.4
  
  # Email (M4+ will configure real SMTP)
  # aiosmtplib==3.0.0
+
+# PDF export (F-03-06)
+reportlab==4.2.5

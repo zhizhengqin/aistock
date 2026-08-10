@@ -233,6 +233,7 @@ function HistoryView() {
         {rec.companies && (
           <div className="bg-white rounded-lg shadow p-6">
             <h3 className="text-lg font-semibold mb-3">精选推荐</h3>
+            <div className="overflow-x-auto -mx-3 sm:mx-0">
             <table className="w-full text-sm">
               <thead className="bg-gray-50"><tr>
                 <th className="px-3 py-2 text-left">股票</th><th className="px-3 py-2 text-left">买入区间</th>
@@ -250,6 +251,7 @@ function HistoryView() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </div>
@@ -260,6 +262,7 @@ function HistoryView() {
     <div className="bg-white rounded-lg shadow overflow-hidden">
       {loading ? <p className="p-8 text-center text-gray-400">加载中...</p> :
        items.length === 0 ? <p className="p-8 text-center text-gray-400">暂无选股记录</p> :
+       <div className="overflow-x-auto -mx-3 sm:mx-0">
        <table className="w-full text-sm">
          <thead className="bg-gray-50"><tr>
            <th className="px-4 py-2 text-left">选股日期</th><th className="px-4 py-2 text-left">候选数</th>
@@ -275,7 +278,7 @@ function HistoryView() {
              </tr>
            ))}
          </tbody>
-       </table>}
+       </table></div>}
     </div>
   )
 }

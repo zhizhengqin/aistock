@@ -135,6 +135,7 @@ function AnalysisView() {
           {/* TOP10 Table */}
           <div className="bg-white rounded-lg shadow overflow-hidden">
             <h3 className="text-lg font-semibold p-4">龙虎榜推荐 TOP10</h3>
+            <div className="overflow-x-auto -mx-3 sm:mx-0">
             <table className="w-full text-sm">
               <thead className="bg-gray-50"><tr>
                 <th className="px-3 py-2 text-left">排名</th>
@@ -165,12 +166,14 @@ function AnalysisView() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
 
           {/* Active institutions */}
           {report.institutions && report.institutions.length > 0 && (
             <div className="bg-white rounded-lg shadow overflow-hidden">
               <h3 className="text-lg font-semibold p-4">活跃游资画像</h3>
+              <div className="overflow-x-auto -mx-3 sm:mx-0">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50"><tr>
                   <th className="px-3 py-2 text-left">营业部</th>
@@ -187,6 +190,7 @@ function AnalysisView() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
 
@@ -220,6 +224,7 @@ function HistoryView() {
     <div className="bg-white rounded-lg shadow overflow-hidden">
       {loading ? <p className="p-8 text-center text-gray-400">加载中...</p> :
        items.length === 0 ? <p className="p-8 text-center text-gray-400">暂无龙虎榜报告</p> :
+       <div className="overflow-x-auto -mx-3 sm:mx-0">
        <table className="w-full text-sm">
          <thead className="bg-gray-50"><tr>
            <th className="px-4 py-2 text-left">分析天数</th>
@@ -233,7 +238,7 @@ function HistoryView() {
              </tr>
            ))}
          </tbody>
-       </table>}
+       </table></div>}
     </div>
   )
 }

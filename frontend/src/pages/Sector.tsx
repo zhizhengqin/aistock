@@ -211,6 +211,7 @@ function HistoryView() {
     <div className="bg-white rounded-lg shadow overflow-hidden">
       {loading ? <p className="p-8 text-center text-gray-400">加载中...</p> :
        items.length === 0 ? <p className="p-8 text-center text-gray-400">暂无板块分析历史</p> :
+       <div className="overflow-x-auto -mx-3 sm:mx-0">
        <table className="w-full text-sm">
          <thead className="bg-gray-50"><tr><th className="px-4 py-2 text-left">报告日期</th></tr></thead>
          <tbody>
@@ -220,7 +221,7 @@ function HistoryView() {
              </tr>
            ))}
          </tbody>
-       </table>}
+       </table></div>}
     </div>
   )
 }

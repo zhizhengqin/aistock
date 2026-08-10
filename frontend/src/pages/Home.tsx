@@ -144,7 +144,7 @@ export default function Home() {
       </div>
 
       <div className="bg-white rounded-lg shadow p-6">
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-2 mb-4 flex-wrap">
           {CATEGORIES.map((c) => (
             <button
               key={c}
@@ -158,7 +158,7 @@ export default function Home() {
           ))}
         </div>
 
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-2 mb-4 flex-wrap">
           {PERIODS.map((p) => (
             <button
               key={p}

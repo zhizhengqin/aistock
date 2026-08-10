@@ -38,7 +38,7 @@ export default function Layout() {
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
-      <aside className={`${collapsed ? 'w-16' : 'w-56'} bg-slate-800 text-white transition-all duration-200 flex flex-col`}>
+      <aside className={`${collapsed ? 'w-16' : 'w-56'} bg-slate-800 text-white transition-all duration-200 flex flex-col max-sm:w-14 max-sm:shrink-0`}>
         <div className="flex items-center justify-between p-4 h-14 border-b border-slate-700">
           {!collapsed && <span className="text-lg font-bold">睿见投研</span>}
           <button onClick={() => setCollapsed(!collapsed)} className="text-gray-400 hover:text-white">
@@ -70,15 +70,15 @@ export default function Layout() {
       {/* Main area */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Topbar */}
-        <header className="flex items-center justify-between h-14 px-6 bg-white border-b border-gray-200">
+        <header className="flex items-center justify-between h-14 px-3 sm:px-6 bg-white border-b border-gray-200">
           <span className="text-lg font-semibold text-gray-800">睿见投研</span>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             {user && (
               <>
                 <span className="text-sm px-2 py-0.5 rounded bg-brand-50 text-brand-600">
                   {user.tier}会员
                 </span>
-                <span className="text-sm text-gray-600">{user.username}</span>
+                <span className="text-sm text-gray-600 hidden sm:inline">{user.username}</span>
                 <button onClick={logout} className="text-sm text-gray-500 hover:text-red-500">
                   退出
                 </button>
@@ -88,7 +88,7 @@ export default function Layout() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-3 sm:p-6">
           <Outlet />
         </main>
 

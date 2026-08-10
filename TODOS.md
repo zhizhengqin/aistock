@@ -172,8 +172,12 @@
 - `[x]` config.py 新增 SMTP_* 配置项 + .env.example
 - `[x]` 4 项 pytest + 120 全量测试全绿
 
-### d. 移动端 390px 全页面体检
-- `[ ]` 12 页截图 + 修错位
+### d. 移动端 390px 全页面体检 ✅
+- `[x]` 12 页 Playwright 390px 截图（含 login）
+- `[x]` Layout 响应式：sidebar 手机端收窄、topbar padding 缩小、username 隐藏
+- `[x]` 7 处 table 包裹 overflow-x-auto（Analysis/DragonTiger/MainForce/Sector/Portfolio/Realtime/Membership）
+- `[x]` Home 板块按钮 flex-wrap、Portfolio 输入框响应式宽度
+- `[x]` 零水平溢出、所有 off-screen 元素均在滚动容器内
 
 ### e. 用户使用手册
 - `[ ]` 中文 md 入库

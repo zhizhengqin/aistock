@@ -149,7 +149,7 @@ function HoldingsView() {
         <div className="flex flex-wrap items-center gap-2">
           <input placeholder="股票代码 如 600519" value={form.stock_code}
             onChange={(e) => setForm({ ...form, stock_code: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-40" />
+            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-full sm:w-40" />
           <input placeholder="股票名称(可选)" value={form.stock_name}
             onChange={(e) => setForm({ ...form, stock_name: e.target.value })}
             className="border border-gray-300 rounded px-3 py-1.5 text-sm w-32" />

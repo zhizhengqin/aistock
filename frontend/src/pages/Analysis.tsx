@@ -203,6 +203,7 @@ function BatchAnalysis() {
       {error && <p className="text-sm text-red-500">{error}</p>}
       {results.length > 0 && (
         <div className="bg-white rounded-lg shadow overflow-hidden">
+          <div className="overflow-x-auto -mx-3 sm:mx-0">
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
@@ -223,6 +224,7 @@ function BatchAnalysis() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>
@@ -255,6 +257,7 @@ function HistoryView() {
       ) : items.length === 0 ? (
         <p className="p-8 text-center text-gray-400">暂无分析记录</p>
       ) : (
+        <div className="overflow-x-auto -mx-3 sm:mx-0">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -283,6 +286,7 @@ function HistoryView() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   )

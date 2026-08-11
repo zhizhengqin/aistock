@@ -331,6 +331,7 @@ docker ps --format '{{.Names}}\t{{.Status}}' | grep gs-tracker
 
 | 症状 | 大概率原因 | 处理 |
 |---|---|---|
+| 报错 `no such service: deploy/.env` | 命令最后误加了 `deploy/.env` | 删掉它，完整命令是 `docker compose -f deploy/docker-compose.yml up -d --build`（.env 会被自动读取，不用写在命令里） |
 | 浏览器打不开 :8080 | 安全组没放行 8080 | 重做第 3 步 |
 | 容器一直 Restarting | .env 没配或密码不对 | 看诊断第 4 节，重做第 5 步 |
 | curl :8080 拒绝连接 | aistock-nginx 没起来 | `docker logs aistock-nginx --tail=30` 看原因 |

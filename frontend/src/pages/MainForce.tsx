@@ -33,18 +33,68 @@ interface RunData {
 export default function MainForce() {
   const [tab, setTab] = useState<Tab>('analysis')
   return (
-    <div className="space-y-6">
-      <div className="flex gap-2 border-b border-gray-200">
+    <>
+      <div className="tabs">
         {(['analysis', 'history'] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t ? 'border-brand-600 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          <button key={t} onClick={() => setTab(t)} className={`tab${tab === t ? ' active' : ''}`}>
             {t === 'analysis' ? '选股分析' : '历史记录'}
           </button>
         ))}
       </div>
       {tab === 'analysis' && <AnalysisView />}
       {tab === 'history' && <HistoryView />}
+    </>
+  )
+}
+
+function Funnel({ candidates, filtered, recommended }: { candidates: number; filtered: number; recommended: number }) {
+  return (
+    <div className="funnel">
+      <div className="funnel-step"><div className="n mono">{candidates}</div><div className="t">候选股票</div></div>
+      <span className="funnel-arrow">→</span>
+      <div className="funnel-step"><div className="n mono">{filtered}</div><div className="t">筛选通过</div></div>
+      <span className="funnel-arrow">→</span>
+      <div className="funnel-step"><div className="n mono">{recommended}</div><div className="t">最终推荐</div></div>
     </div>
+  )
+}
+
+function RecommendTable({ rec }: { rec: any }) {
+  return (
+    <>
+      {rec.meeting_summary && <p className="small fg2" style={{ background: 'var(--surface)', padding: 12, borderRadius: 'var(--r-card)' }}>{rec.meeting_summary}</p>}
+      {rec.companies && (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr><th>股票</th><th>买入区间</th><th>卖出区间</th><th className="num">置信度</th><th>仓位</th><th>推荐逻辑</th></tr>
+            </thead>
+            <tbody>
+              {rec.companies.map((c: any, i: number) => (
+                <tr key={i}>
+                  <td>{c.name} <span className="muted mono">{c.code}</span></td>
+                  <td className="mono">{c.buy_range}</td>
+                  <td className="mono">{c.sell_range}</td>
+                  <td className="num mono">{c.confidence}%</td>
+                  <td>{c.position}</td>
+                  <td className="small">{c.logic}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rec.excluded && rec.excluded.length > 0 && (
+        <div className="mt16">
+          <span className="section-label">被排除标的:</span>
+          <ul className="excluded-list">
+            {rec.excluded.map((e: any, i: number) => (
+              <li key={i}>{e.name}({e.code}) - {e.reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -95,100 +145,59 @@ function AnalysisView() {
   const rec = runData?.recommended || {}
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-4">
-        <p className="text-sm text-gray-500">5 位 AI 分析师 + 资深研究员根据主力资金流向精选标的</p>
-        <button onClick={submit} disabled={loading}
-          className="px-6 py-2 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 disabled:opacity-50">
-          {loading ? '选股中...' : '开始选股'}
-        </button>
-      </div>
+    <div className="panel-stack">
+      <section className="card">
+        <div className="between wrap">
+          <p className="fg2" style={{ margin: 0 }}>5 位 AI 分析师 + 资深研究员根据主力资金流向精选标的</p>
+          <button className="btn btn-primary" onClick={submit} disabled={loading}>
+            {loading ? '选股中...' : '开始选股'}
+          </button>
+        </div>
+      </section>
 
-      {error && <p className="text-sm text-red-500">{error}</p>}
+      {error && <p className="small" style={{ color: 'var(--up)' }}>{error}</p>}
 
       {loading && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <p className="text-sm text-gray-600 mb-2">进度: {progress}% ({status})</p>
-          <div className="w-full bg-gray-200 rounded-full h-2">
-            <div className="bg-brand-600 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />
+        <section className="card">
+          <div className="between wrap">
+            <span className="fg2 small">选股进度: <span className="mono">{progress}%</span>（{status}）</span>
           </div>
-        </div>
+          <div className="progress mt8"><i style={{ width: `${progress}%` }}></i></div>
+        </section>
       )}
 
       {runData && analysis && (
         <>
-          {/* Funnel */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-4">选股漏斗</h3>
-            <div className="flex items-center gap-4 text-sm">
-              <div className="text-center"><p className="text-2xl font-bold text-brand-600">{runData.candidates_count}</p><p className="text-gray-400">候选股票</p></div>
-              <span className="text-gray-300 text-xl">→</span>
-              <div className="text-center"><p className="text-2xl font-bold text-brand-600">{runData.filtered_count}</p><p className="text-gray-400">筛选通过</p></div>
-              <span className="text-gray-300 text-xl">→</span>
-              <div className="text-center"><p className="text-2xl font-bold text-red-500">{rec.companies?.length || 0}</p><p className="text-gray-400">最终推荐</p></div>
-            </div>
-            <div className="mt-4 flex gap-6 text-xs text-gray-400">
-              <span>策略: 流通市值{'>'}{analysis.strategy?.min_market_cap}亿 | 20日涨幅{'<'}{analysis.strategy?.max_20d_change_pct}% | 60日净流入{'>'}0 | 股东户数下降</span>
-            </div>
-          </div>
+          <section className="card">
+            <h2 className="card-title">选股漏斗</h2>
+            <Funnel candidates={runData.candidates_count} filtered={runData.filtered_count} recommended={rec.companies?.length || 0} />
+            <p className="caption mt16">策略: 流通市值{'>'}{analysis.strategy?.min_market_cap}亿 | 20日涨幅{'<'}{analysis.strategy?.max_20d_change_pct}% | 60日净流入{'>'}0 | 股东户数下降</p>
+          </section>
 
-          {/* 5 Analyst cards */}
-          <div className="space-y-3">
-            <h3 className="text-lg font-semibold">5 位 AI 分析师</h3>
-            {Object.entries(analysis.analysts || {}).map(([key, data]: [string, any]) => (
-              <div key={key} className="bg-white rounded-lg shadow p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium">{ANALYST_LABELS[key] || key}</span>
-                  {data?.score != null && <span className="text-sm text-brand-600">评分: {data.score}</span>}
+          <section className="card">
+            <h2 className="card-title">AI 分析师评分</h2>
+            <div className="mini-grid">
+              {Object.entries(analysis.analysts || {}).map(([key, data]: [string, any]) => (
+                <div className="mini-card" key={key}>
+                  <div className="between">
+                    <h3>{ANALYST_LABELS[key] || key}</h3>
+                    {data?.score != null && <span className="fg2 small">评分: <span className="mono">{data.score}</span></span>}
+                  </div>
+                  <p className="small fg2 mt8">{data?.analysis || data?.error || ''}</p>
+                  <details className="mt8">
+                    <summary>展开完整报告</summary>
+                    <p className="full-report">{JSON.stringify(data, null, 2)}</p>
+                  </details>
                 </div>
-                <p className="text-sm text-gray-600">{data?.analysis || data?.error || ''}</p>
-                <details className="mt-2">
-                  <summary className="text-xs text-brand-600 cursor-pointer">展开完整报告</summary>
-                  <pre className="mt-2 text-xs text-gray-500 overflow-x-auto bg-gray-50 p-3 rounded">{JSON.stringify(data, null, 2)}</pre>
-                </details>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </section>
 
-          {/* Researcher recommendation */}
-          <div className="bg-white rounded-lg shadow p-6 border-l-4 border-brand-500">
-            <h3 className="text-lg font-semibold mb-4">资深研究员 · 精选推荐</h3>
-            {rec.meeting_summary && <p className="text-sm text-gray-600 mb-4 bg-gray-50 p-3 rounded">{rec.meeting_summary}</p>}
-            {rec.companies && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50"><tr>
-                    <th className="px-3 py-2 text-left">股票</th>
-                    <th className="px-3 py-2 text-left">买入区间</th>
-                    <th className="px-3 py-2 text-left">卖出区间</th>
-                    <th className="px-3 py-2 text-left">置信度</th>
-                    <th className="px-3 py-2 text-left">仓位</th>
-                    <th className="px-3 py-2 text-left">推荐逻辑</th>
-                  </tr></thead>
-                  <tbody>
-                    {rec.companies.map((c: any, i: number) => (
-                      <tr key={i} className="border-t border-gray-100">
-                        <td className="px-3 py-2 font-medium">{c.name} <span className="text-gray-400 font-mono">{c.code}</span></td>
-                        <td className="px-3 py-2">{c.buy_range}</td>
-                        <td className="px-3 py-2">{c.sell_range}</td>
-                        <td className="px-3 py-2">{c.confidence}%</td>
-                        <td className="px-3 py-2">{c.position}</td>
-                        <td className="px-3 py-2 text-gray-600">{c.logic}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {rec.excluded && rec.excluded.length > 0 && (
-              <div className="mt-4">
-                <p className="text-sm text-gray-400 mb-1">被排除标的:</p>
-                {rec.excluded.map((e: any, i: number) => (
-                  <p key={i} className="text-sm text-gray-500">{e.name}({e.code}) - {e.reason}</p>
-                ))}
-              </div>
-            )}
-          </div>
+          <section className="card card-accent">
+            <h2 className="card-title">资深研究员 · 精选推荐</h2>
+            <RecommendTable rec={rec} />
+            <p className="caption mt16">推荐基于 {runData.run_date} 收盘数据生成，仅供研究参考，不构成投资建议</p>
+          </section>
         </>
       )}
     </div>
@@ -218,67 +227,47 @@ function HistoryView() {
   if (detail) {
     const rec = detail.recommended || {}
     return (
-      <div className="space-y-4">
-        <button onClick={() => setDetail(null)} className="text-sm text-brand-600 hover:underline">← 返回列表</button>
-        <div className="bg-white rounded-lg shadow p-6">
-          <h3 className="text-lg font-semibold mb-4">选股漏斗 · {detail.run_date}</h3>
-          <div className="flex items-center gap-4 text-sm">
-            <div className="text-center"><p className="text-2xl font-bold text-brand-600">{detail.candidates_count}</p><p className="text-gray-400">候选</p></div>
-            <span className="text-gray-300 text-xl">→</span>
-            <div className="text-center"><p className="text-2xl font-bold text-brand-600">{detail.filtered_count}</p><p className="text-gray-400">筛选</p></div>
-            <span className="text-gray-300 text-xl">→</span>
-            <div className="text-center"><p className="text-2xl font-bold text-red-500">{rec.companies?.length || 0}</p><p className="text-gray-400">推荐</p></div>
-          </div>
-        </div>
+      <div className="panel-stack">
+        <button className="btn-text" style={{ alignSelf: 'start' }} onClick={() => setDetail(null)}>← 返回列表</button>
+        <section className="card">
+          <h2 className="card-title">选股漏斗 · {detail.run_date}</h2>
+          <Funnel candidates={detail.candidates_count} filtered={detail.filtered_count} recommended={rec.companies?.length || 0} />
+        </section>
         {rec.companies && (
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-3">精选推荐</h3>
-            <div className="overflow-x-auto -mx-3 sm:mx-0">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50"><tr>
-                <th className="px-3 py-2 text-left">股票</th><th className="px-3 py-2 text-left">买入区间</th>
-                <th className="px-3 py-2 text-left">卖出区间</th><th className="px-3 py-2 text-left">置信度</th>
-                <th className="px-3 py-2 text-left">仓位</th><th className="px-3 py-2 text-left">逻辑</th>
-              </tr></thead>
-              <tbody>
-                {rec.companies.map((c: any, i: number) => (
-                  <tr key={i} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-medium">{c.name} <span className="text-gray-400 font-mono">{c.code}</span></td>
-                    <td className="px-3 py-2">{c.buy_range}</td><td className="px-3 py-2">{c.sell_range}</td>
-                    <td className="px-3 py-2">{c.confidence}%</td><td className="px-3 py-2">{c.position}</td>
-                    <td className="px-3 py-2 text-gray-600">{c.logic}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </div>
-          </div>
+          <section className="card card-accent">
+            <h2 className="card-title">精选推荐</h2>
+            <RecommendTable rec={rec} />
+          </section>
         )}
       </div>
     )
   }
 
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
-      {loading ? <p className="p-8 text-center text-gray-400">加载中...</p> :
-       items.length === 0 ? <p className="p-8 text-center text-gray-400">暂无选股记录</p> :
-       <div className="overflow-x-auto -mx-3 sm:mx-0">
-       <table className="w-full text-sm">
-         <thead className="bg-gray-50"><tr>
-           <th className="px-4 py-2 text-left">选股日期</th><th className="px-4 py-2 text-left">候选数</th>
-           <th className="px-4 py-2 text-left">筛选数</th><th className="px-4 py-2 text-left">操作</th>
-         </tr></thead>
-         <tbody>
-           {items.map((item) => (
-             <tr key={item.id} className="border-t border-gray-100 hover:bg-gray-50">
-               <td className="px-4 py-2">{item.run_date}</td>
-               <td className="px-4 py-2">{item.candidates_count}</td>
-               <td className="px-4 py-2">{item.filtered_count}</td>
-               <td className="px-4 py-2"><button onClick={() => viewDetail(item.id)} className="text-brand-600 hover:underline">查看详情</button></td>
-             </tr>
-           ))}
-         </tbody>
-       </table></div>}
-    </div>
+    <section className="card" style={{ padding: 0 }}>
+      {loading ? (
+        <div className="empty" style={{ margin: 24 }}>加载中...</div>
+      ) : items.length === 0 ? (
+        <div className="empty" style={{ margin: 24 }}>暂无选股记录</div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr><th>选股日期</th><th className="num">候选数</th><th className="num">筛选数</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.run_date}</td>
+                  <td className="num mono">{item.candidates_count}</td>
+                  <td className="num mono">{item.filtered_count}</td>
+                  <td><button className="btn-text" onClick={() => viewDetail(item.id)}>查看详情</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   )
 }

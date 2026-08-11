@@ -197,5 +197,13 @@
 - `[x]` test_admin.py 16 例，全量 136 测试全绿 + Playwright E2E（含非管理员拦截）验证
 
 ---
-> 最后更新：2026-08-10
-> 当前阶段：功能补全 a-g 全部完成 ✅；部署文档与共存配置已就绪（DEPLOY.md），待用户在服务器执行部署
+## Open Design 全站换肤（Zapier 风设计稿）✅
+- `[x]` 设计源 app.css 落地 frontend/src/styles/app.css（cream 底/深侧栏/橙强调/边框优先无阴影/A股红涨绿跌）
+- `[x]` 13 个页面全部重写适配新设计体系，tsc 零报错、npm run build 通过
+- `[x]` 顺带修复 Sector 页数据映射 bug（接口返回 bull_sectors/bear_sectors/neutral_sectors/operation_advice 顶层字段，旧代码读 report.decision.* 恒为空）
+- `[x]` 移除 echarts 依赖、删除 Placeholder.tsx
+- `[x]` Playwright 全站截图验证：13 路由桌面 1440px + 5 路由移动 390px 全部正常，无控制台报错
+
+---
+> 最后更新：2026-08-11
+> 当前阶段：M0-M7、功能补全 a-g、全站换肤全部完成 ✅；部署文档已就绪（DEPLOY.md），待用户在服务器执行部署

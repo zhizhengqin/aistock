@@ -1,11 +1,3 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-}
-/* 红涨绿跌 — A股习惯 */
-text-up { color: #ef4444; }
-text-down { color: #22c55e; }

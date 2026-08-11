@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import ReactECharts from 'echarts-for-react'
 import client from '../api/client'
 
 const CATEGORIES = ['银行金融', '科技互联网', '新能源', '大消费', '高端制造', '周期资源']
@@ -25,6 +24,17 @@ interface SectorData {
   sectors: { name: string; price: number; change_pct: number }[]
   stocks: StockItem[]
   updated_at: string
+}
+
+const fmtPct = (v: number) => (v >= 0 ? '+' : '\u2212') + Math.abs(v).toFixed(2) + '%'
+const cls = (v: number) => (v >= 0 ? 'up' : 'down')
+
+/* 热力图色深：幅度越大色越深（红涨 hue 27 / 绿跌 hue 155） */
+function heatColor(pct: number): string {
+  const m = Math.min(Math.abs(pct) / 3, 1)
+  const L = 0.7 - 0.14 * m
+  const C = 0.08 + 0.11 * m
+  return `oklch(${L.toFixed(2)} ${C.toFixed(2)} ${pct >= 0 ? 27 : 155})`
 }
 
 export default function Home() {
@@ -64,151 +74,96 @@ export default function Home() {
     fetchSector()
   }, [category, period])
 
-  const klineOption = {
-    title: { text: sectorData ? `${sectorData.category}板块走势` : '板块走势', left: 'center', textStyle: { fontSize: 14 } },
-    tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: sectorData?.sectors.map((s) => s.name) || [] },
-    yAxis: { type: 'value', name: '涨跌幅 %' },
-    series: [{
-      type: 'bar',
-      data: sectorData?.sectors.map((s) => s.change_pct) || [],
-      itemStyle: {
-        color: (p: any) => (p.value >= 0 ? '#ef4444' : '#22c55e'),
-      },
-    }],
-    grid: { left: '10%', right: '10%', bottom: '10%', top: '15%' },
-  }
-
-  const heatData = indices.map((idx, i) => ({
-    name: idx.name,
-    value: [i, 0, idx.change_pct],
-  }))
-  const heatmapOption = {
-    title: { text: '大盘指数热力图', left: 'center', textStyle: { fontSize: 14 } },
-    tooltip: {
-      formatter: (p: any) => {
-        const d = indices[p.dataIndex]
-        return d ? `${d.name}: ${d.price} (${d.change_pct >= 0 ? '+' : ''}${d.change_pct}%)` : ''
-      },
-    },
-    grid: { left: '5%', right: '5%', top: '15%', bottom: '15%' },
-    xAxis: { type: 'category', data: indices.map((d) => d.name), axisLabel: { fontSize: 11 }, splitArea: { show: false } },
-    yAxis: { type: 'category', data: ['涨跌幅'], axisLabel: { show: false }, splitArea: { show: false } },
-    visualMap: {
-      min: -3,
-      max: 3,
-      show: false,
-      inRange: { color: ['#22c55e', '#f0f0f0', '#ef4444'] },
-    },
-    series: [{
-      name: '指数涨跌',
-      type: 'heatmap',
-      data: heatData,
-      label: {
-        show: true,
-        formatter: (p: any) => {
-          const d = indices[p.dataIndex]
-          return d ? `${d.change_pct >= 0 ? '+' : ''}${d.change_pct}%` : ''
-        },
-      },
-    }],
-  }
-
-  const fmtPct = (v: number) => (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
-  const color = (v: number) => (v >= 0 ? 'text-red-500' : 'text-green-500')
+  const sectors = sectorData?.sectors || []
+  const maxAbs = Math.max(...sectors.map((s) => Math.abs(s.change_pct)), 0.01)
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-5 gap-4">
-        {indices.map((idx) => (
-          <div key={idx.code} className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm text-gray-500">{idx.name}</p>
-            <p className={`text-xl font-bold ${color(idx.change_pct)}`}>
-              {idx.price.toFixed(2)}
-            </p>
-            <p className={`text-sm ${color(idx.change_pct)}`}>{fmtPct(idx.change_pct)}</p>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-gray-400">
-          数据更新于 {updatedTime || '加载中...'}
-        </span>
-        <button
-          onClick={() => { fetchIndices(); fetchSector() }}
-          className="text-sm text-brand-600 hover:underline"
-        >
-          刷新
-        </button>
-      </div>
-
-      <div className="bg-white rounded-lg shadow p-6">
-        <div className="flex gap-2 mb-4 flex-wrap">
-          {CATEGORIES.map((c) => (
-            <button
-              key={c}
-              onClick={() => setCategory(c)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                category === c ? 'bg-brand-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              {c}
-            </button>
-          ))}
+    <>
+      {/* 大盘指数 */}
+      <section>
+        <div className="between wrap" style={{ marginBottom: 16 }}>
+          <span className="section-label" style={{ margin: 0 }}>大盘指数</span>
+          <span className="caption">
+            数据更新于 {updatedTime || '加载中...'} · 每分钟自动刷新{' '}
+            <button className="btn-text" style={{ fontSize: 12 }} onClick={() => { fetchIndices(); fetchSector() }}>刷新</button>
+          </span>
         </div>
+        <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))' }}>
+          {indices.map((idx) => (
+            <div className="kpi" key={idx.code}>
+              <div className="k-label">{idx.name}</div>
+              <div className="k-value mono">{idx.price.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</div>
+              <div className={`k-sub mono ${cls(idx.change_pct)}`}>{fmtPct(idx.change_pct)}</div>
+            </div>
+          ))}
+          {indices.length === 0 && <div className="empty" style={{ gridColumn: '1/-1' }}>指数数据加载中...</div>}
+        </div>
+      </section>
 
-        <div className="flex gap-2 mb-4 flex-wrap">
+      {/* 板块走势 */}
+      <section className="card">
+        <div className="between wrap">
+          <h2 className="card-title" style={{ margin: 0 }}>板块走势</h2>
+          <div className="flex wrap" style={{ gap: 8 }}>
+            {CATEGORIES.map((c) => (
+              <button key={c} className={`pill${category === c ? ' active' : ''}`} onClick={() => setCategory(c)}>{c}</button>
+            ))}
+          </div>
+        </div>
+        <div className="flex mt16" style={{ gap: 8 }}>
           {PERIODS.map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1 rounded-md text-xs transition-colors ${
-                period === p ? 'bg-brand-100 text-brand-700' : 'text-gray-500 hover:bg-gray-100'
-              }`}
-            >
-              {p}
-            </button>
+            <button key={p} className={`pill${period === p ? ' active' : ''}`} onClick={() => setPeriod(p)}>{p}</button>
           ))}
         </div>
-
-        {sectorData && sectorData.sectors.length > 0 ? (
-          <ReactECharts option={klineOption} style={{ height: '300px' }} showLoading={loading} />
-        ) : (
-          <div className="flex items-center justify-center h-[300px] text-gray-400">
-            {loading ? '加载中...' : '暂无板块数据'}
+        {sectors.length > 0 ? (
+          <div className="bars mt16">
+            {sectors.map((s) => (
+              <div className="bar-col" key={s.name}>
+                <span className={`bar-val ${cls(s.change_pct)}`}>{fmtPct(s.change_pct)}</span>
+                <div className={`bar-fill ${cls(s.change_pct)}`} style={{ height: `${Math.max(6, Math.round((Math.abs(s.change_pct) / maxAbs) * 75))}%` }}></div>
+                <span className="bar-label">{s.name}</span>
+              </div>
+            ))}
           </div>
+        ) : (
+          <div className="empty mt16">{loading ? '加载中...' : '暂无板块数据'}</div>
         )}
-      </div>
+        <p className="caption mt16">{sectorData ? `${sectorData.category}板块走势 · 近${sectorData.period}涨跌幅 %` : '板块走势'}</p>
+      </section>
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <h3 className="text-lg font-semibold text-gray-800 mb-4">代表个股</h3>
-        <div className="grid grid-cols-5 gap-3">
+      {/* 代表个股 */}
+      <section className="card">
+        <h2 className="card-title">代表个股</h2>
+        <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))' }}>
           {(sectorData?.stocks || []).map((s) => (
-            <div key={s.code} className="border border-gray-200 rounded-lg p-3 hover:shadow-md transition-shadow">
-              <p className="text-sm font-medium text-gray-700">{s.name}</p>
-              <p className="text-xs text-gray-400">{s.code}</p>
-              <p className={`text-lg font-bold ${color(s.change_pct)}`}>
-                {s.price.toFixed(2)}
-              </p>
-              <p className={`text-sm ${color(s.change_pct)}`}>{fmtPct(s.change_pct)}</p>
+            <div className="kpi" key={s.code}>
+              <div className="k-label">{s.name} <span className="muted mono">{s.code}</span></div>
+              <div className="k-value mono" style={{ fontSize: 24 }}>{s.price.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</div>
+              <div className={`k-sub mono ${cls(s.change_pct)}`}>{fmtPct(s.change_pct)}</div>
             </div>
           ))}
           {(!sectorData?.stocks || sectorData.stocks.length === 0) && (
-            <p className="col-span-5 text-center text-gray-400 py-8">暂无数据</p>
+            <div className="empty" style={{ gridColumn: '1/-1' }}>暂无数据</div>
           )}
         </div>
-      </div>
+      </section>
 
-      <div className="bg-white rounded-lg shadow p-6">
+      {/* 指数热力图 */}
+      <section className="card">
+        <h2 className="card-title">大盘指数热力图</h2>
         {indices.length > 0 ? (
-          <ReactECharts option={heatmapOption} style={{ height: '120px' }} />
-        ) : (
-          <div className="flex items-center justify-center h-[120px] text-gray-400 text-sm">
-            指数数据加载中...
+          <div className="heatmap" style={{ gridTemplateColumns: `repeat(${Math.min(indices.length, 5)},1fr)` }}>
+            {indices.map((idx) => (
+              <div className="heat-cell" key={idx.code} style={{ background: heatColor(idx.change_pct) }}>
+                {idx.name}<br />{fmtPct(idx.change_pct)}
+              </div>
+            ))}
           </div>
+        ) : (
+          <div className="empty">指数数据加载中...</div>
         )}
-      </div>
-    </div>
+        <p className="caption mt8">指数涨跌 · 红涨绿跌，色深代表幅度</p>
+      </section>
+    </>
   )
 }

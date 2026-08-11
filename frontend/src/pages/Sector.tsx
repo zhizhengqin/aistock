@@ -20,33 +20,25 @@ interface TaskStatus {
 
 interface ReportData {
   agents: Record<string, any>
-  decision: {
-    bull_sectors: { name: string; confidence: number; logic: string; risk: string }[]
-    bear_sectors: { name: string; confidence: number; logic: string; risk: string }[]
-    neutral_sectors: { name: string; confidence: number; logic: string; risk: string }[]
-    operation_advice: string
-    risk_triggers: string
-    key_indicators: string[]
-  }
+  bull_sectors: { name: string; confidence: number; logic: string; risk?: string }[]
+  bear_sectors: { name: string; confidence: number; logic: string; risk?: string }[]
+  neutral_sectors: { name: string; confidence: number; logic: string; risk?: string }[]
+  operation_advice: string
+  risk_triggers?: string
+  key_indicators?: string[]
   report_date: string
-  market_snapshot: any
 }
 
 export default function Sector() {
   const [tab, setTab] = useState<Tab>('analysis')
   return (
-    <div className="space-y-6">
-      <div className="flex gap-2 border-b border-gray-200">
-        {(['analysis', 'history'] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t ? 'border-brand-600 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {t === 'analysis' ? '板块分析' : '分析历史'}
-          </button>
-        ))}
+    <>
+      <div className="tabs">
+        <button className={`tab${tab === 'analysis' ? ' active' : ''}`} onClick={() => setTab('analysis')}>板块分析</button>
+        <button className={`tab${tab === 'history' ? ' active' : ''}`} onClick={() => setTab('history')}>分析历史</button>
       </div>
-      {tab === 'analysis' && <AnalysisView />}
-      {tab === 'history' && <HistoryView />}
-    </div>
+      {tab === 'analysis' ? <AnalysisView /> : <HistoryView />}
+    </>
   )
 }
 
@@ -86,7 +78,6 @@ function AnalysisView() {
     }
   }
 
-  // Load latest report on mount
   useEffect(() => {
     ;(async () => {
       try {
@@ -96,103 +87,102 @@ function AnalysisView() {
     })()
   }, [])
 
-  const d: any = report?.decision || {}
-
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-4">
-        <p className="text-sm text-gray-500">4 位 AI 智能体协同分析行业板块多空趋势</p>
-        <button onClick={submit} disabled={loading}
-          className="px-6 py-2 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 disabled:opacity-50">
-          {loading ? '分析中...' : '开始分析'}
-        </button>
-      </div>
-
-      {error && <p className="text-sm text-red-500">{error}</p>}
-
-      {loading && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <p className="text-sm text-gray-600 mb-2">进度: {progress}% ({status})</p>
-          <div className="w-full bg-gray-200 rounded-full h-2">
-            <div className="bg-brand-600 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />
-          </div>
+    <div className="panel-stack">
+      <section className="card">
+        <div className="between wrap">
+          <p className="fg2" style={{ margin: 0 }}>4 位 AI 智能体协同分析行业板块多空趋势</p>
+          <button className="btn btn-primary" onClick={submit} disabled={loading}>
+            {loading ? '分析中...' : '开始分析'}
+          </button>
         </div>
-      )}
+        {error && <p className="small up mt8" style={{ margin: 0 }}>{error}</p>}
+        {loading && (
+          <div className="mt16">
+            <p className="small fg2">进度: <span className="mono">{progress}%</span>（{status}）</p>
+            <div className="progress mt8"><i style={{ width: `${progress}%` }} /></div>
+          </div>
+        )}
+      </section>
 
       {report && (
         <>
-          {/* 4 Agent cards */}
-          <div className="space-y-3">
-            <h3 className="text-lg font-semibold">4 位 AI 智能体报告</h3>
-            {Object.entries(report.agents || {}).map(([key, data]: [string, any]) => (
-              <div key={key} className="bg-white rounded-lg shadow p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium">{AGENT_LABELS[key] || key}</span>
-                  {data?.score != null && <span className="text-sm text-brand-600">评分: {data.score}</span>}
+          <section className="card">
+            <h2 className="card-title">AI 智能体</h2>
+            <div className="mini-grid">
+              {Object.entries(report.agents || {}).map(([key, data]: [string, any]) => (
+                <div className="mini-card" key={key}>
+                  <div className="between">
+                    <h3>{AGENT_LABELS[key] || key}</h3>
+                    {data?.score != null && <span className="fg2 small">评分: <span className="mono">{data.score}</span></span>}
+                  </div>
+                  <div className="small fg2 mt8">
+                    {data?.report && <p style={{ margin: 0 }}>{data.report}</p>}
+                    {data?.assessment && <p style={{ margin: 0 }}>{data.assessment}</p>}
+                    {data?.sectors && data.sectors.map((s: any, i: number) => (
+                      <p key={i} style={{ margin: 0 }}>{s.name}: {s.health} / {s.trend}</p>
+                    ))}
+                    {data?.inflow_sectors && <p style={{ margin: 0 }}>资金流入: {data.inflow_sectors.join(', ')}</p>}
+                    {data?.outflow_sectors && <p style={{ margin: 0 }}>资金流出: {data.outflow_sectors.join(', ')}</p>}
+                    {data?.error && <p className="up" style={{ margin: 0 }}>分析失败: {data.error}</p>}
+                  </div>
+                  <details className="mt8">
+                    <summary className="small" style={{ cursor: 'pointer', color: 'var(--accent)' }}>展开完整报告</summary>
+                    <pre className="caption mt8" style={{ overflowX: 'auto', background: 'var(--surface)', padding: 12, borderRadius: 4 }}>{JSON.stringify(data, null, 2)}</pre>
+                  </details>
                 </div>
-                <div className="text-sm text-gray-600 space-y-1">
-                  {data?.report && <p>{data.report}</p>}
-                  {data?.assessment && <p>{data.assessment}</p>}
-                  {data?.sectors && data.sectors.map((s: any, i: number) => (
-                    <p key={i}>{s.name}: {s.health} / {s.trend}</p>
-                  ))}
-                  {data?.inflow_sectors && <p>资金流入: {data.inflow_sectors.join(', ')}</p>}
-                  {data?.outflow_sectors && <p>资金流出: {data.outflow_sectors.join(', ')}</p>}
-                  {data?.error && <p className="text-red-400">分析失败: {data.error}</p>}
-                </div>
-                <details className="mt-2">
-                  <summary className="text-xs text-brand-600 cursor-pointer">展开完整报告</summary>
-                  <pre className="mt-2 text-xs text-gray-500 overflow-x-auto bg-gray-50 p-3 rounded">{JSON.stringify(data, null, 2)}</pre>
-                </details>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </section>
 
-          {/* Multi-direction prediction */}
-          <div className="bg-white rounded-lg shadow p-6 border-l-4 border-brand-500">
-            <h3 className="text-lg font-semibold mb-4">板块多空预测 · {report.report_date}</h3>
-            <div className="grid grid-cols-3 gap-4">
-              <BullCard sectors={d.bull_sectors} label="看多" color="red" />
-              <NeutralCard sectors={d.neutral_sectors} label="中性" color="gray" />
-              <BearCard sectors={d.bear_sectors} label="看空" color="green" />
+          <section className="card card-accent">
+            <h2 className="card-title">板块多空预测 · {report.report_date}</h2>
+            <div className="grid3">
+              <SectorCol sectors={report.bull_sectors} label="看多" badgeCls="badge up" />
+              <SectorCol sectors={report.neutral_sectors} label="中性" badgeCls="badge" />
+              <SectorCol sectors={report.bear_sectors} label="看空" badgeCls="badge down" />
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-              <div><span className="text-gray-400">操作节奏建议</span><p className="mt-1">{d.operation_advice}</p></div>
-              <div><span className="text-gray-400">风险触发条件</span><p className="mt-1 text-red-500">{d.risk_triggers}</p></div>
+
+            <div className="grid2 mt24">
+              <div className="kpi">
+                <div className="k-label">操作节奏建议</div>
+                <p className="small fg2" style={{ margin: 0 }}>{report.operation_advice || '暂无'}</p>
+              </div>
+              <div className="kpi">
+                <div className="k-label up">风险触发条件</div>
+                <p className="small fg2" style={{ margin: 0 }}>{report.risk_triggers || '暂无'}</p>
+              </div>
             </div>
-            {d.key_indicators && d.key_indicators.length > 0 && (
-              <div className="mt-3">
-                <span className="text-gray-400 text-sm">核心跟踪指标:</span>
-                <ul className="mt-1 text-sm text-gray-600 list-disc list-inside">
-                  {d.key_indicators.map((k: string, i: number) => <li key={i}>{k}</li>)}
+
+            {report.key_indicators && report.key_indicators.length > 0 && (
+              <div className="mt16">
+                <span className="section-label">核心跟踪指标:</span>
+                <ul className="track-list">
+                  {report.key_indicators.map((k: string, i: number) => <li key={i}>{k}</li>)}
                 </ul>
               </div>
             )}
-          </div>
+            <p className="caption mt16">本预测由 AI 生成，仅供研究参考，不构成投资建议</p>
+          </section>
         </>
       )}
     </div>
   )
 }
 
-function BullCard({ sectors, label, color }: { sectors: any[]; label: string; color: string }) {
-  const textCls = { red: 'text-red-600', green: 'text-green-600', gray: 'text-gray-600' }[color]
-  const bgCls = { red: 'bg-red-50', green: 'bg-green-50', gray: 'bg-gray-50' }[color]
+function SectorCol({ sectors, label, badgeCls }: { sectors?: any[]; label: string; badgeCls: string }) {
   return (
-    <div className={`rounded-lg p-4 ${bgCls}`}>
-      <p className={`font-medium mb-2 ${textCls}`}>{label}板块</p>
-      {sectors?.map((s, i) => (
-        <div key={i} className="mb-2 text-sm">
-          <span className="font-medium">{s.name}</span> <span className="text-xs text-gray-400">置信度 {s.confidence}/10</span>
-          <p className="text-gray-600">{s.logic}</p>
+    <div className="sector-col">
+      <span className={badgeCls}>{label}</span>
+      {sectors && sectors.length > 0 ? sectors.map((s, i) => (
+        <div className="sector-item" key={i}>
+          <div className="between"><strong>{s.name}</strong><span className="mono small fg2">置信度 {s.confidence}/10</span></div>
+          <p className="caption mt8">{s.logic}</p>
         </div>
-      )) || <p className="text-sm text-gray-400">暂无</p>}
+      )) : <p className="small muted">暂无</p>}
     </div>
   )
 }
-
-const NeutralCard = BullCard
-const BearCard = BullCard
 
 function HistoryView() {
   const [items, setItems] = useState<any[]>([])
@@ -208,20 +198,20 @@ function HistoryView() {
   }, [])
 
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
-      {loading ? <p className="p-8 text-center text-gray-400">加载中...</p> :
-       items.length === 0 ? <p className="p-8 text-center text-gray-400">暂无板块分析历史</p> :
-       <div className="overflow-x-auto -mx-3 sm:mx-0">
-       <table className="w-full text-sm">
-         <thead className="bg-gray-50"><tr><th className="px-4 py-2 text-left">报告日期</th></tr></thead>
-         <tbody>
-           {items.map((item) => (
-             <tr key={item.id} className="border-t border-gray-100 hover:bg-gray-50">
-               <td className="px-4 py-2">{item.report_date}</td>
-             </tr>
-           ))}
-         </tbody>
-       </table></div>}
-    </div>
+    <section className="card">
+      <h2 className="card-title-sm">分析历史</h2>
+      {loading ? <div className="empty">加载中...</div> :
+       items.length === 0 ? <div className="empty">暂无板块分析历史</div> : (
+        <table className="table">
+          <thead><tr><th>报告日期</th></tr></thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id}><td className="mono">{item.report_date}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="caption mt16">每周一收盘后生成一次板块多空预测报告</p>
+    </section>
   )
 }

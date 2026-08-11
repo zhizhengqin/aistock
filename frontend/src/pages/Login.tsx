@@ -88,100 +88,110 @@ export default function Login() {
   ]
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-100 to-blue-50">
-      <div className="w-full max-w-md bg-white rounded-lg shadow-lg p-8">
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold text-gray-800">睿见投研</h1>
-          <p className="text-sm text-gray-500 mt-1">AI 辅助 A 股投研系统</p>
+    <div className="auth-wrap">
+      <div>
+        <div className="auth-brand">
+          <div className="name">睿见投研</div>
+          <div className="sub">AI 辅助 A 股投研系统</div>
         </div>
 
-        <div className="flex gap-2 mb-6 border-b border-gray-200">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`flex-1 pb-2 text-sm font-medium transition-colors ${
-                tab === t.key
-                  ? 'text-brand-600 border-b-2 border-brand-600'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <div className="card featured auth-card">
+          <div className="tabs">
+            {tabs.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`tab${tab === t.key ? ' active' : ''}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
 
-        <div className="space-y-4">
-          {tab === 'login' && (
-            <input
-              type="text"
-              placeholder="邮箱或用户名"
-              value={form.account}
-              onChange={(e) => update('account', e.target.value)}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:border-brand-500"
-            />
-          )}
-
-          {tab === 'register' && (
-            <input
-              type="text"
-              placeholder="用户名"
-              value={form.username}
-              onChange={(e) => update('username', e.target.value)}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:border-brand-500"
-            />
-          )}
-
-          {(tab === 'register' || tab === 'forgot') && (
-            <>
-              <input
-                type="email"
-                placeholder="邮箱"
-                value={form.email}
-                onChange={(e) => update('email', e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:border-brand-500"
-              />
-              <div className="flex gap-2">
+          <div className="mt24">
+            {tab === 'login' && (
+              <div className="field">
+                <label>邮箱或用户名</label>
                 <input
+                  className="input"
                   type="text"
-                  placeholder="验证码"
-                  value={form.code}
-                  onChange={(e) => update('code', e.target.value)}
-                  className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:border-brand-500"
+                  placeholder="邮箱或用户名"
+                  value={form.account}
+                  onChange={(e) => update('account', e.target.value)}
                 />
-                <button
-                  onClick={sendCode}
-                  disabled={countdown > 0}
-                  className="px-4 py-2.5 text-sm text-brand-600 border border-brand-500 rounded-lg disabled:text-gray-400 disabled:border-gray-300"
-                >
-                  {countdown > 0 ? `${countdown}s` : '获取验证码'}
-                </button>
               </div>
-            </>
-          )}
+            )}
 
-          <input
-            type="password"
-            placeholder={tab === 'forgot' ? '新密码' : '密码'}
-            value={form.password}
-            onChange={(e) => update('password', e.target.value)}
-            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:border-brand-500"
-          />
+            {tab === 'register' && (
+              <div className="field">
+                <label>用户名</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="用户名"
+                  value={form.username}
+                  onChange={(e) => update('username', e.target.value)}
+                />
+              </div>
+            )}
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
+            {(tab === 'register' || tab === 'forgot') && (
+              <>
+                <div className="field mt16">
+                  <label>邮箱</label>
+                  <input
+                    className="input"
+                    type="email"
+                    placeholder="邮箱"
+                    value={form.email}
+                    onChange={(e) => update('email', e.target.value)}
+                  />
+                </div>
+                <div className="field mt16">
+                  <label>验证码</label>
+                  <div className="flex" style={{ flexWrap: 'nowrap' }}>
+                    <input
+                      className="input"
+                      style={{ flex: 1 }}
+                      type="text"
+                      placeholder="验证码"
+                      value={form.code}
+                      onChange={(e) => update('code', e.target.value)}
+                    />
+                    <button className="btn btn-ghost" type="button" onClick={sendCode} disabled={countdown > 0}>
+                      {countdown > 0 ? `${countdown}s` : '获取验证码'}
+                    </button>
+                  </div>
+                  {tab === 'register' && <span className="caption">新用户注册即赠 C 档会员 3 天免费试用</span>}
+                </div>
+              </>
+            )}
 
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            className="w-full py-2.5 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 disabled:opacity-50"
-          >
-            {loading ? '处理中...' : tab === 'login' ? '登录' : tab === 'register' ? '注册' : '重置密码'}
-          </button>
+            <div className="field mt16">
+              <label>{tab === 'forgot' ? '新密码' : '密码'}</label>
+              <input
+                className="input"
+                type="password"
+                placeholder={tab === 'forgot' ? '新密码' : '密码'}
+                value={form.password}
+                onChange={(e) => update('password', e.target.value)}
+              />
+            </div>
+
+            {error && <p className="small mt16" style={{ color: 'var(--up)' }}>{error}</p>}
+
+            <button
+              className="btn btn-primary mt24"
+              style={{ width: '100%' }}
+              onClick={handleSubmit}
+              disabled={loading}
+            >
+              {loading ? '处理中...' : tab === 'login' ? '登录' : tab === 'register' ? '注册' : '重置密码'}
+            </button>
+          </div>
         </div>
 
-        <p className="mt-6 text-xs text-gray-400 text-center">
-          本系统提供的数据分析仅供参考，不构成投资建议
-        </p>
+        <p className="auth-disclaimer">本系统提供的数据分析仅供参考，不构成投资建议</p>
       </div>
     </div>
   )

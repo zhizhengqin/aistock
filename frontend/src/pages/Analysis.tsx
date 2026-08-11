@@ -37,22 +37,19 @@ interface ReportData {
   analyzed_at: string
 }
 
-const RATING_COLORS: Record<string, string> = {
-  '买入': 'text-red-600 bg-red-50',
-  '持有': 'text-yellow-600 bg-yellow-50',
-  '卖出': 'text-green-600 bg-green-50',
+const RATING_BADGE: Record<string, string> = {
+  '买入': 'badge up',
+  '持有': 'badge hold',
+  '卖出': 'badge down',
 }
 
 export default function Analysis() {
   const [tab, setTab] = useState<Tab>('single')
   return (
-    <div className="space-y-6">
-      <div className="flex gap-2 border-b border-gray-200">
+    <>
+      <div className="tabs">
         {(['single', 'batch', 'history'] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === t ? 'border-brand-600 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}>
+          <button key={t} onClick={() => setTab(t)} className={`tab${tab === t ? ' active' : ''}`}>
             {t === 'single' ? '单股分析' : t === 'batch' ? '批量分析' : '历史记录'}
           </button>
         ))}
@@ -60,7 +57,7 @@ export default function Analysis() {
       {tab === 'single' && <SingleAnalysis />}
       {tab === 'batch' && <BatchAnalysis />}
       {tab === 'history' && <HistoryView />}
-    </div>
+    </>
   )
 }
 
@@ -116,26 +113,27 @@ function SingleAnalysis() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex gap-3">
-        <input value={code} onChange={(e) => setCode(e.target.value)}
-          placeholder="输入股票代码，如 600519"
-          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-brand-500" />
-        <button onClick={submit} disabled={loading}
-          className="px-6 py-2 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 disabled:opacity-50">
-          {loading ? '分析中...' : '开始分析'}
-        </button>
-      </div>
+    <div className="panel-stack">
+      <section className="card">
+        <div className="flex wrap">
+          <input className="input" style={{ flex: 1, minWidth: 240 }} value={code}
+            onChange={(e) => setCode(e.target.value)} placeholder="输入股票代码，如 600519" />
+          <button className="btn btn-primary" onClick={submit} disabled={loading}>
+            {loading ? '分析中...' : '开始分析'}
+          </button>
+        </div>
+        <p className="caption mt8">支持沪深 A 股 6 位代码 · 5 位 AI 分析师协同生成完整投研报告</p>
+      </section>
 
-      {error && <p className="text-sm text-red-500">{error}</p>}
+      {error && <p className="small" style={{ color: 'var(--up)' }}>{error}</p>}
 
       {loading && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <p className="text-sm text-gray-600 mb-2">分析进度: {progress}% ({status})</p>
-          <div className="w-full bg-gray-200 rounded-full h-2">
-            <div className="bg-brand-600 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />
+        <section className="card">
+          <div className="between wrap">
+            <span className="fg2 small">分析进度: <span className="mono">{progress}%</span>（{status}）</span>
           </div>
-        </div>
+          <div className="progress mt8"><i style={{ width: `${progress}%` }}></i></div>
+        </section>
       )}
 
       {report && <ReportView report={report} />}
@@ -159,7 +157,6 @@ function BatchAnalysis() {
     try {
       const resp = await client.post('/stocks/analyze', { stock_codes: codes })
       const tasks: TaskInfo[] = resp.data.data.tasks
-      // poll all tasks
       const pollAll = async () => {
         const updated = [...results]
         for (let i = 0; i < tasks.length; i++) {
@@ -191,41 +188,41 @@ function BatchAnalysis() {
   }
 
   return (
-    <div className="space-y-4">
-      <textarea value={codesText} onChange={(e) => setCodesText(e.target.value)}
-        placeholder="输入股票代码，逗号或换行分隔，最多50只&#10;例如: 600519,000858,002714"
-        rows={5}
-        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-brand-500 font-mono text-sm" />
-      <button onClick={submit} disabled={loading}
-        className="px-6 py-2 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 disabled:opacity-50">
-        {loading ? '批量分析中...' : '开始批量分析'}
-      </button>
-      {error && <p className="text-sm text-red-500">{error}</p>}
-      {results.length > 0 && (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          <div className="overflow-x-auto -mx-3 sm:mx-0">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-2 text-left">股票代码</th>
-                <th className="px-4 py-2 text-left">状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {results.map((r, i) => (
-                <tr key={i} className="border-t border-gray-100">
-                  <td className="px-4 py-2 font-mono">{r.code}</td>
-                  <td className="px-4 py-2">
-                    {r.status === 'success' && <span className="text-green-600">完成</span>}
-                    {r.status === 'failed' && <span className="text-red-500">失败</span>}
-                    {r.status === 'pending' && <span className="text-gray-400">等待中...</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
+    <div className="panel-stack">
+      <section className="card">
+        <div className="field">
+          <label>股票代码列表</label>
+          <textarea className="textarea mono" value={codesText} onChange={(e) => setCodesText(e.target.value)}
+            placeholder="输入股票代码，逗号或换行分隔，最多50只&#10;例如: 600519,000858,002714" rows={5} />
         </div>
+        <button className="btn btn-primary mt16" onClick={submit} disabled={loading}>
+          {loading ? '批量分析中...' : '开始批量分析'}
+        </button>
+        {error && <p className="small mt8" style={{ color: 'var(--up)' }}>{error}</p>}
+      </section>
+
+      {results.length > 0 && (
+        <section className="card" style={{ padding: 0 }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="table">
+              <thead>
+                <tr><th>股票代码</th><th>状态</th></tr>
+              </thead>
+              <tbody>
+                {results.map((r, i) => (
+                  <tr key={i}>
+                    <td className="mono">{r.code}</td>
+                    <td>
+                      {r.status === 'success' && <span className="badge down">完成</span>}
+                      {r.status === 'failed' && <span className="badge up">失败</span>}
+                      {r.status === 'pending' && <span className="badge">等待中...</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   )
@@ -251,44 +248,32 @@ function HistoryView() {
   if (selected) return <ReportView report={selected} onBack={() => setSelected(null)} />
 
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
+    <section className="card" style={{ padding: 0 }}>
       {loading ? (
-        <p className="p-8 text-center text-gray-400">加载中...</p>
+        <div className="empty" style={{ margin: 24 }}>加载中...</div>
       ) : items.length === 0 ? (
-        <p className="p-8 text-center text-gray-400">暂无分析记录</p>
+        <div className="empty" style={{ margin: 24 }}>暂无分析记录</div>
       ) : (
-        <div className="overflow-x-auto -mx-3 sm:mx-0">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-2 text-left">股票</th>
-              <th className="px-4 py-2 text-left">评级</th>
-              <th className="px-4 py-2 text-left">置信度</th>
-              <th className="px-4 py-2 text-left">分析日期</th>
-              <th className="px-4 py-2 text-left">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.id} className="border-t border-gray-100 hover:bg-gray-50">
-                <td className="px-4 py-2">{item.stock_name} <span className="text-gray-400 font-mono">{item.stock_code}</span></td>
-                <td className="px-4 py-2">
-                  <span className={`px-2 py-0.5 rounded text-xs ${RATING_COLORS[item.rating] || 'text-gray-500 bg-gray-50'}`}>
-                    {item.rating || '-'}
-                  </span>
-                </td>
-                <td className="px-4 py-2">{item.confidence}%</td>
-                <td className="px-4 py-2 text-gray-500">{item.created_at?.slice(0, 10)}</td>
-                <td className="px-4 py-2">
-                  <button onClick={() => viewDetail(item.id)} className="text-brand-600 hover:underline">查看详情</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr><th>股票</th><th>评级</th><th className="num">置信度</th><th>分析日期</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.stock_name} <span className="muted mono">{item.stock_code}</span></td>
+                  <td><span className={RATING_BADGE[item.rating] || 'badge'}>{item.rating || '-'}</span></td>
+                  <td className="num mono">{item.confidence}%</td>
+                  <td className="muted">{item.created_at?.slice(0, 10)}</td>
+                  <td><button className="btn-text" onClick={() => viewDetail(item.id)}>查看详情</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
@@ -309,8 +294,7 @@ function ExportPdfButton({ reportId, stockCode }: { reportId: number; stockCode:
     }
   }
   return (
-    <button onClick={download} disabled={downloading}
-      className="px-4 py-1.5 text-sm border border-brand-500 text-brand-600 rounded-lg hover:bg-brand-50 disabled:opacity-50">
+    <button className="btn btn-ghost" onClick={download} disabled={downloading}>
       {downloading ? '生成中...' : '导出PDF'}
     </button>
   )
@@ -319,119 +303,117 @@ function ExportPdfButton({ reportId, stockCode }: { reportId: number; stockCode:
 function ReportView({ report, onBack }: { report: ReportData; onBack?: () => void }) {
   const d = report.decision || {}
   const fmt = (v: any) => (v != null ? v : 'N/A')
+  const pct = report.stock_info?.change_pct
   return (
-    <div className="space-y-4">
-      {onBack && (
-        <button onClick={onBack} className="text-sm text-brand-600 hover:underline">← 返回列表</button>
-      )}
+    <div className="panel-stack">
+      {onBack && <button className="btn-text" style={{ alignSelf: 'start' }} onClick={onBack}>← 返回列表</button>}
 
-      {/* Stock snapshot */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <div className="flex items-baseline gap-4 mb-3">
-          <span className="text-xl font-bold">{report.stock_name}</span>
-          <span className="text-sm text-gray-400 font-mono">{report.stock_code}</span>
+      {/* 股票快照 */}
+      <section className="card">
+        <div className="between wrap" style={{ marginBottom: 16 }}>
+          <h2 className="card-title" style={{ margin: 0 }}>
+            {report.stock_name} <span className="muted mono" style={{ fontSize: 16 }}>{report.stock_code}</span>
+          </h2>
+          {pct != null && <span className={`badge ${pct >= 0 ? 'up' : 'down'}`}>{pct >= 0 ? '+' : ''}{pct}%</span>}
         </div>
-        <div className="grid grid-cols-6 gap-4 text-sm">
-          <div><span className="text-gray-400">最新价</span><br /><span className="font-bold">{fmt(report.stock_info?.price)}</span></div>
-          <div><span className="text-gray-400">涨跌幅</span><br /><span className={`font-bold ${report.stock_info?.change_pct >= 0 ? 'text-red-500' : 'text-green-500'}`}>{fmt(report.stock_info?.change_pct)}%</span></div>
-          <div><span className="text-gray-400">PE(TTM)</span><br /><span className="font-bold">{fmt(report.stock_info?.pe_ttm)}</span></div>
-          <div><span className="text-gray-400">PB</span><br /><span className="font-bold">{fmt(report.stock_info?.pb)}</span></div>
-          <div><span className="text-gray-400">市值(亿)</span><br /><span className="font-bold">{fmt(report.stock_info?.market_cap)}</span></div>
-          <div><span className="text-gray-400">行业</span><br /><span className="font-bold">{fmt(report.stock_info?.industry)}</span></div>
+        <div className="grid3">
+          <div className="kpi"><div className="k-label">最新价</div><div className="k-value mono" style={{ fontSize: 24 }}>{fmt(report.stock_info?.price)}</div></div>
+          <div className="kpi"><div className="k-label">涨跌幅</div><div className={`k-value mono ${pct >= 0 ? 'up' : 'down'}`} style={{ fontSize: 24 }}>{fmt(pct)}%</div></div>
+          <div className="kpi"><div className="k-label">PE(TTM)</div><div className="k-value mono" style={{ fontSize: 24 }}>{fmt(report.stock_info?.pe_ttm)}</div></div>
+          <div className="kpi"><div className="k-label">PB</div><div className="k-value mono" style={{ fontSize: 24 }}>{fmt(report.stock_info?.pb)}</div></div>
+          <div className="kpi"><div className="k-label">市值(亿)</div><div className="k-value mono" style={{ fontSize: 24 }}>{fmt(report.stock_info?.market_cap)}</div></div>
+          <div className="kpi"><div className="k-label">行业</div><div className="k-value" style={{ fontSize: 24 }}>{fmt(report.stock_info?.industry)}</div></div>
         </div>
-      </div>
+        {report.analyzed_at && <p className="caption mt16">分析时间 {report.analyzed_at}</p>}
+      </section>
 
-      {/* Technical indicators */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <h3 className="text-lg font-semibold mb-4">技术指标面板</h3>
-        <div className="grid grid-cols-5 gap-4 text-sm">
+      {/* 技术指标 */}
+      <section className="card">
+        <h2 className="card-title">技术指标</h2>
+        <div className="mini-grid">
           <IndicatorCard title="MA" data={report.indicators?.ma} keys={['MA5', 'MA20', 'MA60']} />
           <IndicatorCard title="MACD" data={report.indicators?.macd} keys={['DIF', 'DEA', 'MACD']} />
           <IndicatorCard title="RSI(14)" data={report.indicators?.rsi} keys={['RSI']} />
           <IndicatorCard title="KDJ" data={report.indicators?.kdj} keys={['K', 'D', 'J']} />
           <IndicatorCard title="BOLL" data={report.indicators?.boll} keys={['UP', 'MID', 'LOW']} labels={['上轨', '中轨', '下轨']} />
         </div>
-      </div>
+        <p className="caption mt16">基于近 60 个交易日计算</p>
+      </section>
 
-      {/* AI Analysts */}
-      <div className="space-y-3">
-        <h3 className="text-lg font-semibold">AI 分析师报告</h3>
-        {Object.entries(report.analysts || {}).map(([key, data]: [string, any]) => (
-          <div key={key} className="bg-white rounded-lg shadow p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="font-medium">{ANALYST_LABELS[key] || key}</span>
-              {data?.score != null && (
-                <span className="text-sm text-brand-600">评分: {data.score}</span>
-              )}
+      {/* AI 分析师报告 */}
+      <section className="card">
+        <h2 className="card-title">AI 分析师报告</h2>
+        <div className="mini-grid">
+          {Object.entries(report.analysts || {}).map(([key, data]: [string, any]) => (
+            <div className="mini-card" key={key}>
+              <div className="between">
+                <h3 style={{ margin: 0 }}>{ANALYST_LABELS[key] || key}</h3>
+                {data?.score != null && <span className="fg2 small">评分: <span className="mono">{data.score}</span></span>}
+              </div>
+              <div className="small fg2 mt8">
+                {data?.trend && <p style={{ margin: 0 }}>趋势: {data.trend}</p>}
+                {data?.detail && <p style={{ margin: 0 }}>{data.detail}</p>}
+                {data?.sentiment_rating && <p style={{ margin: 0 }}>评级: {data.sentiment_rating}</p>}
+                {data?.main_flow && <p style={{ margin: 0 }}>{data.main_flow}</p>}
+                {data?.assessment && <p style={{ margin: 0 }}>{data.assessment}</p>}
+                {data?.financial_health && <p style={{ margin: 0 }}>财务健康度: {data.financial_health}</p>}
+                {data?.error && <p style={{ margin: 0, color: 'var(--up)' }}>分析失败: {data.error}</p>}
+              </div>
+              <details className="mt8">
+                <summary>展开完整报告</summary>
+                <p className="full-report">{JSON.stringify(data, null, 2)}</p>
+              </details>
             </div>
-            <div className="text-sm text-gray-600 space-y-1">
-              {data?.trend && <p>趋势: {data.trend}</p>}
-              {data?.detail && <p>{data.detail}</p>}
-              {data?.sentiment_rating && <p>评级: {data.sentiment_rating}</p>}
-              {data?.main_flow && <p>{data.main_flow}</p>}
-              {data?.assessment && <p>{data.assessment}</p>}
-              {data?.financial_health && <p>财务健康度: {data.financial_health}</p>}
-              {data?.error && <p className="text-red-400">分析失败: {data.error}</p>}
-            </div>
-            <details className="mt-2">
-              <summary className="text-xs text-brand-600 cursor-pointer">展开完整报告</summary>
-              <pre className="mt-2 text-xs text-gray-500 overflow-x-auto bg-gray-50 p-3 rounded">{JSON.stringify(data, null, 2)}</pre>
-            </details>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </section>
 
-      {/* Decision card */}
-      <div className="bg-white rounded-lg shadow p-6 border-l-4 border-brand-500">
-        <h3 className="text-lg font-semibold mb-4">AI 投研会议 · 最终决策</h3>
-        {d.meeting_summary && (
-          <p className="text-sm text-gray-600 mb-4 bg-gray-50 p-3 rounded">{d.meeting_summary}</p>
-        )}
-        <div className="grid grid-cols-4 gap-4 text-sm mb-4">
-          <div>
-            <span className="text-gray-400">最终决策</span>
-            <p className={`text-lg font-bold px-2 py-0.5 rounded inline-block ${RATING_COLORS[d.rating] || ''}`}>{d.rating || '-'}</p>
-          </div>
-          <div><span className="text-gray-400">目标价</span><p className="font-bold">¥{fmt(d.target_price)}</p></div>
-          <div><span className="text-gray-400">止损价</span><p className="font-bold">¥{fmt(d.stop_loss)}</p></div>
-          <div><span className="text-gray-400">置信度</span><p className="font-bold">{fmt(d.confidence)}%</p></div>
+      {/* 最终决策 */}
+      <section className="card card-accent">
+        <h2 className="card-title">AI 投研会议 · 最终决策</h2>
+        {d.meeting_summary && <p className="small fg2" style={{ background: 'var(--surface)', padding: 12, borderRadius: 'var(--r-card)' }}>{d.meeting_summary}</p>}
+        <div className="kpi-grid mt16">
+          <div className="kpi"><div className="k-label">最终决策</div><div className="k-value" style={{ fontSize: 24 }}><span className={RATING_BADGE[d.rating] || 'badge'}>{d.rating || '-'}</span></div></div>
+          <div className="kpi"><div className="k-label">目标价</div><div className="k-value mono" style={{ fontSize: 24 }}>¥{fmt(d.target_price)}</div></div>
+          <div className="kpi"><div className="k-label">止损价</div><div className="k-value mono" style={{ fontSize: 24 }}>¥{fmt(d.stop_loss)}</div></div>
+          <div className="kpi"><div className="k-label">置信度</div><div className="k-value mono" style={{ fontSize: 24 }}>{fmt(d.confidence)}%</div></div>
         </div>
-        <div className="grid grid-cols-3 gap-4 text-sm mb-4">
-          <div><span className="text-gray-400">入场区间</span><p>{fmt(d.entry_range)}</p></div>
-          <div><span className="text-gray-400">止盈目标</span><p>{fmt(d.take_profit)}</p></div>
-          <div><span className="text-gray-400">持有期限</span><p>{fmt(d.holding_period)}</p></div>
-        </div>
-        <div className="grid grid-cols-2 gap-4 text-sm mb-4">
-          <div><span className="text-gray-400">仓位建议</span><p>{fmt(d.position_size)}</p></div>
-          <div><span className="text-gray-400">风险提示</span><p>{fmt(d.risk_warning)}</p></div>
-        </div>
+        <ul className="kv-list mt16">
+          <li><span className="k">入场区间</span><span>{fmt(d.entry_range)}</span></li>
+          <li><span className="k">止盈目标</span><span>{fmt(d.take_profit)}</span></li>
+          <li><span className="k">持有期限</span><span>{fmt(d.holding_period)}</span></li>
+          <li><span className="k">仓位建议</span><span>{fmt(d.position_size)}</span></li>
+          <li><span className="k">风险提示</span><span style={{ textAlign: 'right' }}>{fmt(d.risk_warning)}</span></li>
+        </ul>
         {d.key_watchpoints && d.key_watchpoints.length > 0 && (
-          <div>
-            <span className="text-gray-400 text-sm">关键观察指标</span>
-            <ul className="mt-1 text-sm text-gray-600 list-disc list-inside">
+          <div className="mt16">
+            <span className="section-label">关键观察指标</span>
+            <ul className="obs-list">
               {d.key_watchpoints.map((p, i) => <li key={i}>{p}</li>)}
             </ul>
           </div>
         )}
-        <div className="mt-6 flex items-center justify-between">
-          <p className="text-xs text-gray-400">{report.disclaimer}</p>
+        <div className="between wrap mt24">
+          <p className="caption" style={{ margin: 0 }}>{report.disclaimer}</p>
           {report._id && <ExportPdfButton reportId={report._id} stockCode={report.stock_code} />}
         </div>
-      </div>
+      </section>
     </div>
   )
 }
 
 function IndicatorCard({ title, data, keys, labels }: { title: string; data?: Record<string, number|null>; keys: string[]; labels?: string[] }) {
   return (
-    <div className="border border-gray-200 rounded-lg p-3">
-      <p className="text-xs text-gray-400 mb-2">{title}</p>
-      {keys.map((k, i) => (
-        <div key={k} className="flex justify-between text-sm">
-          <span className="text-gray-500">{labels?.[i] || k}</span>
-          <span className="font-mono font-medium">{data?.[k] != null ? data[k] : 'N/A'}</span>
-        </div>
-      ))}
+    <div className="mini-card">
+      <h3>{title}</h3>
+      <ul className="kv-list">
+        {keys.map((k, i) => (
+          <li key={k}>
+            <span className="k">{labels?.[i] || k}</span>
+            <span className="mono">{data?.[k] != null ? data[k] : 'N/A'}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

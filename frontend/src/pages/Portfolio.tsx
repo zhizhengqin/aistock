@@ -39,30 +39,29 @@ interface Diagnosis {
 
 const fmtMoney = (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 
-function healthColor(score: number) {
-  if (score >= 80) return 'text-green-600'
-  if (score >= 60) return 'text-yellow-600'
-  if (score >= 40) return 'text-orange-600'
-  return 'text-red-600'
+// A 股配色: 上涨/健康=红(up), 下跌/风险=绿(down), 中性=hold
+function healthVar(score: number) {
+  if (score >= 80) return 'var(--up)'
+  if (score >= 60) return 'var(--hold)'
+  return 'var(--down)'
 }
+
+function plCls(v: number) { return v > 0 ? 'up' : v < 0 ? 'down' : '' }
+function plText(v: number) { return (v > 0 ? '+' : '') + fmtMoney(v) }
 
 export default function Portfolio() {
   const [tab, setTab] = useState<Tab>('holdings')
-  const labels: Record<Tab, string> = { holdings: '持仓管理', diagnosis: 'AI 诊断', history: '历史报告' }
   return (
-    <div className="space-y-6">
-      <div className="flex gap-2 border-b border-gray-200">
-        {(['holdings', 'diagnosis', 'history'] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t ? 'border-brand-600 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {labels[t]}
-          </button>
-        ))}
+    <>
+      <div className="tabs">
+        <button className={`tab${tab === 'holdings' ? ' active' : ''}`} onClick={() => setTab('holdings')}>持仓管理</button>
+        <button className={`tab${tab === 'diagnosis' ? ' active' : ''}`} onClick={() => setTab('diagnosis')}>AI 诊断</button>
+        <button className={`tab${tab === 'history' ? ' active' : ''}`} onClick={() => setTab('history')}>历史报告</button>
       </div>
       {tab === 'holdings' && <HoldingsView />}
       {tab === 'diagnosis' && <DiagnosisView />}
       {tab === 'history' && <HistoryView />}
-    </div>
+    </>
   )
 }
 
@@ -130,90 +129,112 @@ function HoldingsView() {
     }
   }
 
-  const plColor = (v: number) => v > 0 ? 'text-red-600' : v < 0 ? 'text-green-600' : 'text-gray-500'
-
   return (
-    <div className="space-y-4">
+    <div className="panel-stack">
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div className="bg-white rounded-lg shadow p-4"><p className="text-xs text-gray-400">持仓股票</p><p className="text-xl font-bold">{summary.total_stocks}</p></div>
-          <div className="bg-white rounded-lg shadow p-4"><p className="text-xs text-gray-400">总成本</p><p className="text-xl font-bold">{fmtMoney(summary.total_cost)}</p></div>
-          <div className="bg-white rounded-lg shadow p-4"><p className="text-xs text-gray-400">总市值</p><p className="text-xl font-bold">{fmtMoney(summary.total_market_value)}</p></div>
-          <div className="bg-white rounded-lg shadow p-4"><p className="text-xs text-gray-400">总盈亏</p><p className={`text-xl font-bold ${plColor(summary.total_profit_loss)}`}>{fmtMoney(summary.total_profit_loss)} ({summary.total_profit_pct}%)</p></div>
-          <div className="bg-white rounded-lg shadow p-4"><p className="text-xs text-gray-400">自动监测</p><p className="text-xl font-bold text-brand-600">{summary.monitoring_count}</p></div>
+        <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))' }}>
+          <div className="kpi">
+            <div className="k-label">持仓股票</div>
+            <div className="k-value mono">{summary.total_stocks}</div>
+            <div className="k-sub muted">只</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">总成本</div>
+            <div className="k-value mono">¥{fmtMoney(summary.total_cost)}</div>
+            <div className="k-sub muted">人民币</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">总市值</div>
+            <div className="k-value mono">¥{fmtMoney(summary.total_market_value)}</div>
+            <div className="k-sub muted">人民币</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">总盈亏</div>
+            <div className={`k-value mono ${plCls(summary.total_profit_loss)}`}>{plText(summary.total_profit_loss)}</div>
+            <div className={`k-sub mono ${plCls(summary.total_profit_loss)}`}>{summary.total_profit_pct > 0 ? '+' : ''}{summary.total_profit_pct}%</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">自动监测</div>
+            <div className="k-value mono">{summary.monitoring_count}</div>
+            <div className="k-sub muted">只已开启</div>
+          </div>
         </div>
       )}
 
-      <div className="bg-white rounded-lg shadow p-4">
-        <h3 className="text-sm font-semibold mb-3">添加持仓</h3>
-        <div className="flex flex-wrap items-center gap-2">
-          <input placeholder="股票代码 如 600519" value={form.stock_code}
-            onChange={(e) => setForm({ ...form, stock_code: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-full sm:w-40" />
-          <input placeholder="股票名称(可选)" value={form.stock_name}
-            onChange={(e) => setForm({ ...form, stock_name: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-32" />
-          <input placeholder="持股数量" type="number" value={form.shares}
-            onChange={(e) => setForm({ ...form, shares: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-28" />
-          <input placeholder="成本价" type="number" step="0.01" value={form.cost_price}
-            onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-28" />
-          <label className="flex items-center gap-1 text-sm text-gray-600">
+      <section className="card">
+        <h2 className="card-title-sm">添加持仓</h2>
+        <div className="form-row">
+          <div className="field">
+            <label>股票代码</label>
+            <input className="input mono" type="text" placeholder="如 600519" value={form.stock_code}
+              onChange={(e) => setForm({ ...form, stock_code: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>股票名称(可选)</label>
+            <input className="input" type="text" placeholder="自动识别" value={form.stock_name}
+              onChange={(e) => setForm({ ...form, stock_name: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>持股数量</label>
+            <input className="input mono" type="number" placeholder="如 200" value={form.shares}
+              onChange={(e) => setForm({ ...form, shares: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>成本价</label>
+            <input className="input mono" type="number" step="0.01" placeholder="如 1420.00" value={form.cost_price}
+              onChange={(e) => setForm({ ...form, cost_price: e.target.value })} />
+          </div>
+        </div>
+        <div className="between wrap mt16">
+          <label className="flex" style={{ gap: 8, fontSize: 14 }}>
             <input type="checkbox" checked={form.auto_monitor}
               onChange={(e) => setForm({ ...form, auto_monitor: e.target.checked })} />
-            自动监测
+            自动监测(开启后按实时监测配置检查触发条件)
           </label>
-          <button onClick={add} disabled={adding}
-            className="px-4 py-1.5 bg-brand-600 text-white rounded text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-            {adding ? '添加中...' : '添加'}
-          </button>
+          <button className="btn btn-primary" onClick={add} disabled={adding}>{adding ? '添加中...' : '添加'}</button>
         </div>
-        {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
-      </div>
+        {error && <p className="small up mt8" style={{ margin: 0 }}>{error}</p>}
+      </section>
 
-      <div className="bg-white rounded-lg shadow p-4">
-        <h3 className="text-sm font-semibold mb-3">我的持仓</h3>
+      <section className="card">
+        <h2 className="card-title-sm">我的持仓</h2>
         {stocks.length === 0 ? (
-          <p className="text-sm text-gray-400">暂无持仓，请先添加股票</p>
+          <div className="empty">暂无持仓，请先添加股票</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50"><tr>
-                <th className="px-3 py-2 text-left">股票</th>
-                <th className="px-3 py-2 text-right">持股</th>
-                <th className="px-3 py-2 text-right">成本价</th>
-                <th className="px-3 py-2 text-right">现价</th>
-                <th className="px-3 py-2 text-right">市值</th>
-                <th className="px-3 py-2 text-right">盈亏</th>
-                <th className="px-3 py-2 text-center">自动监测</th>
-                <th className="px-3 py-2 text-center">操作</th>
-              </tr></thead>
-              <tbody>
-                {stocks.map((s) => (
-                  <tr key={s.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-medium">{s.stock_name || '-'} <span className="text-gray-400 font-mono text-xs">{s.stock_code}</span></td>
-                    <td className="px-3 py-2 text-right">{s.shares.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right">{s.cost_price.toFixed(2)}</td>
-                    <td className="px-3 py-2 text-right">{s.current_price != null ? s.current_price.toFixed(2) : '-'}</td>
-                    <td className="px-3 py-2 text-right">{fmtMoney(s.market_value)}</td>
-                    <td className={`px-3 py-2 text-right font-medium ${plColor(s.profit_loss)}`}>{fmtMoney(s.profit_loss)} ({s.profit_pct}%)</td>
-                    <td className="px-3 py-2 text-center">
-                      <button onClick={() => toggleMonitor(s)}
-                        className={`px-2 py-0.5 rounded text-xs ${s.auto_monitor ? 'bg-brand-50 text-brand-700' : 'bg-gray-100 text-gray-500'}`}>
-                        {s.auto_monitor ? '已开启' : '已关闭'}
-                      </button>
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <button onClick={() => remove(s)} className="text-xs text-red-500 hover:underline">删除</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>股票</th>
+                <th className="num">持股</th>
+                <th className="num">成本价</th>
+                <th className="num">现价</th>
+                <th className="num">市值</th>
+                <th className="num">盈亏</th>
+                <th>自动监测</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stocks.map((s) => (
+                <tr key={s.id}>
+                  <td>{s.stock_name || '-'} <span className="muted mono">{s.stock_code}</span></td>
+                  <td className="num mono">{s.shares.toLocaleString()}</td>
+                  <td className="num mono">{s.cost_price.toFixed(2)}</td>
+                  <td className="num mono">{s.current_price != null ? s.current_price.toFixed(2) : '-'}</td>
+                  <td className="num mono">{fmtMoney(s.market_value)}</td>
+                  <td className={`num mono ${plCls(s.profit_loss)}`}>{plText(s.profit_loss)} ({s.profit_pct > 0 ? '+' : ''}{s.profit_pct}%)</td>
+                  <td>
+                    <button className={`pill${s.auto_monitor ? ' active' : ''}`} onClick={() => toggleMonitor(s)}>
+                      {s.auto_monitor ? '已开启' : '已关闭'}
+                    </button>
+                  </td>
+                  <td><button className="btn-text" onClick={() => remove(s)}>删除</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
-      </div>
+      </section>
     </div>
   )
 }
@@ -251,7 +272,7 @@ function DiagnosisView() {
   const submit = async () => {
     setError(''); setDiag(null); setLoading(true); setProgress(0)
     try {
-      const resp = await client.post('/stocks/portfolio/analyze')
+      const resp = await client.post('/stocks/portfolio/diagnose')
       pollTask(resp.data.data.task_id)
     } catch (err: any) {
       setError(errMsg(err, '提交失败'))
@@ -267,54 +288,55 @@ function DiagnosisView() {
   ]
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-4">
-        <p className="text-sm text-gray-500">AI 对当前持仓组合进行整体健康度诊断</p>
-        <button onClick={submit} disabled={loading}
-          className="px-6 py-2 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 disabled:opacity-50">
-          {loading ? '诊断中...' : '开始诊断'}
-        </button>
+    <div className="panel-stack">
+      <div className="between wrap">
+        <p className="fg2" style={{ margin: 0 }}>AI 对当前持仓组合进行整体健康度诊断，覆盖风险、配置、敞口与策略一致性四个维度。</p>
+        <button className="btn btn-primary" onClick={submit} disabled={loading}>{loading ? '诊断中...' : '开始诊断'}</button>
       </div>
 
-      {error && <p className="text-sm text-red-500">{error}</p>}
+      {error && <p className="small up" style={{ margin: 0 }}>{error}</p>}
 
       {loading && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <p className="text-sm text-gray-600 mb-2">进度: {progress}%</p>
-          <div className="w-full bg-gray-200 rounded-full h-2">
-            <div className="bg-brand-600 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />
-          </div>
-        </div>
+        <section className="card">
+          <p className="small fg2">进度: <span className="mono">{progress}%</span></p>
+          <div className="progress mt8"><i style={{ width: `${progress}%` }} /></div>
+        </section>
       )}
 
       {diag && (
         <>
-          <div className="bg-white rounded-lg shadow p-6 flex items-center gap-6">
-            <div className="text-center">
-              <p className={`text-4xl font-bold ${healthColor(diag.health_score)}`}>{diag.health_score}</p>
-              <p className="text-xs text-gray-400 mt-1">组合健康分</p>
-            </div>
-            <p className="text-sm text-gray-600 flex-1">{diag.summary}</p>
-          </div>
+          <section className="card score-hero">
+            <div className="score-num mono" style={{ color: healthVar(diag.health_score) }}>{diag.health_score}</div>
+            <div className="fg2 mt8" style={{ font: '600 18px/1.2 var(--font-body)' }}>组合健康分</div>
+            <p className="caption mt8">满分 100 · 60-80 为中性区间，建议关注调仓建议</p>
+          </section>
 
-          <div className="grid md:grid-cols-2 gap-4">
+          {diag.summary && (
+            <section className="card">
+              <p className="fg2" style={{ margin: 0 }}>{diag.summary}</p>
+            </section>
+          )}
+
+          <div className="grid2">
             {sections.map(([label, key]) => (
-              <div key={key} className="bg-white rounded-lg shadow p-4">
-                <h4 className="text-sm font-semibold mb-2">{label}</h4>
-                <p className="text-sm text-gray-600">{diag[key] as string}</p>
-              </div>
+              <section className="card" key={key}>
+                <h3 className="card-title-sm">{label}</h3>
+                <p className="small fg2" style={{ margin: 0 }}>{diag[key] as string}</p>
+              </section>
             ))}
           </div>
 
           {diag.suggestions && diag.suggestions.length > 0 && (
-            <div className="bg-white rounded-lg shadow p-6 border-l-4 border-brand-500">
-              <h4 className="text-sm font-semibold mb-3">调仓建议</h4>
-              <ul className="space-y-2">
-                {diag.suggestions.map((s, i) => (
-                  <li key={i} className="text-sm text-gray-600">{s}</li>
-                ))}
-              </ul>
-            </div>
+            <section className="card card-accent">
+              <h3 className="card-title-sm">调仓建议</h3>
+              {diag.suggestions.map((s, i) => (
+                <div className="rowline" key={i}>
+                  <span className="small">{s}</span>
+                  <span className="badge hold">建议</span>
+                </div>
+              ))}
+              <p className="caption mt8">以上为 AI 诊断结果，不构成投资建议</p>
+            </section>
           )}
         </>
       )}
@@ -341,44 +363,48 @@ function HistoryView() {
     } catch {}
   }
 
-  if (loading) return <p className="text-sm text-gray-400">加载中...</p>
+  if (loading) return <div className="empty">加载中...</div>
 
   return (
-    <div className="space-y-4">
-      {items.length === 0 ? (
-        <p className="text-sm text-gray-400">暂无历史诊断报告</p>
-      ) : (
-        <div className="bg-white rounded-lg shadow divide-y divide-gray-100">
-          {items.map((r) => (
-            <button key={r.id} onClick={() => openDetail(r.id)}
-              className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-left">
-              <span className="text-sm text-gray-600">{r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '-'}</span>
-              <span className={`text-sm font-bold ${healthColor(r.health_score)}`}>健康分 {r.health_score}</span>
-            </button>
-          ))}
-        </div>
-      )}
+    <div className="panel-stack">
+      <section className="card">
+        <h2 className="card-title-sm">诊断历史</h2>
+        {items.length === 0 ? (
+          <div className="empty">暂无诊断报告，点击「AI 诊断」页生成第一份组合健康报告</div>
+        ) : (
+          items.map((r) => (
+            <div className="rowline" key={r.id}>
+              <span className="mono small">{r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '-'}</span>
+              <span className="flex" style={{ gap: 12 }}>
+                <span className={`badge ${r.health_score >= 80 ? 'up' : 'hold'}`}>健康分 {r.health_score}</span>
+                <a className="btn-text" onClick={() => openDetail(r.id)}>查看</a>
+              </span>
+            </div>
+          ))
+        )}
+        <p className="caption mt16">每周自动诊断一次，也可在「AI 诊断」页手动触发</p>
+      </section>
 
       {detail && (
-        <div className="bg-white rounded-lg shadow p-6 space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold">报告详情</h4>
-            <button onClick={() => setDetail(null)} className="text-xs text-gray-400 hover:text-gray-600">关闭</button>
+        <section className="card">
+          <div className="between">
+            <h3 className="card-title-sm" style={{ margin: 0 }}>报告详情</h3>
+            <button className="btn-text" onClick={() => setDetail(null)}>关闭</button>
           </div>
-          <p className={`text-3xl font-bold ${healthColor(detail.health_score)}`}>{detail.health_score} 分</p>
-          <p className="text-sm text-gray-600">{detail.summary}</p>
-          <div className="grid md:grid-cols-2 gap-3 text-sm">
-            <div className="bg-gray-50 rounded p-3"><p className="font-medium mb-1">风险评估</p><p className="text-gray-600">{detail.risk_assessment}</p></div>
-            <div className="bg-gray-50 rounded p-3"><p className="font-medium mb-1">资产配置</p><p className="text-gray-600">{detail.asset_allocation}</p></div>
-            <div className="bg-gray-50 rounded p-3"><p className="font-medium mb-1">风险敞口</p><p className="text-gray-600">{detail.risk_exposure}</p></div>
-            <div className="bg-gray-50 rounded p-3"><p className="font-medium mb-1">策略一致性</p><p className="text-gray-600">{detail.strategy_consistency}</p></div>
+          <div className="score-num mono mt8" style={{ color: healthVar(detail.health_score) }}>{detail.health_score} <span className="small fg2">分</span></div>
+          <p className="small fg2 mt8">{detail.summary}</p>
+          <div className="grid2 mt16">
+            <div className="mini-card"><h3>风险评估</h3><p className="small fg2 mt8" style={{ margin: 0 }}>{detail.risk_assessment}</p></div>
+            <div className="mini-card"><h3>资产配置</h3><p className="small fg2 mt8" style={{ margin: 0 }}>{detail.asset_allocation}</p></div>
+            <div className="mini-card"><h3>风险敞口</h3><p className="small fg2 mt8" style={{ margin: 0 }}>{detail.risk_exposure}</p></div>
+            <div className="mini-card"><h3>策略一致性</h3><p className="small fg2 mt8" style={{ margin: 0 }}>{detail.strategy_consistency}</p></div>
           </div>
-          {detail.suggestions && (
-            <ul className="space-y-1 text-sm text-gray-600">
+          {detail.suggestions && detail.suggestions.length > 0 && (
+            <ul className="track-list mt16">
               {detail.suggestions.map((s, i) => <li key={i}>{s}</li>)}
             </ul>
           )}
-        </div>
+        </section>
       )}
     </div>
   )

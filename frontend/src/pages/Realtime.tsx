@@ -40,23 +40,29 @@ const NTYPE_LABELS: Record<string, string> = {
   ai: 'AI 决策',
 }
 
+const NTYPE_BADGE: Record<string, string> = {
+  target: 'badge up',
+  stop: 'badge down',
+  profit: 'badge hold',
+  loss: 'badge down',
+  ai: 'badge info',
+}
+
 export default function Realtime() {
   const [tab, setTab] = useState<Tab>('configs')
   return (
-    <div className="space-y-6">
-      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto">
-        {(['configs', 'notifications', 'plans', 'decisions'] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${tab === t ? 'border-brand-600 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {t === 'configs' ? '监测配置' : t === 'notifications' ? '消息通知' : t === 'plans' ? 'AI 交易计划' : 'AI 决策记录'}
-          </button>
-        ))}
+    <>
+      <div className="tabs">
+        <button className={`tab${tab === 'configs' ? ' active' : ''}`} onClick={() => setTab('configs')}>监测配置</button>
+        <button className={`tab${tab === 'notifications' ? ' active' : ''}`} onClick={() => setTab('notifications')}>消息通知</button>
+        <button className={`tab${tab === 'plans' ? ' active' : ''}`} onClick={() => setTab('plans')}>AI 交易计划</button>
+        <button className={`tab${tab === 'decisions' ? ' active' : ''}`} onClick={() => setTab('decisions')}>AI 决策记录</button>
       </div>
       {tab === 'configs' && <ConfigsView />}
       {tab === 'notifications' && <NotificationsView />}
       {tab === 'plans' && <TradePlansView />}
       {tab === 'decisions' && <DecisionsView />}
-    </div>
+    </>
   )
 }
 
@@ -141,93 +147,97 @@ function ConfigsView() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <p className="text-sm text-gray-500">交易时段内按设定间隔自动检查价格触发条件</p>
-        <button onClick={runCheck} disabled={checking}
-          className="px-4 py-1.5 bg-brand-600 text-white rounded text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-          {checking ? '检查中...' : '立即检查'}
-        </button>
-        <div className="flex gap-1 ml-auto">
-          {[['all', '全部'], ['active', '监测中'], ['paused', '已暂停']].map(([v, l]) => (
-            <button key={v} onClick={() => setFilter(v)}
-              className={`px-3 py-1 rounded text-xs ${filter === v ? 'bg-brand-600 text-white' : 'bg-gray-100 text-gray-600'}`}>
-              {l}
-            </button>
-          ))}
+    <div className="panel-stack">
+      <div>
+        <div className="between wrap">
+          <p className="fg2" style={{ margin: 0 }}>交易时段内按设定间隔自动检查价格触发条件，触发后生成消息通知。</p>
+          <button className="btn btn-primary" onClick={runCheck} disabled={checking}>{checking ? '检查中...' : '立即检查'}</button>
         </div>
-      </div>
-      {notice && <p className="text-sm text-green-600">{notice}</p>}
-      {error && <p className="text-sm text-red-500">{error}</p>}
-
-      <div className="bg-white rounded-lg shadow p-4">
-        <h3 className="text-sm font-semibold mb-3">添加监测项</h3>
-        <div className="flex flex-wrap items-center gap-2">
-          <input placeholder="股票代码" value={form.stock_code} onChange={(e) => setForm({ ...form, stock_code: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-28" />
-          <input placeholder="名称(可选)" value={form.stock_name} onChange={(e) => setForm({ ...form, stock_name: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-28" />
-          <input placeholder="目标价" type="number" step="0.01" value={form.target_price} onChange={(e) => setForm({ ...form, target_price: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-24" />
-          <input placeholder="止损价" type="number" step="0.01" value={form.stop_price} onChange={(e) => setForm({ ...form, stop_price: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-24" />
-          <input placeholder="止盈%" type="number" value={form.profit_pct} onChange={(e) => setForm({ ...form, profit_pct: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-20" />
-          <input placeholder="止损%" type="number" value={form.loss_pct} onChange={(e) => setForm({ ...form, loss_pct: e.target.value })}
-            className="border border-gray-300 rounded px-3 py-1.5 text-sm w-20" />
-          <label className="flex items-center gap-1 text-sm text-gray-600">
-            <input type="checkbox" checked={form.ai_enabled} onChange={(e) => setForm({ ...form, ai_enabled: e.target.checked })} />
-            AI 决策
-          </label>
-          <button onClick={add} disabled={adding}
-            className="px-4 py-1.5 bg-brand-600 text-white rounded text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-            {adding ? '添加中...' : '添加'}
-          </button>
-        </div>
+        {notice && <p className="up small mt8" style={{ margin: 0 }}>{notice}</p>}
+        {error && <p className="up small mt8" style={{ margin: 0 }}>{error}</p>}
       </div>
 
-      <div className="bg-white rounded-lg shadow p-4">
-        <h3 className="text-sm font-semibold mb-3">监测列表</h3>
-        {configs.length === 0 ? (
-          <p className="text-sm text-gray-400">暂无监测项</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50"><tr>
-                <th className="px-3 py-2 text-left">股票</th>
-                <th className="px-3 py-2 text-right">目标价</th>
-                <th className="px-3 py-2 text-right">止损价</th>
-                <th className="px-3 py-2 text-right">止盈/止损</th>
-                <th className="px-3 py-2 text-center">间隔</th>
-                <th className="px-3 py-2 text-center">AI</th>
-                <th className="px-3 py-2 text-center">状态</th>
-                <th className="px-3 py-2 text-center">操作</th>
-              </tr></thead>
-              <tbody>
-                {configs.map((c) => (
-                  <tr key={c.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-medium">{c.stock_name || '-'} <span className="text-gray-400 font-mono text-xs">{c.stock_code}</span></td>
-                    <td className="px-3 py-2 text-right">{c.target_price || '-'}</td>
-                    <td className="px-3 py-2 text-right">{c.stop_price || '-'}</td>
-                    <td className="px-3 py-2 text-right">{c.profit_pct}% / {c.loss_pct}%</td>
-                    <td className="px-3 py-2 text-center">{c.interval_min} 分钟</td>
-                    <td className="px-3 py-2 text-center">{c.ai_enabled ? '开' : '关'}</td>
-                    <td className="px-3 py-2 text-center">
-                      <button onClick={() => toggleStatus(c)}
-                        className={`px-2 py-0.5 rounded text-xs ${c.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                        {c.status === 'active' ? '监测中' : '已暂停'}
-                      </button>
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <button onClick={() => remove(c)} className="text-xs text-red-500 hover:underline">删除</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <div className="flex wrap" style={{ gap: 8 }}>
+        {[['all', '全部'], ['active', '监测中'], ['paused', '已暂停']].map(([v, l]) => (
+          <button key={v} className={`pill${filter === v ? ' active' : ''}`} onClick={() => setFilter(v)}>{l}</button>
+        ))}
+      </div>
+
+      <section className="card">
+        <h2 className="card-title-sm">添加监测项</h2>
+        <div className="form-row">
+          <div className="field">
+            <label>股票代码</label>
+            <input className="input mono" type="text" placeholder="如 600519" value={form.stock_code} onChange={(e) => setForm({ ...form, stock_code: e.target.value })} />
           </div>
+          <div className="field">
+            <label>名称(可选)</label>
+            <input className="input" type="text" placeholder="自动识别" value={form.stock_name} onChange={(e) => setForm({ ...form, stock_name: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>目标价</label>
+            <input className="input mono" type="number" step="0.01" placeholder="如 1550.00" value={form.target_price} onChange={(e) => setForm({ ...form, target_price: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>止损价</label>
+            <input className="input mono" type="number" step="0.01" placeholder="如 1380.00" value={form.stop_price} onChange={(e) => setForm({ ...form, stop_price: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>止盈 %</label>
+            <input className="input mono" type="number" value={form.profit_pct} onChange={(e) => setForm({ ...form, profit_pct: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>止损 %</label>
+            <input className="input mono" type="number" value={form.loss_pct} onChange={(e) => setForm({ ...form, loss_pct: e.target.value })} />
+          </div>
+        </div>
+        <div className="between wrap mt16">
+          <label className="flex" style={{ gap: 8, fontSize: 14 }}>
+            <input type="checkbox" checked={form.ai_enabled} onChange={(e) => setForm({ ...form, ai_enabled: e.target.checked })} />
+            AI 决策(触发时由 AI 生成交易计划)
+          </label>
+          <button className="btn btn-dark" onClick={add} disabled={adding}>{adding ? '添加中...' : '添加'}</button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2 className="card-title-sm">监测列表</h2>
+        {configs.length === 0 ? (
+          <div className="empty">暂无监测项</div>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>股票</th>
+                <th className="num">目标价</th>
+                <th className="num">止损价</th>
+                <th className="num">止盈 / 止损</th>
+                <th className="num">间隔</th>
+                <th>AI</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {configs.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.stock_name || '-'} <span className="muted mono">{c.stock_code}</span></td>
+                  <td className="num mono">{c.target_price || '-'}</td>
+                  <td className="num mono">{c.stop_price || '-'}</td>
+                  <td className="num mono">{c.profit_pct}% / {c.loss_pct}%</td>
+                  <td className="num mono">{c.interval_min} 分钟</td>
+                  <td>{c.ai_enabled ? '开' : '关'}</td>
+                  <td><span className={`badge ${c.status === 'active' ? 'up' : ''}`}>{c.status === 'active' ? '监测中' : '已暂停'}</span></td>
+                  <td>
+                    <button className="btn-text" onClick={() => toggleStatus(c)}>{c.status === 'active' ? '暂停' : '恢复'}</button>{' '}
+                    <button className="btn-text" onClick={() => remove(c)}>删除</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
-      </div>
+      </section>
     </div>
   )
 }
@@ -258,42 +268,42 @@ function NotificationsView() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex gap-1">
+    <div className="panel-stack">
+      <div className="flex wrap" style={{ gap: 8 }}>
         {[['pending', '待处理'], ['processed', '已处理']].map(([v, l]) => (
-          <button key={v} onClick={() => setStatus(v)}
-            className={`px-3 py-1 rounded text-xs ${status === v ? 'bg-brand-600 text-white' : 'bg-gray-100 text-gray-600'}`}>
-            {l}
-          </button>
+          <button key={v} className={`pill${status === v ? ' active' : ''}`} onClick={() => setStatus(v)}>{l}</button>
         ))}
       </div>
-      {error && <p className="text-sm text-red-500">{error}</p>}
+      {error && <p className="small up" style={{ margin: 0 }}>{error}</p>}
       {items.length === 0 ? (
-        <p className="text-sm text-gray-400">暂无{status === 'pending' ? '待处理' : '已处理'}通知</p>
+        <div className="empty">{status === 'pending' ? '暂无待处理通知' : '暂无已处理通知'}</div>
       ) : (
-        <div className="space-y-2">
+        <div className="grid3">
           {items.map((n) => (
-            <div key={n.id} className="bg-white rounded-lg shadow p-4">
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded text-xs bg-brand-50 text-brand-700">{NTYPE_LABELS[n.ntype] || n.ntype}</span>
-                  <span className="text-sm font-medium">{n.title}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-gray-400">{n.created_at ? new Date(n.created_at).toLocaleString('zh-CN') : ''}</span>
-                  {n.status === 'pending' && (
-                    <button onClick={() => markProcessed(n)} className="text-xs text-brand-600 hover:underline">标记已处理</button>
-                  )}
-                </div>
+            <section key={n.id} className="card notif-card">
+              <div className="between">
+                <span className={NTYPE_BADGE[n.ntype] || 'badge info'}>{NTYPE_LABELS[n.ntype] || n.ntype}</span>
+                <span className="caption">{n.created_at ? new Date(n.created_at).toLocaleString('zh-CN') : ''}</span>
               </div>
-              <p className="text-sm text-gray-600">{n.content}</p>
-              <p className="text-xs text-gray-400 mt-1">{n.stock_name} <span className="font-mono">{n.stock_code}</span></p>
-            </div>
+              <strong>{n.title}</strong>
+              <p className="small fg2" style={{ margin: 0 }}>{n.content}</p>
+              {n.status === 'pending' && (
+                <div><button className="btn btn-ghost" onClick={() => markProcessed(n)}>标记已处理</button></div>
+              )}
+              <p className="caption" style={{ margin: 0 }}>{n.stock_name} <span className="mono">{n.stock_code}</span></p>
+            </section>
           ))}
         </div>
       )}
     </div>
   )
+}
+
+const ACTION_LABEL: Record<string, string> = {
+  buy: '买入', sell: '卖出', hold: '持有', watch: '观望',
+}
+const ACTION_BADGE: Record<string, string> = {
+  buy: 'badge up', sell: 'badge down', hold: 'badge hold', watch: 'badge info',
 }
 
 function TradePlansView() {
@@ -307,46 +317,37 @@ function TradePlansView() {
     }).catch(() => setLoading(false))
   }, [])
 
-  if (loading) return <p className="text-gray-400 text-sm">加载中…</p>
+  if (loading) return <div className="empty">加载中...</div>
 
   if (items.length === 0) {
-    return (
-      <div className="text-center py-12 text-gray-400 text-sm">
-        暂无 AI 交易计划。开启带 AI 分析的监测配置后，AI 会自动生成交易建议。
-      </div>
-    )
-  }
-
-  const ACTION_LABEL: Record<string, string> = {
-    buy: '买入', sell: '卖出', hold: '持有', watch: '观望',
-  }
-  const ACTION_COLOR: Record<string, string> = {
-    buy: 'text-red-600 bg-red-50', sell: 'text-green-600 bg-green-50',
-    hold: 'text-yellow-600 bg-yellow-50', watch: 'text-blue-600 bg-blue-50',
+    return <div className="empty">暂无 AI 交易计划。开启带 AI 分析的监测配置后，AI 会自动生成交易建议。</div>
   }
 
   return (
-    <div className="space-y-3">
-      {items.map((p) => (
-        <div key={p.id} className="border border-gray-200 rounded-lg p-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-gray-800">{p.stock_name || p.stock_code}</span>
-              <span className={`px-2 py-0.5 text-xs rounded ${ACTION_COLOR[p.action] || 'text-gray-600 bg-gray-50'}`}>
-                {ACTION_LABEL[p.action] || p.action}
-              </span>
-              <span className="text-xs text-gray-400">置信度 {(p.confidence * 100).toFixed(0)}%</span>
+    <div className="grid2">
+      {items.map((p) => {
+        const confPct = Math.round((p.confidence || 0) * 100)
+        return (
+          <section key={p.id} className="card">
+            <div className="between">
+              <h2 className="card-title-sm" style={{ margin: 0 }}>{p.stock_name || p.stock_code} <span className="muted mono small">{p.stock_code}</span></h2>
+              <span className={ACTION_BADGE[p.action] || 'badge'}>{ACTION_LABEL[p.action] || p.action}</span>
             </div>
-            <span className="text-xs text-gray-400">{(p.created_at || '').slice(0, 19).replace('T', ' ')}</span>
-          </div>
-          <div className="grid grid-cols-3 gap-4 text-sm mb-2">
-            <div><span className="text-gray-400">建议价</span> <span className="font-medium">{p.suggested_price}</span></div>
-            <div><span className="text-gray-400">目标价</span> <span className="font-medium text-red-500">{p.target_price}</span></div>
-            <div><span className="text-gray-400">止损价</span> <span className="font-medium text-green-500">{p.stop_loss}</span></div>
-          </div>
-          {p.reasoning && <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded">{p.reasoning}</p>}
-        </div>
-      ))}
+            <div className="mt16">
+              <span className="caption">置信度</span>
+              <div className="conf mono">{confPct}%</div>
+              <div className="progress mt8"><i style={{ width: `${confPct}%` }} /></div>
+            </div>
+            <div className="grid3 mt16">
+              <div className="kpi"><div className="k-label">建议价</div><div className="mono" style={{ font: '500 20px/1 var(--font-body)' }}>{p.suggested_price ?? '—'}</div></div>
+              <div className="kpi"><div className="k-label">目标价</div><div className="mono up" style={{ font: '500 20px/1 var(--font-body)' }}>{p.target_price ?? '—'}</div></div>
+              <div className="kpi"><div className="k-label">止损价</div><div className="mono down" style={{ font: '500 20px/1 var(--font-body)' }}>{p.stop_loss ?? '—'}</div></div>
+            </div>
+            {p.reasoning && <div className="reason-block mt16">{p.reasoning}</div>}
+            <p className="caption mt8">生成于 {(p.created_at || '').slice(0, 19).replace('T', ' ')} · 不构成投资建议</p>
+          </section>
+        )
+      })}
     </div>
   )
 }
@@ -362,30 +363,27 @@ function DecisionsView() {
     }).catch(() => setLoading(false))
   }, [])
 
-  if (loading) return <p className="text-gray-400 text-sm">加载中…</p>
+  if (loading) return <div className="empty">加载中...</div>
 
   if (items.length === 0) {
-    return (
-      <div className="text-center py-12 text-gray-400 text-sm">
-        暂无 AI 决策记录。监测运行时 AI 的每次判断会记录在这里。
-      </div>
-    )
+    return <div className="empty">暂无 AI 决策记录。监测运行时 AI 的每次判断会记录在这里。</div>
   }
 
   return (
-    <div className="space-y-2">
+    <section className="card">
+      <h2 className="card-title-sm">决策记录</h2>
       {items.map((d) => (
-        <div key={d.id} className="border border-gray-200 rounded-lg p-3 flex items-start justify-between">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="font-medium text-gray-800 text-sm">{d.stock_name || d.stock_code}</span>
-              <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded">{d.decision_type}</span>
+        <div className="rowline" key={d.id}>
+          <div>
+            <div className="flex" style={{ gap: 10 }}>
+              <strong>{d.stock_name || d.stock_code}</strong>
+              <span className="badge">{d.decision_type}</span>
             </div>
-            <p className="text-sm text-gray-600">{d.summary}</p>
+            <p className="small fg2" style={{ margin: '6px 0 0' }}>{d.summary}</p>
           </div>
-          <span className="text-xs text-gray-400 whitespace-nowrap ml-3">{(d.created_at || '').slice(0, 19).replace('T', ' ')}</span>
+          <span className="caption mono" style={{ flex: '0 0 auto' }}>{(d.created_at || '').slice(5, 16).replace('T', ' ')}</span>
         </div>
       ))}
-    </div>
+    </section>
   )
 }

@@ -167,86 +167,64 @@ export default function Guide() {
   const current = SECTIONS.find((s) => s.id === active) || SECTIONS[0]
 
   return (
-    <div className="max-w-5xl mx-auto">
-      <div className="flex gap-4">
-        {/* Left: section list */}
-        <div className="w-48 shrink-0 hidden sm:block">
-          <div className="sticky top-0 space-y-1">
+    <div className="guide-layout">
+      {/* 左栏:章节导航 */}
+      <div className="card guide-nav" style={{ padding: 16 }}>
+        <div className="section-label" style={{ margin: '0 0 8px' }}>目录</div>
+        {SECTIONS.map((s) => (
+          <a key={s.id}
+            className={`${active === s.id ? 'active' : ''}${s.id === 'faq' ? ' guide-gap' : ''}`}
+            style={{ cursor: 'pointer' }}
+            onClick={() => setActive(s.id)}>
+            {s.title}
+          </a>
+        ))}
+      </div>
+
+      {/* 右栏:章节内容 */}
+      <div>
+        {/* 移动端章节选择 */}
+        <div className="sm:hidden mb-4">
+          <select className="select" style={{ width: '100%' }} value={active} onChange={(e) => setActive(e.target.value)}>
             {SECTIONS.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setActive(s.id)}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${active === s.id ? 'bg-brand-50 text-brand-600 font-medium' : 'text-gray-600 hover:bg-gray-100'}`}
-              >
-                <span className="mr-1.5">{s.icon}</span>
-                {s.title}
-              </button>
+              <option key={s.id} value={s.id}>{s.title}</option>
             ))}
-          </div>
+          </select>
         </div>
 
-        {/* Right: content */}
-        <div className="flex-1 min-w-0 bg-white rounded-lg shadow-sm p-6 sm:p-8">
-          {/* Mobile section selector */}
-          <div className="sm:hidden mb-4">
-            <select
-              value={active}
-              onChange={(e) => setActive(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-            >
-              {SECTIONS.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.icon} {s.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <h1 className="text-2xl font-bold text-gray-900 mb-1">
-            <span className="mr-2">{current.icon}</span>
-            {current.title}
-          </h1>
-          <div className="h-1 w-12 bg-brand-500 rounded-full mb-6" />
-
-          <div className="space-y-2">
-            {current.content.map((line, i) => {
-              const parts = line.split(':')
-              if (parts.length >= 2 && parts[0].length <= 8) {
-                return (
-                  <p key={i} className="text-gray-600 leading-relaxed">
-                    <strong className="text-gray-800">{parts[0]}：</strong>
-                    {parts.slice(1).join(':')}
-                  </p>
-                )
-              }
-              return <p key={i} className="text-gray-600 leading-relaxed whitespace-pre-line">{line}</p>
-            })}
-          </div>
-
-          {/* Prev/Next */}
-          <div className="flex justify-between mt-8 pt-4 border-t border-gray-100">
-            {(() => {
-              const idx = SECTIONS.findIndex((s) => s.id === active)
-              const prev = idx > 0 ? SECTIONS[idx - 1] : null
-              const next = idx < SECTIONS.length - 1 ? SECTIONS[idx + 1] : null
+        <section className="card guide-section">
+          <h2 className="card-title">{current.title}</h2>
+          {current.content.map((line, i) => {
+            const parts = line.split(':')
+            if (parts.length >= 2 && parts[0].length <= 8 && !line.includes('\n')) {
               return (
-                <>
-                  {prev ? (
-                    <button onClick={() => setActive(prev.id)}
-                      className="text-sm text-gray-500 hover:text-brand-600">
-                      ← {prev.icon} {prev.title}
-                    </button>
-                  ) : <span />}
-                  {next ? (
-                    <button onClick={() => setActive(next.id)}
-                      className="text-sm text-gray-500 hover:text-brand-600">
-                      {next.icon} {next.title} →
-                    </button>
-                  ) : <span />}
-                </>
+                <p key={i}>
+                  <strong>{parts[0]}:</strong>
+                  {parts.slice(1).join(':')}
+                </p>
               )
-            })()}
-          </div>
+            }
+            return <p key={i} style={{ whiteSpace: 'pre-line' }}>{line}</p>
+          })}
+        </section>
+
+        {/* 底部翻页 */}
+        <div className="between guide-pager mt16">
+          {(() => {
+            const idx = SECTIONS.findIndex((s) => s.id === active)
+            const prev = idx > 0 ? SECTIONS[idx - 1] : null
+            const next = idx < SECTIONS.length - 1 ? SECTIONS[idx + 1] : null
+            return (
+              <>
+                {prev ? (
+                  <a className="btn btn-ghost" style={{ cursor: 'pointer' }} onClick={() => setActive(prev.id)}>← {prev.title}</a>
+                ) : <span />}
+                {next ? (
+                  <a className="btn btn-ghost" style={{ cursor: 'pointer' }} onClick={() => setActive(next.id)}>{next.title} →</a>
+                ) : <span />}
+              </>
+            )
+          })()}
         </div>
       </div>
     </div>

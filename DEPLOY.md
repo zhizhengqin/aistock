@@ -336,7 +336,7 @@ docker ps --format '{{.Names}}\t{{.Status}}' | grep gs-tracker
 | 容器一直 Restarting | .env 没配或密码不对 | 看诊断第 4 节，重做第 5 步 |
 | curl :8080 拒绝连接 | aistock-nginx 没起来 | `docker logs aistock-nginx --tail=30` 看原因 |
 | 提示端口被占用 | 别的程序抢了 8080/8443 | `ss -tlnp \| grep 8080` 看是谁，发给我 |
-| 注册收不到验证码 | 没配 SMTP | 验证码在日志里：`docker logs aistock-api \| grep -i code` |
+| 注册收不到验证码 | 没配 SMTP | 验证码在日志里：`docker logs aistock-api --tail=100 \| grep "EMAIL-DEV"`（日志里是中文「验证码」，grep code 搜不到） |
 | AI 报告一直失败 | DeepSeek key 无效或余额不足 | 先把 deploy/.env 里 LLM_MOCK 改 true 跑通流程 |
 | 首页行情不更新 | 数据源接口变了 | `docker logs aistock-worker --tail=100` 找红色报错 |
 | GS-Tracker 挂了 | 正常来说不会被影响 | `cd ~/gs-tracker && bash deploy/update.sh` 重启它 |

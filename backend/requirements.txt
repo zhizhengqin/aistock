@@ -1,38 +1,39 @@
- # Web framework
- fastapi==0.115.6
- uvicorn[standard]==0.34.0
- 
- # Database
- sqlalchemy==2.0.36
- alembic==1.14.0
- psycopg2-binary==2.9.10
- 
+# Web framework
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+
+# Database
+sqlalchemy==2.0.51
+alembic==1.19.0
+psycopg2-binary==2.9.12
+
 # Cache & queue
-redis==5.2.1
-arq==0.26.0
+redis==5.3.1
+arq==0.28.0
 apscheduler==3.10.4
- 
- # Data source
- akshare==1.16.72
- pandas==2.2.3
- 
- # Auth
- pyjwt==2.10.1
- bcrypt==4.2.1
- 
- # Utils
- pydantic==2.10.4
- pydantic-settings==2.7.0
- python-dotenv==1.0.1
- 
- # Testing
- pytest==8.3.4
- pytest-asyncio==0.25.0
- httpx==0.28.1
- respx==0.21.1
- 
- # Email (M4+ will configure real SMTP)
- # aiosmtplib==3.0.0
+
+# Data source
+akshare==1.16.72
+pandas==3.0.5
+
+# Auth
+pyjwt==2.13.0
+bcrypt==5.0.0
+
+# Utils
+pydantic==2.13.4
+email-validator==2.3.0
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+
+# Email
+aiosmtplib==3.0.0
 
 # PDF export (F-03-06)
 reportlab==4.2.5
+
+# Testing
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+fakeredis==2.37.0

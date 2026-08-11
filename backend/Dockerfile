@@ -8,10 +8,10 @@ WORKDIR /app
 # Tsinghua mirror keeps builds fast on JD Cloud (China mainland)
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY backend/ .
 RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 8000

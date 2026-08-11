@@ -13,7 +13,7 @@ arq==0.26.0
 apscheduler==3.10.4
  
  # Data source
- akshare==1.15.7
+ akshare==1.16.72
  pandas==2.2.3
  
  # Auth

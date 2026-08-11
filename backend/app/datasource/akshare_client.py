@@ -329,14 +329,17 @@ def get_sw_sector_list() -> list[dict]:
         return cached
     result = []
     try:
-        df = ak.sw_index_spot()
+        df = ak.index_realtime_sw(symbol="一级行业")
         if df is not None and not df.empty:
             for _, row in df.iterrows():
+                price = float(row.get("最新价", 0) or 0)
+                prev = float(row.get("昨收盘", 0) or 0)
+                change_pct = round((price - prev) / prev * 100, 2) if prev else 0.0
                 result.append({
-                    "code": str(row.get("板块代码", "")),
-                    "name": str(row.get("板块名称", "")),
-                    "change_pct": float(row.get("涨跌幅", 0) or 0),
-                    "price": float(row.get("最新价", 0) or 0),
+                    "code": str(row.get("指数代码", "")),
+                    "name": str(row.get("指数名称", "")),
+                    "change_pct": change_pct,
+                    "price": price,
                     "turnover": float(row.get("成交额", 0) or 0),
                 })
     except Exception as e:
@@ -353,9 +356,7 @@ def get_sw_sector_detail(code: str, days: int = 20) -> list[dict]:
         return cached
     result = []
     try:
-        end = pd.Timestamp.now().strftime("%Y%m%d")
-        start = (pd.Timestamp.now() - pd.Timedelta(days=int(days * 2))).strftime("%Y%m%d")
-        df = ak.sw_index_daily(symbol=code, start_date=start, end_date=end)
+        df = ak.index_hist_sw(symbol=code, period="day")
         if df is not None and not df.empty:
             df = df.tail(days)
             result = df.to_dict("records")

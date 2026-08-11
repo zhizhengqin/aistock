@@ -33,7 +33,7 @@
 | DeepSeek API Key | https://platform.deepseek.com 申请，充 10 块够用很久；暂时没有也行，第 5 步教你先用 mock 模式跑通 |
 | 一个域名（仅 HTTPS 需要） | 第 9 步才用，前面不需要。阿里云/腾讯云买，便宜的 .top/.cn 一年十几块 |
 
-手册里所有 `root@服务器#` 开头的命令都是在**服务器上**执行；`本机$` 开头的是在**你自己的 Mac** 上执行。
+手册里代码块中的命令默认都是在**服务器上**执行（可直接整段复制粘贴）；标注 `本机$` 开头的是在你自己的 Mac 上执行。
 
 ---
 
@@ -57,8 +57,8 @@
 逐条复制执行，**只验证、不安装**：
 
 ```bash
-root@服务器# docker --version && docker compose version
-root@服务器# git config --global --get-regexp 'url\..*insteadof'
+docker --version && docker compose version
+git config --global --get-regexp 'url\..*insteadof'
 ```
 
 - 第一条要看到 `Docker version 26.x` 和 `Docker Compose version v2.x`
@@ -69,7 +69,7 @@ root@服务器# git config --global --get-regexp 'url\..*insteadof'
 顺便确认 8080/8443 端口没被别的程序占用（正常应该**没有任何输出**）：
 
 ```bash
-root@服务器# ss -tlnp | grep -E ':(8080|8443) '
+ss -tlnp | grep -E ':(8080|8443) '
 ```
 
 有输出就把原文发给我。
@@ -93,8 +93,8 @@ root@服务器# ss -tlnp | grep -E ':(8080|8443) '
 ## 第 4 步：把代码拉到服务器
 
 ```bash
-root@服务器# git clone https://github.com/zhizhengqin/aistock.git /opt/aistock
-root@服务器# cd /opt/aistock && ls
+git clone https://github.com/zhizhengqin/aistock.git /opt/aistock
+cd /opt/aistock && ls
 ```
 
 看到 `README.md`、`backend/`、`frontend/`、`deploy/` 这些文件就对了。
@@ -110,16 +110,16 @@ root@服务器# cd /opt/aistock && ls
 **5.1 先生成两个随机密码**（复制执行，会输出两行随机字符串，先记下来）：
 
 ```bash
-root@服务器# openssl rand -hex 32
-root@服务器# openssl rand -hex 16
+openssl rand -hex 32
+openssl rand -hex 16
 ```
 
 **5.2 创建并编辑配置文件**：
 
 ```bash
-root@服务器# cd /opt/aistock
-root@服务器# cp deploy/.env.example deploy/.env
-root@服务器# nano deploy/.env
+cd /opt/aistock
+cp deploy/.env.example deploy/.env
+nano deploy/.env
 ```
 
 进入 nano 编辑器后，用方向键移动光标，改这几处：
@@ -137,8 +137,8 @@ root@服务器# nano deploy/.env
 ## 第 6 步：构建启动（首次约 10~20 分钟）
 
 ```bash
-root@服务器# cd /opt/aistock
-root@服务器# docker compose -f deploy/docker-compose.yml up -d --build
+cd /opt/aistock
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 首次构建要下载基础镜像、装依赖，比较慢，去喝杯水。看到最后一行类似 `✔ Container aistock-nginx Started` 就好了。
@@ -146,13 +146,13 @@ root@服务器# docker compose -f deploy/docker-compose.yml up -d --build
 **验证（逐条执行）**：
 
 ```bash
-root@服务器# docker compose -f deploy/docker-compose.yml ps
+docker compose -f deploy/docker-compose.yml ps
 ```
 
 要看到 **5 个容器全部 Up**：aistock-pg、aistock-redis、aistock-api、aistock-worker、aistock-nginx。
 
 ```bash
-root@服务器# curl http://localhost:8080/api/health
+curl http://localhost:8080/api/health
 ```
 
 看到 `{"code":0,"data":{"status":"healthy"}}` 就成功了。
@@ -160,7 +160,7 @@ root@服务器# curl http://localhost:8080/api/health
 **最后顺手确认 GS-Tracker 没受影响**（应该还是原来那 3 个容器在跑）：
 
 ```bash
-root@服务器# docker ps --format '{{.Names}}' | grep gs-tracker
+docker ps --format '{{.Names}}' | grep gs-tracker
 ```
 
 然后浏览器打开 **http://111.228.23.109:8080**，能看到登录页就部署成功了。
@@ -175,13 +175,13 @@ root@服务器# docker ps --format '{{.Names}}' | grep gs-tracker
 2. 如果没配邮件，验证码这样看：
 
 ```bash
-root@服务器# docker logs aistock-api --tail=50 | grep -i code
+docker logs aistock-api --tail=50 | grep -i code
 ```
 
 3. 注册完登录一次，然后回服务器执行提权（把 `admin` 换成你刚注册的用户名）：
 
 ```bash
-root@服务器# docker exec -it aistock-pg psql -U aistock -c "UPDATE users SET role='admin', tier='A' WHERE username='admin';"
+docker exec -it aistock-pg psql -U aistock -c "UPDATE users SET role='admin', tier='A' WHERE username='admin';"
 ```
 
 看到 `UPDATE 1` 就成了。重新登录后，侧边栏会出现「系统配置」入口。
@@ -206,7 +206,7 @@ root@服务器# docker exec -it aistock-pg psql -U aistock -c "UPDATE users SET 
 私钥全文这样拿（在服务器上执行，输出整段复制，包括 `-----BEGIN...` 和 `-----END...` 两行）：
 
 ```bash
-root@服务器# cat ~/.ssh/id_rsa
+cat ~/.ssh/id_rsa
 ```
 
 > 如果提示文件不存在，说明 GS-Tracker 当时用的是别的密钥文件名，执行 `ls ~/.ssh/` 看看，把私钥文件（没有 .pub 后缀的那个）内容复制出来。
@@ -226,8 +226,8 @@ root@服务器# cat ~/.ssh/id_rsa
 **9.2 用 DNS 方式申请免费证书**（不占用任何端口，完全不碰 GS-Tracker）：
 
 ```bash
-root@服务器# curl https://get.acme.sh | sh -s email=你的邮箱@example.com
-root@服务器# source ~/.bashrc
+curl https://get.acme.sh | sh -s email=你的邮箱@example.com
+source ~/.bashrc
 ```
 
 然后按你的域名 DNS 服务商选一个（在谁那儿买的域名、NS 是谁就用谁）：
@@ -249,8 +249,8 @@ export DP_Key="你的Token"
 **9.3 安装证书到 nginx 挂载目录**（域名替换成你的）：
 
 ```bash
-root@服务器# mkdir -p /data/aistock/nginx/certs/aistock.你的域名.com
-root@服务器# ~/.acme.sh/acme.sh --install-cert -d aistock.你的域名.com \
+mkdir -p /data/aistock/nginx/certs/aistock.你的域名.com
+~/.acme.sh/acme.sh --install-cert -d aistock.你的域名.com \
   --fullchain-file /data/aistock/nginx/certs/aistock.你的域名.com/fullchain.pem \
   --key-file       /data/aistock/nginx/certs/aistock.你的域名.com/key.pem \
   --reloadcmd     "docker restart aistock-nginx"
@@ -280,7 +280,7 @@ root@服务器# ~/.acme.sh/acme.sh --install-cert -d aistock.你的域名.com \
 ## 第 10 步：数据库每日备份
 
 ```bash
-root@服务器# crontab -e
+crontab -e
 ```
 
 在打开的文件**最后加一行**（别动已有的行——GS-Tracker 的定时任务可能也在里面）：

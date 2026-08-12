@@ -88,7 +88,7 @@ export default function Home() {
             <button className="btn-text" style={{ fontSize: 12 }} onClick={() => { fetchIndices(); fetchSector() }}>刷新</button>
           </span>
         </div>
-        <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))' }}>
+        <div className="kpi-grid home-index-grid">
           {indices.map((idx) => (
             <div className="kpi" key={idx.code}>
               <div className="k-label">{idx.name}</div>
@@ -134,7 +134,7 @@ export default function Home() {
       {/* 代表个股 */}
       <section className="card">
         <h2 className="card-title">代表个股</h2>
-        <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))' }}>
+        <div className="kpi-grid home-stock-grid">
           {(sectorData?.stocks || []).map((s) => (
             <div className="kpi" key={s.code}>
               <div className="k-label">{s.name} <span className="muted mono">{s.code}</span></div>
@@ -152,7 +152,7 @@ export default function Home() {
       <section className="card">
         <h2 className="card-title">大盘指数热力图</h2>
         {indices.length > 0 ? (
-          <div className="heatmap" style={{ gridTemplateColumns: `repeat(${Math.min(indices.length, 5)},1fr)` }}>
+          <div className="heatmap home-heatmap">
             {indices.map((idx) => (
               <div className="heat-cell" key={idx.code} style={{ background: heatColor(idx.change_pct) }}>
                 {idx.name}<br />{fmtPct(idx.change_pct)}

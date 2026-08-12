@@ -36,11 +36,43 @@ export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const [upgrade, setUpgrade] = useState<UpgradeDetail | null>(null)
+  const [isNavOpen, setIsNavOpen] = useState(false)
+  const [isMobileNav, setIsMobileNav] = useState(() => window.matchMedia('(max-width: 900px)').matches)
+
+  const closeNav = () => setIsNavOpen(false)
 
   useEffect(() => {
     const handler = (e: Event) => setUpgrade((e as CustomEvent).detail)
     window.addEventListener('membership:upgrade', handler)
     return () => window.removeEventListener('membership:upgrade', handler)
+  }, [])
+
+  useEffect(() => {
+    closeNav()
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!isNavOpen) return
+    const previousOverflow = document.body.style.overflow
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeNav()
+    }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [isNavOpen])
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia('(max-width: 900px)')
+    const onBreakpointChange = (event: MediaQueryListEvent) => {
+      setIsMobileNav(event.matches)
+      if (!event.matches) closeNav()
+    }
+    mobileQuery.addEventListener('change', onBreakpointChange)
+    return () => mobileQuery.removeEventListener('change', onBreakpointChange)
   }, [])
 
   const title = PAGE_TITLES[location.pathname] ?? '睿见投研'
@@ -51,6 +83,7 @@ export default function Layout() {
       to={item.path}
       end={item.path === '/'}
       className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+      onClick={closeNav}
     >
       <span className="dot"></span>
       <span>{item.label}</span>
@@ -59,11 +92,29 @@ export default function Layout() {
 
   return (
     <div className="shell">
-      {/* 侧栏（Zapier Black 深色区） */}
-      <aside className="sidebar">
+      <button
+        type="button"
+        className={`nav-backdrop${isNavOpen ? ' open' : ''}`}
+        aria-label="关闭菜单遮罩"
+        aria-hidden={!isNavOpen}
+        tabIndex={isNavOpen ? 0 : -1}
+        onClick={closeNav}
+      />
+
+      <aside
+        id="app-navigation"
+        className={`sidebar${isNavOpen ? ' open' : ''}`}
+        role={isMobileNav ? 'dialog' : undefined}
+        aria-label="主导航"
+        aria-modal={isMobileNav ? true : undefined}
+        aria-hidden={isMobileNav ? !isNavOpen : undefined}
+      >
         <div className="sidebar-logo">
-          <span className="name">睿见投研</span>
-          <span className="sub">AI 投研</span>
+          <div className="sidebar-brand">
+            <span className="name">睿见投研</span>
+            <span className="sub">AI 投研</span>
+          </div>
+          <button type="button" className="sidebar-close" aria-label="关闭导航菜单" onClick={closeNav}>×</button>
         </div>
         <nav className="nav">
           {NAV_ITEMS.map(navLink)}
@@ -71,14 +122,33 @@ export default function Layout() {
           {ACCOUNT_ITEMS.map(navLink)}
           {user?.role === 'admin' && navLink({ path: '/admin', label: '系统配置' })}
         </nav>
+        {user && (
+          <div className="mobile-user-cluster" data-testid="mobile-user-cluster">
+            <div className="mobile-user-meta">
+              <span className="badge accent">{user.tier} 档会员</span>
+              <span className="fg2">{user.username}</span>
+            </div>
+            <button className="btn-text" onClick={logout}>退出</button>
+          </div>
+        )}
         <div className="sidebar-foot">客服微信:扫码联系</div>
       </aside>
 
       {/* 主区 */}
       <div className="main">
         <header className="topbar">
+          <button
+            type="button"
+            className="menu-toggle"
+            aria-label="打开导航菜单"
+            aria-controls="app-navigation"
+            aria-expanded={isNavOpen}
+            onClick={() => setIsNavOpen(true)}
+          >
+            <span aria-hidden="true">☰</span>
+          </button>
           <span className="page-title">{title}</span>
-          <div className="user-cluster">
+          <div className="user-cluster desktop-user-cluster">
             {user && (
               <>
                 <span className="badge accent">{user.tier} 档会员</span>

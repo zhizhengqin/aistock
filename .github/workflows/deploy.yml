@@ -27,7 +27,9 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: cd frontend && npm ci && npm run build
+      - run: cd frontend && npm ci
+      - run: cd frontend && npm test -- --run
+      - run: cd frontend && npm run build
 
   deploy:
     needs: test                     # 测试全绿才允许部署（硬性关卡）

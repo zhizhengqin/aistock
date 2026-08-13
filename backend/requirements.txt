@@ -37,4 +37,5 @@ reportlab==4.2.5
 pytest==9.1.1
 pytest-asyncio==1.4.0
 httpx==0.28.1
+httpcore==1.0.9
 fakeredis==2.37.0

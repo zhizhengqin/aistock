@@ -65,10 +65,20 @@ class _PinnedAsyncHTTPTransport(httpx.AsyncHTTPTransport):
         )
         # httpx 0.28 exposes its httpcore pool privately; this is the narrow
         # extension point needed to retain the original origin for TLS while
-        # replacing only the TCP destination.
-        self._pool._network_backend = _PinnedNetworkBackend(
-            network_backend or self._pool._network_backend
-        )
+        # replacing only the TCP destination.  Treat a changed private shape
+        # as a configuration error rather than silently dropping DNS pinning.
+        pool = getattr(self, "_pool", None)
+        backend = getattr(pool, "_network_backend", None)
+        candidate = network_backend or backend
+        if not _network_backend_is_compatible(candidate):
+            raise _transport_config_error()
+        wrapper = _PinnedNetworkBackend(candidate)
+        try:
+            setattr(pool, "_network_backend", wrapper)
+        except (AttributeError, TypeError):
+            raise _transport_config_error() from None
+        if getattr(pool, "_network_backend", None) is not wrapper:
+            raise _transport_config_error()
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +142,69 @@ def _error(
     return error
 
 
+def _network_backend_is_compatible(backend: Any) -> bool:
+    """Check the minimal httpcore backend contract before private wrapping."""
+
+    return backend is not None and all(
+        callable(getattr(backend, name, None))
+        for name in ("connect_tcp", "connect_unix_socket", "sleep")
+    )
+
+
+def _transport_config_error() -> LlmError:
+    return _error(
+        "llm_transport_config",
+        "大模型网络客户端配置不受支持",
+        retryable=False,
+        confirmed_unsent=True,
+    )
+
+
+def _install_pinned_transport(client: httpx.AsyncClient) -> None:
+    """Install DNS pinning into the shared client's existing pool.
+
+    Mutating the existing pool avoids replacing an active ``AsyncHTTPTransport``
+    (and therefore avoids leaking its async close lifecycle).  Every private
+    attribute needed for this extension is checked before the wrapper is
+    installed; an incompatible httpx/httpcore shape fails closed.
+    """
+
+    transport = getattr(client, "_transport", None)
+    pool = getattr(transport, "_pool", None)
+    backend = getattr(pool, "_network_backend", None)
+    if not _network_backend_is_compatible(backend):
+        raise _transport_config_error()
+    if isinstance(backend, _PinnedNetworkBackend):
+        return
+    wrapper = _PinnedNetworkBackend(backend)
+    try:
+        setattr(pool, "_network_backend", wrapper)
+    except (AttributeError, TypeError):
+        raise _transport_config_error() from None
+    if getattr(pool, "_network_backend", None) is not wrapper:
+        raise _transport_config_error()
+
+
+def _provider_error_markers(body: bytes) -> tuple[str, str]:
+    """Return lower-case provider error fields without retaining upstream text."""
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "", ""
+    if not isinstance(payload, dict):
+        return "", ""
+    provider_error = payload.get("error")
+    if not isinstance(provider_error, dict):
+        # Qwen-compatible gateways sometimes put the same structured fields
+        # at the top level instead of under ``error``.
+        provider_error = payload
+    code = str(provider_error.get("code", "")).lower()
+    error_type = str(provider_error.get("type", "")).lower()
+    message = str(provider_error.get("message", "")).lower()
+    return f"{code} {error_type}", message
+
+
 def _normalise_provider(value: Provider | str) -> Provider:
     try:
         return value if isinstance(value, Provider) else Provider(value)
@@ -163,9 +236,7 @@ class ProviderClient:
         supplied_client = http_client or client
         self.http_client = supplied_client or get_llm_http_client()
         if supplied_client is None and not self._is_mock_transport():
-            current_transport = getattr(self.http_client, "_transport", None)
-            if not isinstance(current_transport, _PinnedAsyncHTTPTransport):
-                self.http_client._transport = _PinnedAsyncHTTPTransport()
+            _install_pinned_transport(self.http_client)
         self.resolver = resolver
         self.max_input_tokens = max(1, int(max_input_tokens))
         self.response_limit_bytes = min(max(1, int(response_limit_bytes)), MAX_RESPONSE_BYTES)
@@ -239,6 +310,18 @@ class ProviderClient:
     async def _read_bounded_response(self, response: httpx.Response) -> bytes:
         """Read a response in bounded chunks, closing as soon as it is too big."""
 
+        content_encoding = response.headers.get("content-encoding", "").strip().lower()
+        if content_encoding and content_encoding != "identity":
+            # ``aiter_bytes`` transparently inflates gzip/deflate content.  A
+            # provider must either return identity bytes or be rejected before
+            # any compressed payload is consumed, keeping the 2 MiB bound on
+            # wire bytes and avoiding decompression bombs.
+            raise _error(
+                "llm_invalid_json",
+                "模型服务返回了不支持的压缩响应",
+                retryable=False,
+                may_have_sent=True,
+            )
         content_length = response.headers.get("content-length")
         if content_length:
             try:
@@ -253,10 +336,24 @@ class ProviderClient:
                 # Malformed Content-Length is not trusted; the streaming
                 # counter below remains authoritative.
                 pass
+        # MockTransport (and callers that explicitly construct a buffered
+        # response) marks the response consumed before it reaches this
+        # method.  Real network responses remain unconsumed and take the raw
+        # streaming path below.  Keep this compatibility branch bounded.
+        if response.is_stream_consumed:
+            content = response.content
+            if len(content) > self.response_limit_bytes:
+                raise _error(
+                    "llm_response_too_large",
+                    "大模型响应过大",
+                    retryable=False,
+                    may_have_sent=True,
+                )
+            return content
         chunks: list[bytes] = []
         total = 0
         try:
-            async for chunk in response.aiter_bytes():
+            async for chunk in response.aiter_raw():
                 total += len(chunk)
                 if total > self.response_limit_bytes:
                     raise _error(
@@ -334,6 +431,7 @@ class ProviderClient:
         headers = {
             "Authorization": f"Bearer {runtime_config.api_key}",
             "Content-Type": "application/json",
+            "Accept-Encoding": "identity",
         }
         pin_token = _PINNED_IP.set(pinned_ip) if pinned_ip is not None else None
         try:
@@ -407,6 +505,67 @@ class ProviderClient:
             if pin_token is not None:
                 _PINNED_IP.reset(pin_token)
         status = response.status_code
+        provider_code, provider_message = _provider_error_markers(body)
+        combined_markers = f"{provider_code} {provider_message}"
+        daily_markers = (
+            "daily_limit",
+            "daily limit",
+            "daily_quota",
+            "daily quota",
+        )
+        quota_markers = (
+            "insufficient_quota",
+            "insufficient_balance",
+            "quota_exceeded",
+            "quota",
+            "balance",
+            "billing",
+            "credit_exceeded",
+        )
+        rate_markers = (
+            "rate_limit",
+            "rate limited",
+            "too_many_requests",
+            "throttl",
+        )
+        if any(marker in combined_markers for marker in daily_markers):
+            raise _error(
+                "llm_daily_limit_reached",
+                "模型供应商今日调用额度已达上限",
+                retryable=False,
+                may_have_sent=True,
+            )
+        if any(marker in combined_markers for marker in quota_markers):
+            raise _error(
+                "llm_quota_exceeded",
+                "模型供应商余额或调用额度不足",
+                retryable=False,
+                may_have_sent=True,
+            )
+        if any(marker in combined_markers for marker in rate_markers):
+            # A structured rate-limit error is retryable unless it was already
+            # classified as quota/credit exhaustion above.
+            raise _error(
+                "llm_rate_limited",
+                "大模型请求过于频繁，请稍后重试",
+                retryable=True,
+                may_have_sent=True,
+            )
+        model_code = provider_code
+        model_message = provider_message
+        if (
+            "model" in model_code
+            or (
+                "model" in model_message
+                and any(marker in model_message for marker in ("not", "exist", "found", "unavailable"))
+            )
+        ):
+            raise _error(
+                "llm_model_not_found",
+                "大模型或接口不存在，请检查模型配置",
+                retryable=False,
+                may_have_sent=True,
+            )
         if status in {401, 403}:
             raise _error(
                 "llm_auth_failed", "模型密钥无效，请管理员检查配置", retryable=False, may_have_sent=True
@@ -422,39 +581,6 @@ class ProviderClient:
                 retryable=False,
                 may_have_sent=True,
             )
-        if status == 400:
-            try:
-                error_payload = json.loads(body.decode("utf-8"))
-                provider_error = error_payload.get("error", {}) if isinstance(error_payload, dict) else {}
-                provider_code = str(provider_error.get("code", "")).lower()
-                provider_message = str(provider_error.get("message", "")).lower()
-            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-                provider_code = provider_message = ""
-            if "model" in provider_code or "model" in provider_message and (
-                "not" in provider_message or "exist" in provider_message or "found" in provider_message
-            ):
-                raise _error(
-                    "llm_model_not_found",
-                    "大模型或接口不存在，请检查模型配置",
-                    retryable=False,
-                    may_have_sent=True,
-                )
-            if any(
-                marker in provider_code or marker in provider_message
-                for marker in (
-                    "quota",
-                    "balance",
-                    "insufficient",
-                    "rate_limit_exceeded",
-                    "billing",
-                )
-            ):
-                raise _error(
-                    "llm_quota_exceeded",
-                    "模型供应商余额或调用额度不足",
-                    retryable=False,
-                    may_have_sent=True,
-                )
         if status == 429:
             raise _error(
                 "llm_rate_limited", "大模型请求过于频繁，请稍后重试", retryable=True, may_have_sent=True
@@ -469,7 +595,7 @@ class ProviderClient:
             )
         if status >= 400:
             raise _error(
-                "llm_invalid_response", "模型服务返回了无效响应", retryable=False, may_have_sent=True
+                "llm_unavailable", "模型服务暂时不可用，请稍后重试", retryable=False, may_have_sent=True
             )
         try:
             data = json.loads(body.decode("utf-8"))
@@ -484,7 +610,7 @@ class ProviderClient:
                 raise ValueError
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
             raise _error(
-                "llm_invalid_response", "模型返回格式异常，本次任务未生成报告", retryable=False, may_have_sent=True
+                "llm_invalid_json", "模型返回格式异常，本次任务未生成报告", retryable=False, may_have_sent=True
             ) from None
         usage = data.get("usage") if isinstance(data, dict) else None
         prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None

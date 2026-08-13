@@ -1,9 +1,13 @@
+import gzip
 import json
+import asyncio
+from types import SimpleNamespace
 
 import httpx
 import httpcore
 import pytest
 
+from app.services.llm.errors import LlmError
 from app.services.llm.provider_client import (
     ProviderClient,
     _PINNED_IP,
@@ -48,6 +52,7 @@ async def test_complete_json_uses_exact_compatible_protocol(provider, base_url, 
     async def handler(request):
         captured["url"] = str(request.url)
         captured["auth"] = request.headers["authorization"]
+        captured["accept_encoding"] = request.headers["accept-encoding"]
         captured["payload"] = json.loads(request.content)
         return httpx.Response(
             200,
@@ -65,6 +70,7 @@ async def test_complete_json_uses_exact_compatible_protocol(provider, base_url, 
     await client.aclose()
     assert captured["url"] == endpoint
     assert captured["auth"] == "Bearer sk-test-secret"
+    assert captured["accept_encoding"] == "identity"
     assert captured["payload"]["max_tokens"] == 200
     assert captured["payload"]["response_format"] == {"type": "json_object"}
     assert result.result_json == {"ok": True}
@@ -121,6 +127,31 @@ async def test_transport_connects_to_the_verified_ip_while_preserving_hostname()
     finally:
         _PINNED_IP.reset(token)
     assert delegate.calls == [("8.8.8.8", 443)]
+
+
+@pytest.mark.asyncio
+async def test_pinned_backend_contextvar_isolated_between_concurrent_requests():
+    class Delegate:
+        def __init__(self):
+            self.calls = []
+
+        async def connect_tcp(self, host, port, **kwargs):
+            await asyncio.sleep(0)
+            self.calls.append(host)
+            return object()
+
+    delegate = Delegate()
+    backend = _PinnedNetworkBackend(delegate)
+
+    async def one_request(ip):
+        token = _PINNED_IP.set(ip)
+        try:
+            await backend.connect_tcp("api.deepseek.com", 443)
+        finally:
+            _PINNED_IP.reset(token)
+
+    await asyncio.gather(one_request("8.8.8.8"), one_request("1.1.1.1"))
+    assert sorted(delegate.calls) == ["1.1.1.1", "8.8.8.8"]
 
 
 @pytest.mark.asyncio
@@ -191,6 +222,86 @@ async def test_pinned_transport_connects_to_verified_ip_but_sends_original_host_
 
 
 @pytest.mark.asyncio
+async def test_concurrent_pinned_requests_keep_ip_isolation_host_and_sni():
+    class Stream(httpcore.AsyncNetworkStream):
+        def __init__(self, ip, calls):
+            self.ip = ip
+            self.calls = calls
+            self.response = bytearray(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 53\r\n"
+                b"Content-Type: application/json\r\n\r\n"
+                b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
+            )
+
+        async def read(self, max_bytes, timeout=None):
+            if not self.response:
+                return b""
+            chunk = bytes(self.response[:max_bytes])
+            del self.response[:max_bytes]
+            return chunk
+
+        async def write(self, buffer, timeout=None):
+            self.calls.append((self.ip, "write", bytes(buffer)))
+
+        async def aclose(self):
+            return None
+
+        async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            self.calls.append((self.ip, "sni", server_hostname))
+            return self
+
+    class Backend(httpcore.AsyncNetworkBackend):
+        def __init__(self):
+            self.calls = []
+
+        async def connect_tcp(self, host, port, **kwargs):
+            await asyncio.sleep(0)
+            self.calls.append((host, "tcp", port))
+            return Stream(host, self.calls)
+
+        async def connect_unix_socket(self, path, **kwargs):
+            raise AssertionError("unexpected unix socket")
+
+        async def sleep(self, seconds):
+            return None
+
+    backend = Backend()
+    transport = _PinnedAsyncHTTPTransport(network_backend=backend)
+    client = httpx.AsyncClient(transport=transport, verify=True, trust_env=False)
+    addresses = iter(("8.8.8.8", "1.1.1.1"))
+
+    def resolver(host, port):
+        return [next(addresses)]
+
+    provider_client = ProviderClient(client=client, resolver=resolver)
+    try:
+        results = await asyncio.gather(
+            provider_client.complete_json(
+                runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+                [{"role": "user", "content": "first"}],
+            ),
+            provider_client.complete_json(
+                runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+                [{"role": "user", "content": "second"}],
+            ),
+        )
+    finally:
+        await client.aclose()
+
+    assert [result.result_json for result in results] == [{"ok": True}, {"ok": True}]
+    tcp_ips = sorted(host for host, kind, _ in backend.calls if kind == "tcp")
+    assert tcp_ips == ["1.1.1.1", "8.8.8.8"]
+    sni = [entry for entry in backend.calls if entry[1] == "sni"]
+    assert sorted(entry[2] for entry in sni) == ["api.deepseek.com", "api.deepseek.com"]
+    writes = [
+        entry
+        for entry in backend.calls
+        if entry[1] == "write" and b"Host: api.deepseek.com" in entry[2]
+    ]
+    assert len(writes) == 2
+
+
+@pytest.mark.asyncio
 async def test_streaming_response_stops_before_consuming_tail_after_two_mib():
     class Stream(httpx.AsyncByteStream):
         def __init__(self):
@@ -222,6 +333,90 @@ async def test_streaming_response_stops_before_consuming_tail_after_two_mib():
 
 
 @pytest.mark.asyncio
+async def test_compressed_response_is_rejected_before_decompression_or_materialization():
+    compressed = gzip.compress(b"x" * (20 * 1024 * 1024))
+
+    class CompressedStream(httpx.AsyncByteStream):
+        def __init__(self):
+            self.reads = 0
+
+        async def __aiter__(self):
+            self.reads += 1
+            yield compressed
+
+        async def aclose(self):
+            return None
+
+    stream = CompressedStream()
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            headers={"Content-Encoding": "gzip"},
+            stream=stream,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(LlmError) as exc:
+        await ProviderClient(client=client).complete_json(
+            runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+            [{"role": "user", "content": "hello"}],
+        )
+    await client.aclose()
+    assert exc.value.code == "llm_invalid_json"
+    assert stream.reads == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "code", "retryable"),
+    [
+        (
+            429,
+            '{"error":{"code":"insufficient_quota","type":"insufficient_quota","message":"balance sk-test-secret"}}',
+            "llm_quota_exceeded",
+            False,
+        ),
+        (
+            503,
+            '{"error":{"code":"insufficient_balance","type":"billing_error","message":"balance sk-test-secret"}}',
+            "llm_quota_exceeded",
+            False,
+        ),
+        (
+            429,
+            '{"error":{"code":"rate_limit_exceeded","type":"rate_limit","message":"busy"}}',
+            "llm_rate_limited",
+            True,
+        ),
+        (
+            429,
+            '{"code":"insufficient_quota","type":"billing_error","message":"remaining balance unavailable"}',
+            "llm_quota_exceeded",
+            False,
+        ),
+    ],
+)
+async def test_structured_provider_errors_are_mapped_before_http_status(
+    status, body, code, retryable
+):
+    async def handler(request):
+        return httpx.Response(status, content=body.encode("utf-8"))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(LlmError) as exc:
+        await ProviderClient(client=client).complete_json(
+            runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+            [{"role": "user", "content": "hello"}],
+        )
+    await client.aclose()
+    assert exc.value.code == code
+    assert exc.value.retryable is retryable
+    assert "sk-test-secret" not in str(exc.value)
+    assert "balance" not in str(exc.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "body", "code"),
     [
@@ -247,7 +442,7 @@ async def test_provider_errors_use_stable_codes_and_redact_upstream_body(status,
 
 
 @pytest.mark.asyncio
-async def test_malformed_provider_json_uses_stable_invalid_response_code():
+async def test_malformed_provider_json_uses_stable_invalid_json_code():
     async def handler(request):
         return httpx.Response(200, content=b"not-json")
 
@@ -258,4 +453,36 @@ async def test_malformed_provider_json_uses_stable_invalid_response_code():
             [{"role": "user", "content": "hello"}],
         )
     await client.aclose()
-    assert exc.value.code == "llm_invalid_response"
+    assert exc.value.code == "llm_invalid_json"
+
+
+def test_default_shared_client_fails_closed_when_httpcore_pool_shape_changes(monkeypatch):
+    from app.services.llm import provider_client as provider_client_module
+
+    fake_client = SimpleNamespace(_transport=SimpleNamespace(), _trust_env=True)
+    monkeypatch.setattr(provider_client_module, "get_llm_http_client", lambda: fake_client)
+    with pytest.raises(LlmError) as exc:
+        ProviderClient()
+    assert exc.value.code == "llm_transport_config"
+    assert "网络客户端配置" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_default_shared_client_installs_pinning_in_place_and_is_idempotent():
+    from app.services.llm import http_client as shared_http_client
+
+    await shared_http_client.close_llm_http_client()
+    shared = shared_http_client.get_llm_http_client()
+    original_transport = shared._transport
+    try:
+        first = ProviderClient()
+        wrapped_backend = shared._transport._pool._network_backend
+        second = ProviderClient()
+        assert first.http_client is shared
+        assert second.http_client is shared
+        assert shared._transport is original_transport
+        assert shared._transport._pool._network_backend is wrapped_backend
+        assert isinstance(wrapped_backend, _PinnedNetworkBackend)
+        assert isinstance(wrapped_backend._delegate, httpcore.AsyncNetworkBackend)
+    finally:
+        await shared_http_client.close_llm_http_client()

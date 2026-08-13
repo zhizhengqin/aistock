@@ -8,6 +8,9 @@ Quota semantics per feature:
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models.membership_plan import MembershipPlan
@@ -64,23 +67,44 @@ def _as_aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def ensure_plans(db: Session) -> None:
-    """Seed the plan table if empty (tests / fresh deployments)."""
-    if db.query(MembershipPlan).count() > 0:
-        return
-    for seed in PLAN_SEEDS:
-        db.add(MembershipPlan(**seed))
-    db.commit()
+def ensure_plans(db: Session, *, commit: bool = False) -> None:
+    """Seed plans without committing the caller's transaction by default.
+
+    Task submission deliberately owns one transaction spanning model locking,
+    membership accounting, task creation and outbox insertion.  The old
+    helper used to commit while lazily seeding plans, which could leak a
+    partially-created task.  ``commit=True`` is retained only for the legacy
+    read-only plan endpoint and other callers that explicitly own a standalone
+    transaction.
+    """
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        for seed in PLAN_SEEDS:
+            statement = pg_insert(MembershipPlan).values(**seed).on_conflict_do_nothing(
+                index_elements=[MembershipPlan.code]
+            )
+            db.execute(statement)
+    elif dialect == "sqlite":
+        for seed in PLAN_SEEDS:
+            statement = sqlite_insert(MembershipPlan).values(**seed).on_conflict_do_nothing(
+                index_elements=[MembershipPlan.code]
+            )
+            db.execute(statement)
+    elif db.query(MembershipPlan).count() == 0:
+        db.add_all(MembershipPlan(**seed) for seed in PLAN_SEEDS)
+    db.flush()
+    if commit:
+        db.commit()
 
 
 def get_plans(db: Session) -> list[MembershipPlan]:
-    ensure_plans(db)
+    ensure_plans(db, commit=True)
     return db.query(MembershipPlan).filter(MembershipPlan.is_active.is_(True)) \
         .order_by(MembershipPlan.sort_order).all()
 
 
-def get_plan(db: Session, code: str) -> MembershipPlan | None:
-    ensure_plans(db)
+def get_plan(db: Session, code: str, *, commit: bool = False) -> MembershipPlan | None:
+    ensure_plans(db, commit=commit)
     return db.query(MembershipPlan).filter(MembershipPlan.code == code).first()
 
 
@@ -114,7 +138,7 @@ def check_and_consume(db: Session, user: User, feature: str, cost: int = 1) -> N
     if feature not in FEATURES:
         raise ValueError(f"unknown feature: {feature}")
     tier = effective_tier(user)
-    plan = get_plan(db, tier)
+    plan = get_plan(db, tier, commit=False)
     limit = (plan.quotas or {}).get(feature, 0) if plan else 0
     name = FEATURES[feature]
 
@@ -127,42 +151,117 @@ def check_and_consume(db: Session, user: User, feature: str, cost: int = 1) -> N
         })
 
     today = date.today()
-    if limit != -1:
+    new_count = _record(db, user.id, feature, cost, today, limit=limit)
+    if limit != -1 and new_count is None:
         row = db.query(UsageLog).filter(
             UsageLog.user_id == user.id,
             UsageLog.feature == feature,
             UsageLog.used_on == today,
         ).first()
         used = row.count if row else 0
-        if used + cost > limit:
-            raise HTTPException(status_code=403, detail={
-                "code": "quota_exceeded",
-                "feature": feature,
-                "tier": tier,
-                "used": used,
-                "limit": limit,
-                "message": f"今日「{name}」配额已用尽（{limit}次/日），请升级会员",
-            })
-
-    _record(db, user.id, feature, cost, today)
+        raise HTTPException(status_code=403, detail={
+            "code": "quota_exceeded",
+            "feature": feature,
+            "tier": tier,
+            "used": used,
+            "limit": limit,
+            "message": f"今日「{name}」配额已用尽（{limit}次/日），请升级会员",
+        })
 
 
-def _record(db: Session, user_id: int, feature: str, cost: int, today: date) -> None:
+def _record(
+    db: Session,
+    user_id: int,
+    feature: str,
+    cost: int,
+    today: date,
+    *,
+    limit: int | None = None,
+) -> int | None:
+    """Atomically increment one daily usage row in the caller transaction.
+
+    PostgreSQL (and SQLite used by the fast unit suite) both support an
+    ``ON CONFLICT DO UPDATE`` statement.  The finite-quota predicate is part
+    of that statement, so two concurrent submissions cannot both pass a
+    stale pre-check and over-consume the row.  ``None`` means the conditional
+    update was rejected because the quota was exhausted.
+    """
+    values = {"user_id": user_id, "feature": feature, "used_on": today, "count": cost}
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        statement = pg_insert(UsageLog).values(**values)
+        update = {"count": UsageLog.count + cost}
+        if limit is not None and limit != -1:
+            update_where = UsageLog.count + cost <= limit
+            statement = statement.on_conflict_do_update(
+                index_elements=[UsageLog.user_id, UsageLog.feature, UsageLog.used_on],
+                set_=update,
+                where=update_where,
+            )
+        else:
+            statement = statement.on_conflict_do_update(
+                index_elements=[UsageLog.user_id, UsageLog.feature, UsageLog.used_on],
+                set_=update,
+            )
+    elif dialect == "sqlite":
+        statement = sqlite_insert(UsageLog).values(**values)
+        update = {"count": UsageLog.count + cost}
+        if limit is not None and limit != -1:
+            statement = statement.on_conflict_do_update(
+                index_elements=[UsageLog.user_id, UsageLog.feature, UsageLog.used_on],
+                set_=update,
+                where=UsageLog.count + cost <= limit,
+            )
+        else:
+            statement = statement.on_conflict_do_update(
+                index_elements=[UsageLog.user_id, UsageLog.feature, UsageLog.used_on],
+                set_=update,
+            )
+    else:
+        # Non-production fallback for third-party SQLAlchemy dialects.
+        row = db.query(UsageLog).filter(
+            UsageLog.user_id == user_id,
+            UsageLog.feature == feature,
+            UsageLog.used_on == today,
+        ).with_for_update().first()
+        if row is None:
+            if limit is not None and limit != -1 and cost > limit:
+                return None
+            row = UsageLog(**values)
+            db.add(row)
+            db.flush()
+            return row.count
+        if limit is not None and limit != -1 and row.count + cost > limit:
+            return None
+        row.count += cost
+        db.flush()
+        return row.count
+
+    result = db.execute(statement)
+    db.flush()
+    if result.rowcount == 0:
+        return None
     row = db.query(UsageLog).filter(
         UsageLog.user_id == user_id,
         UsageLog.feature == feature,
         UsageLog.used_on == today,
     ).first()
-    if row:
-        row.count += cost
-    else:
-        db.add(UsageLog(user_id=user_id, feature=feature, used_on=today, count=cost))
-    db.commit()
+    return row.count if row else None
+
+
+def check_and_consume_legacy(db: Session, user: User, feature: str, cost: int = 1) -> None:
+    """Explicit standalone compatibility helper that owns its commit."""
+    try:
+        check_and_consume(db, user, feature, cost)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def usage_summary(db: Session, user: User) -> dict:
     tier = effective_tier(user)
-    plan = get_plan(db, tier)
+    plan = get_plan(db, tier, commit=False)
     quotas = (plan.quotas or {}) if plan else {}
     today = date.today()
     rows = db.query(UsageLog).filter(

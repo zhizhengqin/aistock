@@ -1,3 +1,5 @@
+import asyncio
+
 from arq.connections import RedisSettings
 from app.tasks.analysis import analyze_stock_task
 from app.tasks.main_force import main_force_task
@@ -10,6 +12,28 @@ from app.tasks.news_collect import news_collect_task
 from app.tasks.us_research import us_research_task
 from app.core.config import settings
 from app.services.llm.http_client import close_llm_http_client, get_llm_http_client
+
+
+_outbox_loop_task: asyncio.Task | None = None
+
+
+async def _outbox_loop():
+    """Continuously drain transactional outbox rows in the worker process."""
+    from app.core.database import SessionLocal
+    from app.services.outbox_dispatcher import OutboxDispatcher
+
+    dispatcher = OutboxDispatcher(SessionLocal)
+    while True:
+        try:
+            await dispatcher.dispatch_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A transient database/Redis outage must leave rows pending for
+            # the next pass; never turn worker startup into a fatal error.
+            from app.core.logger import logger
+            logger.warning(f"事务 outbox 投递循环暂时失败: {type(exc).__name__}")
+        await asyncio.sleep(1.0)
 
 
 def get_redis_settings() -> RedisSettings:
@@ -34,11 +58,24 @@ async def _on_worker_startup(ctx):
     from app.tasks.scheduler import start_scheduler
     get_llm_http_client()
     start_scheduler(force=True)
+    global _outbox_loop_task
+    if _outbox_loop_task is None or _outbox_loop_task.done():
+        _outbox_loop_task = asyncio.create_task(_outbox_loop())
+    if isinstance(ctx, dict):
+        ctx["outbox_loop_task"] = _outbox_loop_task
 
 
 async def _on_worker_shutdown(ctx):
     from app.tasks.scheduler import shutdown_scheduler
     try:
+        global _outbox_loop_task
+        if _outbox_loop_task is not None:
+            _outbox_loop_task.cancel()
+            try:
+                await _outbox_loop_task
+            except asyncio.CancelledError:
+                pass
+            _outbox_loop_task = None
         shutdown_scheduler()
     finally:
         await close_llm_http_client()

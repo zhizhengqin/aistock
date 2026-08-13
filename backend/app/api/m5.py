@@ -11,18 +11,35 @@ from app.models.task_record import TaskRecord
 from app.models.news_item import NewsItem
 from app.models.us_research_report import UsResearchReport
 from app.core.logger import logger
+from app.services.task_submission import (
+    TaskSubmission,
+    TaskSubmissionService,
+    schedule_inline_after_commit,
+)
 import asyncio
 
 router = APIRouter()
 
 
-def _start_task(db, task_type, user_id, inline_func, args):
-    task = TaskRecord(task_type=task_type, user_id=user_id, status="pending", progress=0)
-    db.add(task); db.commit(); db.refresh(task)
+async def _start_task(db, task_type, user_id, inline_func, args, *, requires_llm=True):
+    args_dict = {"user_id": user_id}
+    if task_type == "us_research":
+        args_dict["trade_date"] = args[0]
+    submission = TaskSubmission(
+        task_type=task_type,
+        user_id=user_id,
+        feature=None,
+        feature_cost=0,
+        args=args_dict,
+        input_snapshot={"args": args},
+        prompt_version=f"{task_type}-v1",
+        requires_llm=requires_llm,
+    )
+    result = TaskSubmissionService(db).submit(submission)
     if settings.TASK_INLINE:
-        asyncio.create_task(inline_func(None, task.id, *args))
-        logger.info(f"Inline task {task.id} type={task_type}")
-    return task
+        await schedule_inline_after_commit(db, result, inline_func, tuple(args))
+        logger.info(f"Inline task {result.task.id} type={task_type}")
+    return result.task
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +85,7 @@ async def list_news_sources(user: User = Depends(get_current_user), db: Session 
 @router.post("/news/collect")
 async def trigger_news_collect(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from app.tasks.news_collect import news_collect_task
-    task = _start_task(db, "news_collect", user.id, news_collect_task, [])
+    task = await _start_task(db, "news_collect", user.id, news_collect_task, [], requires_llm=False)
     return success(data={"task_id": task.id}, message="新闻采集任务已启动")
 
 
@@ -102,7 +119,7 @@ async def generate_us_research(user: User = Depends(get_current_user), db: Sessi
     from app.tasks.us_research import us_research_task
     from app.services.us_research_orchestrator import latest_us_trade_date
     trade_date = latest_us_trade_date()
-    task = _start_task(db, "us_research", user.id, us_research_task, [trade_date, user.id])
+    task = await _start_task(db, "us_research", user.id, us_research_task, [trade_date, user.id])
     return success(data={"task_id": task.id, "trade_date": trade_date}, message="研报生成任务已启动")
 
 

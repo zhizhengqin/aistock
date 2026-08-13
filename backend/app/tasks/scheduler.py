@@ -25,16 +25,36 @@ def get_scheduler() -> AsyncIOScheduler:
     return _scheduler
 
 
-def _new_task_record(task_type: str) -> int:
+async def _submit_scheduled(task_type: str, inline_func, args: list, *, requires_llm: bool = True) -> int:
+    """Submit a worker-owned scheduled task through the same atomic service."""
     from app.core.database import SessionLocal
-    from app.models.task_record import TaskRecord
+    from app.services.task_submission import (
+        TaskSubmission,
+        TaskSubmissionService,
+        schedule_inline_after_commit,
+    )
+
     db = SessionLocal()
     try:
-        task = TaskRecord(task_type=task_type, user_id=None, status="pending", progress=0)
-        db.add(task)
-        db.commit()
-        db.refresh(task)
-        return task.id
+        args_dict = {"user_id": 0}
+        if task_type == "dragon_tiger":
+            args_dict["period_days"] = args[0]
+        elif task_type == "us_research":
+            args_dict["trade_date"] = args[0]
+        submission = TaskSubmission(
+            task_type=task_type,
+            user_id=None,
+            feature=None,
+            feature_cost=0,
+            args=args_dict,
+            input_snapshot={"args": args},
+            prompt_version=f"{task_type}-scheduled-v1",
+            requires_llm=requires_llm,
+        )
+        result = TaskSubmissionService(db).submit(submission)
+        if settings.TASK_INLINE:
+            await schedule_inline_after_commit(db, result, inline_func, tuple(args))
+        return result.task.id
     finally:
         db.close()
 
@@ -72,27 +92,35 @@ async def _guarded(job_name: str, coro):
 
 async def _run_sector_analysis_scheduled():
     from app.tasks.sector_analysis import sector_analysis_task
-    task_id = _new_task_record("sector_analysis")
-    await _guarded("sector_analysis", sector_analysis_task(None, task_id, 0))
+    await _guarded(
+        "sector_analysis",
+        _submit_scheduled("sector_analysis", sector_analysis_task, [0]),
+    )
 
 
 async def _run_dragon_tiger_scheduled():
     from app.tasks.dragon_tiger import dragon_tiger_task
-    task_id = _new_task_record("dragon_tiger")
-    await _guarded("dragon_tiger", dragon_tiger_task(None, task_id, 5, 0))
+    await _guarded(
+        "dragon_tiger",
+        _submit_scheduled("dragon_tiger", dragon_tiger_task, [5, 0]),
+    )
 
 
 async def _run_news_collect_scheduled():
     from app.tasks.news_collect import news_collect_task
-    task_id = _new_task_record("news_collect")
-    await _guarded("news_collect", news_collect_task(None, task_id))
+    await _guarded(
+        "news_collect",
+        _submit_scheduled("news_collect", news_collect_task, [], requires_llm=False),
+    )
 
 
 async def _run_us_research_scheduled():
     from app.tasks.us_research import us_research_task
     from app.services.us_research_orchestrator import latest_us_trade_date
-    task_id = _new_task_record("us_research")
-    await _guarded("us_research", us_research_task(None, task_id, latest_us_trade_date(), 0))
+    await _guarded(
+        "us_research",
+        _submit_scheduled("us_research", us_research_task, [latest_us_trade_date(), 0]),
+    )
 
 
 async def _run_monitor_poll_scheduled():

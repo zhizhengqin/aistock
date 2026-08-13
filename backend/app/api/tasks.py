@@ -1,16 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from arq import create_pool
-from arq.connections import RedisSettings
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.response import success
 from app.models.user import User
 from app.models.task_record import TaskRecord
-from app.tasks.queue import get_redis_settings
 from app.core.logger import logger
-from app.services import membership as membership_svc
+from app.services.task_submission import (
+    TaskSubmission,
+    TaskSubmissionResult,
+    TaskSubmissionService,
+    schedule_inline_after_commit,
+)
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -20,47 +22,38 @@ class AnalyzeRequest(BaseModel):
     stock_codes: list[str]
 
 
-async def _enqueue_task(task_type: str, args: list) -> str:
-    redis = await create_pool(get_redis_settings())
-    job = await redis.enqueue_job(task_type, *args)
-    await redis.close()
-    return job.job_id if job else ""
-
-
 @router.post("/stocks/analyze")
 async def submit_analysis(req: AnalyzeRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not req.stock_codes or len(req.stock_codes) > 50:
         raise HTTPException(status_code=400, detail="股票代码数量需在1-50之间")
 
-    membership_svc.check_and_consume(db, user, "stock_analysis", cost=len(req.stock_codes))
-
-    tasks = []
-    for code in req.stock_codes:
-        task = TaskRecord(
+    submissions = [
+        TaskSubmission(
             task_type="stock_analysis",
             user_id=user.id,
-            status="pending",
-            progress=0,
+            feature="stock_analysis",
+            feature_cost=1,
+            args={"stock_code": code.strip(), "user_id": user.id},
+            input_snapshot={"stock_code": code.strip()},
+            prompt_version="stock-analysis-v1",
         )
-        db.add(task)
-        db.commit()
-        db.refresh(task)
-        if settings.TASK_INLINE:
-            # Dev mode: run task inline on the event loop
-            import asyncio
-            from app.tasks.analysis import analyze_stock_task
-            asyncio.create_task(analyze_stock_task(None, task.id, code.strip(), user.id))
-            logger.info(f"Inline task {task.id} for stock {code}")
-        else:
-            try:
-                job_id = await _enqueue_task("analyze_stock_task", [task.id, code.strip(), user.id])
-                logger.info(f"Enqueued task {task.id} for stock {code}, job_id={job_id}")
-            except Exception as e:
-                logger.warning(f"arq enqueue failed, running inline: {e}")
-                import asyncio
-                from app.tasks.analysis import analyze_stock_task
-                asyncio.create_task(analyze_stock_task(None, task.id, code.strip(), user.id))
-        tasks.append({"task_id": task.id, "stock_code": code.strip()})
+        for code in req.stock_codes
+    ]
+    result = TaskSubmissionService(db).submit_batch(submissions)
+    if settings.TASK_INLINE:
+        from app.tasks.analysis import analyze_stock_task
+        for task, outbox, submission in zip(result.tasks, result.outboxes, submissions):
+            await schedule_inline_after_commit(
+                db,
+                TaskSubmissionResult([task], [outbox]),
+                analyze_stock_task,
+                (submission.args["stock_code"], user.id),
+            )
+            logger.info(f"Inline task {task.id} for stock {submission.args['stock_code']}")
+    tasks = [
+        {"task_id": task.id, "stock_code": code.strip()}
+        for task, code in zip(result.tasks, req.stock_codes)
+    ]
 
     return success(data={"tasks": tasks}, message="分析任务已提交")
 

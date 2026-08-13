@@ -16,19 +16,35 @@ from app.models.ai_decision_record import AiDecisionRecord
 from app.models.risk_warning import RiskWarning
 from app.core.logger import logger
 from app.services import membership as membership_svc
+from app.services.task_submission import (
+    TaskSubmission,
+    schedule_inline_after_commit,
+    TaskSubmissionService,
+)
 from pydantic import BaseModel
 import asyncio
 
 router = APIRouter()
 
 
-def _start_task(db, task_type, user_id, inline_func, args):
-    task = TaskRecord(task_type=task_type, user_id=user_id, status="pending", progress=0)
-    db.add(task); db.commit(); db.refresh(task)
+async def _start_task(db, task_type, user_id, inline_func, args, feature):
+    args_dict = {"user_id": user_id}
+    if task_type == "stock_risk":
+        args_dict.update({"stock_code": args[0], "days": args[1]})
+    submission = TaskSubmission(
+        task_type=task_type,
+        user_id=user_id,
+        feature=feature,
+        feature_cost=1,
+        args=args_dict,
+        input_snapshot={"args": args},
+        prompt_version=f"{task_type}-v1",
+    )
+    result = TaskSubmissionService(db).submit(submission)
     if settings.TASK_INLINE:
-        asyncio.create_task(inline_func(None, task.id, *args))
-        logger.info(f"Inline task {task.id} type={task_type}")
-    return task
+        await schedule_inline_after_commit(db, result, inline_func, tuple(args))
+        logger.info(f"Inline task {result.task.id} type={task_type}")
+    return result.task
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +138,9 @@ async def analyze_portfolio(user: User = Depends(get_current_user), db: Session 
     stocks = db.query(PortfolioStock).filter(PortfolioStock.user_id == user.id).count()
     if stocks == 0:
         raise HTTPException(status_code=400, detail="请先添加持仓股票")
-    membership_svc.check_and_consume(db, user, "holdings")
-    task = _start_task(db, "portfolio_diagnosis", user.id,
+    task = await _start_task(db, "portfolio_diagnosis", user.id,
                        __import__("app.tasks.portfolio", fromlist=["portfolio_diagnosis_task"]).portfolio_diagnosis_task,
-                       [user.id])
+                       [user.id], "holdings")
     return success(data={"task_id": task.id}, message="持仓诊断任务已提交")
 
 
@@ -185,7 +200,7 @@ async def list_monitor_configs(status: str = "all", user: User = Depends(get_cur
 
 @router.post("/stocks/ai-monitoring/configurations")
 async def add_monitor_config(req: MonitorConfigCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    membership_svc.check_and_consume(db, user, "ai_watch")
+    membership_svc.check_and_consume_legacy(db, user, "ai_watch")
     config = MonitorConfig(user_id=user.id, **req.model_dump())
     db.add(config); db.commit(); db.refresh(config)
     return success(data={"id": config.id}, message="监测项添加成功")
@@ -285,7 +300,7 @@ async def list_decisions(page: int = 1, page_size: int = 20,
 
 @router.post("/stocks/ai-monitoring/check")
 async def trigger_monitor_check(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    membership_svc.check_and_consume(db, user, "monitor")
+    membership_svc.check_and_consume_legacy(db, user, "monitor")
     from app.services.monitor_engine import run_monitor_check
     count = run_monitor_check()
     return success(data={"triggered": count}, message="检查完成")
@@ -304,10 +319,9 @@ class RiskAnalyzeRequest(BaseModel):
 async def analyze_stock_risk(req: RiskAnalyzeRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if req.days < 1 or req.days > 365:
         raise HTTPException(status_code=400, detail="分析天数范围1-365")
-    membership_svc.check_and_consume(db, user, "risk_alert")
-    task = _start_task(db, "stock_risk", user.id,
+    task = await _start_task(db, "stock_risk", user.id,
                        __import__("app.tasks.risk_analysis", fromlist=["stock_risk_task"]).stock_risk_task,
-                       [req.stock_code, req.days, user.id])
+                       [req.stock_code, req.days, user.id], "risk_alert")
     return success(data={"task_id": task.id}, message="风险分析任务已提交")
 
 
@@ -323,10 +337,9 @@ async def portfolio_risk(user: User = Depends(get_current_user), db: Session = D
             return success(data={"total_warnings": 0, "max_level": "info",
                                   "composite_score": 100, "level_stats": {},
                                   "warnings_detail": []}, message="暂无持仓，无法分析")
-        membership_svc.check_and_consume(db, user, "risk_alert")
-        task = _start_task(db, "portfolio_risk", user.id,
+        task = await _start_task(db, "portfolio_risk", user.id,
                            __import__("app.tasks.portfolio_risk", fromlist=["portfolio_risk_task"]).portfolio_risk_task,
-                           [user.id])
+                           [user.id], "risk_alert")
         return success(data={"task_id": task.id}, message="组合风险扫描已提交")
 
     level_counts = {}

@@ -26,6 +26,48 @@ def _auth(client, user_id):
     return client
 
 
+def _seed_verified_default(test_db):
+    """Give task-endpoint compatibility tests an active verified default."""
+    from app.models.llm_config import LlmModelConfig, LlmModelTestRun, LlmRuntimeSetting
+    from app.services.llm.config_service import runtime_fingerprint
+
+    _, TestingSession = test_db
+    db = TestingSession()
+    config = LlmModelConfig(
+        provider="deepseek",
+        display_name="测试默认模型",
+        model_name="deepseek-chat",
+        base_url="https://api.deepseek.com/v1",
+        encrypted_api_key="ciphertext",
+        encryption_key_id="test",
+        envelope_version="v1",
+        nonce="nonce",
+        runtime_fingerprint="pending",
+        lifecycle_status="active",
+    )
+    config.runtime_fingerprint = runtime_fingerprint(
+        provider=config.provider,
+        model_name=config.model_name,
+        base_url=config.base_url,
+        credential_version=config.credential_version,
+        max_output_tokens=config.max_output_tokens or 4096,
+    )
+    db.add(config)
+    db.flush()
+    run = LlmModelTestRun(
+        model_config_id=config.id,
+        runtime_fingerprint=config.runtime_fingerprint,
+        status="success",
+        test_type="probe",
+    )
+    db.add(run)
+    db.flush()
+    config.verified_test_id = run.id
+    db.add(LlmRuntimeSetting(default_model_config_id=config.id))
+    db.commit()
+    db.close()
+
+
 # ---------------------------------------------------------------------------
 # Plans & matrix (F-12-01)
 # ---------------------------------------------------------------------------
@@ -123,7 +165,11 @@ def test_expire_memberships_task(test_db):
 # Quota gating (F-12-02)
 # ---------------------------------------------------------------------------
 
-def test_free_stock_analysis_daily_limit(client, seed_user):
+def test_free_stock_analysis_daily_limit(client, seed_user, test_db):
+    # Task submissions now correctly reject missing defaults before creating
+    # any row; this endpoint quota regression needs a valid default to reach
+    # the existing membership assertion.
+    _seed_verified_default(test_db)
     _auth(client, seed_user["id"])
     r1 = client.post("/api/stocks/analyze", json={"stock_codes": ["600519"]})
     assert r1.status_code == 200
@@ -134,7 +180,8 @@ def test_free_stock_analysis_daily_limit(client, seed_user):
     assert detail["feature"] == "stock_analysis"
 
 
-def test_free_sector_locked(client, seed_user):
+def test_free_sector_locked(client, seed_user, test_db):
+    _seed_verified_default(test_db)
     _auth(client, seed_user["id"])
     resp = client.post("/api/stocks/sectors/analyze")
     assert resp.status_code == 403
@@ -144,6 +191,7 @@ def test_free_sector_locked(client, seed_user):
 
 
 def test_tier_c_sector_allowed(client, test_db):
+    _seed_verified_default(test_db)
     engine, TestingSession = test_db
     db = TestingSession()
     u = _make_user(db, "tierc", tier="C", expire=datetime.now(timezone.utc) + timedelta(days=30))
@@ -155,6 +203,7 @@ def test_tier_c_sector_allowed(client, test_db):
 
 
 def test_tier_c_stock_analysis_multi_code_consumes(client, test_db):
+    _seed_verified_default(test_db)
     engine, TestingSession = test_db
     db = TestingSession()
     u = _make_user(db, "tierc2", tier="C", expire=datetime.now(timezone.utc) + timedelta(days=30))
@@ -169,6 +218,7 @@ def test_tier_c_stock_analysis_multi_code_consumes(client, test_db):
 
 
 def test_tier_b_stock_pick_locked(client, test_db):
+    _seed_verified_default(test_db)
     engine, TestingSession = test_db
     db = TestingSession()
     u = _make_user(db, "tierb", tier="B", expire=datetime.now(timezone.utc) + timedelta(days=30))
@@ -181,6 +231,7 @@ def test_tier_b_stock_pick_locked(client, test_db):
 
 
 def test_tier_a_stock_pick_allowed(client, test_db):
+    _seed_verified_default(test_db)
     engine, TestingSession = test_db
     db = TestingSession()
     u = _make_user(db, "tiera", tier="A", expire=datetime.now(timezone.utc) + timedelta(days=30))
@@ -192,6 +243,7 @@ def test_tier_a_stock_pick_allowed(client, test_db):
 
 
 def test_expired_paid_user_falls_back_to_free(client, test_db):
+    _seed_verified_default(test_db)
     engine, TestingSession = test_db
     db = TestingSession()
     expired = datetime.now(timezone.utc) - timedelta(days=1)

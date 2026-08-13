@@ -11,34 +11,40 @@ from app.models.main_force_run import MainForceRun
 from app.models.sector_report import SectorReport
 from app.models.dragon_tiger_report import DragonTigerReport
 from app.core.logger import logger
-from app.services import membership as membership_svc
+from app.services.task_submission import (
+    TaskSubmission,
+    TaskSubmissionResult,
+    TaskSubmissionService,
+    schedule_inline_after_commit,
+)
 from pydantic import BaseModel
 
 router = APIRouter()
 
 
-def _start_task(db: Session, task_type: str, user_id: int, inline_func, args: list) -> TaskRecord:
-    """Create a task record and dispatch it (inline or arq)."""
-    task = TaskRecord(task_type=task_type, user_id=user_id, status="pending", progress=0)
-    db.add(task)
-    db.commit()
-    db.refresh(task)
+async def _start_task(
+    db: Session,
+    task_type: str,
+    user_id: int,
+    inline_func,
+    args: list,
+    feature: str,
+) -> TaskRecord:
+    """Submit and optionally run one task after its transaction commits."""
+    submission = TaskSubmission(
+        task_type=task_type,
+        user_id=user_id,
+        feature=feature,
+        feature_cost=1,
+        args={"user_id": user_id, **({"period_days": args[0]} if task_type == "dragon_tiger" else {})},
+        input_snapshot={"args": args},
+        prompt_version=f"{task_type}-v1",
+    )
+    result = TaskSubmissionService(db).submit(submission)
     if settings.TASK_INLINE:
-        import asyncio
-        asyncio.create_task(inline_func(None, task.id, *args))
-        logger.info(f"Inline task {task.id} type={task_type}")
-    else:
-        try:
-            from app.tasks.queue import get_redis_settings
-            from arq import create_pool
-            redis = create_poll = asyncio.get_event_loop().run_until_complete(create_pool(get_redis_settings()))
-            job = asyncio.get_event_loop().run_until_complete(redis.enqueue_job(task_type, *args))
-            logger.info(f"Enqueued task {task.id}, job_id={job.job_id if job else 'none'}")
-        except Exception as e:
-            logger.warning(f"arq enqueue failed, running inline: {e}")
-            import asyncio
-            asyncio.create_task(inline_func(None, task.id, *args))
-    return task
+        await schedule_inline_after_commit(db, result, inline_func, tuple(args))
+        logger.info(f"Inline task {result.task.id} type={task_type}")
+    return result.task
 
 
 # ---------------------------------------------------------------------------
@@ -47,11 +53,9 @@ def _start_task(db: Session, task_type: str, user_id: int, inline_func, args: li
 
 @router.post("/stocks/main-force/run")
 async def run_main_force(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    membership_svc.check_and_consume(db, user, "stock_pick")
-
-    task = _start_task(db, "main_force", user.id,
+    task = await _start_task(db, "main_force", user.id,
                        __import__("app.tasks.main_force", fromlist=["main_force_task"]).main_force_task,
-                       [user.id])
+                       [user.id], "stock_pick")
     return success(data={"task_id": task.id}, message="主力选股任务已提交")
 
 
@@ -88,10 +92,9 @@ async def main_force_detail(run_id: int, user: User = Depends(get_current_user),
 
 @router.post("/stocks/sectors/analyze")
 async def run_sector_analysis(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    membership_svc.check_and_consume(db, user, "sector")
-    task = _start_task(db, "sector_analysis", user.id,
+    task = await _start_task(db, "sector_analysis", user.id,
                        __import__("app.tasks.sector_analysis", fromlist=["sector_analysis_task"]).sector_analysis_task,
-                       [user.id])
+                       [user.id], "sector")
     return success(data={"task_id": task.id}, message="板块分析任务已提交")
 
 
@@ -133,11 +136,9 @@ async def run_dragon_tiger(req: DragonTigerRequest,
                            user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if req.period_days not in [3, 5, 10, 15, 20, 30]:
         raise HTTPException(status_code=400, detail="时间范围仅支持 3/5/10/15/20/30 天")
-    membership_svc.check_and_consume(db, user, "dragon_tiger")
-
-    task = _start_task(db, "dragon_tiger", user.id,
+    task = await _start_task(db, "dragon_tiger", user.id,
                        __import__("app.tasks.dragon_tiger", fromlist=["dragon_tiger_task"]).dragon_tiger_task,
-                       [req.period_days, user.id])
+                       [req.period_days, user.id], "dragon_tiger")
     return success(data={"task_id": task.id}, message="龙虎榜分析任务已提交")
 
 

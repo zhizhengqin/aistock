@@ -333,6 +333,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Remove only this migration's additions.  Legacy columns/tables remain
     # otherwise untouched, and all new tables are dropped before their FKs.
+    # ``llm_usage.user_id`` intentionally remains nullable: a legitimate
+    # scheduled-task row may have NULL here, and restoring NOT NULL would make
+    # this safe rollback fail or require destructive data rewriting.  Older
+    # application images tolerate the nullable shape.
     op.drop_index("ix_llm_usage_created_config", table_name="llm_usage")
     op.drop_constraint("fk_llm_usage_model_config_id", "llm_usage", type_="foreignkey")
     op.drop_constraint("fk_llm_usage_task_id", "llm_usage", type_="foreignkey")
@@ -350,8 +354,6 @@ def downgrade() -> None:
         "task_id",
     ):
         op.drop_column("llm_usage", column)
-    op.alter_column("llm_usage", "user_id", existing_type=sa.Integer(), nullable=False)
-
     op.drop_index("ix_task_records_model_config_status", table_name="task_records")
     op.drop_constraint("fk_task_records_model_config_id", "task_records", type_="foreignkey")
     for column in (

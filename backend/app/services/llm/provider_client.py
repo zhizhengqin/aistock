@@ -620,12 +620,20 @@ class ProviderClient:
         if not isinstance(completion_tokens, int) or completion_tokens < 0:
             completion_tokens = None
         usage_source = "provider" if prompt_tokens is not None and completion_tokens is not None else "missing"
+        provider_model_present = bool(
+            isinstance(data, dict)
+            and isinstance(data.get("model"), str)
+            and data.get("model")
+        )
         response_model = data.get("model") if isinstance(data, dict) else None
-        if not isinstance(response_model, str) or not response_model:
+        if not provider_model_present:
             response_model = runtime_config.model_name
         metadata = {
             "status_code": status,
             "request_id": response_headers.get("x-request-id"),
+            # A runtime fallback keeps downstream display useful, but it is
+            # not evidence that the upstream identified its actual model.
+            "provider_model_present": provider_model_present,
         }
         return ProviderResult(
             result_json=result_json,

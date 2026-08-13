@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -49,7 +50,13 @@ def _failure(exc: Exception) -> JSONResponse:
         field = None
     return JSONResponse(
         status_code=status_code,
-        content={"code": code, "message": message, "data": None, "field": field},
+        content={
+            "code": code,
+            "message": message,
+            "data": None,
+            "field": field,
+            "request_id": str(uuid4()),
+        },
     )
 
 

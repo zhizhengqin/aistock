@@ -67,6 +67,49 @@ def test_llm_models_forbidden_for_normal_user(auth_client):
     assert auth_client.get("/api/admin/llm-models").status_code == 403
 
 
+def test_validation_errors_redact_secret_and_use_stable_chinese_envelope(client, test_db):
+    _, Session = test_db
+    db = Session()
+    admin_id = _make_admin(db, username="llm-admin-validation")
+    db.close()
+    _auth(client, admin_id)
+    leaked = "sk-super-secret-should-never-appear"
+    response = client.post(
+        "/api/admin/llm-models",
+        json={
+            **_candidate(),
+            "api_key": leaked,
+            "max_output_tokens": "not-an-integer",
+        },
+    )
+    assert response.status_code == 422
+    assert leaked not in response.text
+    body = response.json()
+    assert set(("code", "message", "data", "field", "request_id")) <= set(body)
+    assert body["code"] == "llm_validation_error"
+    assert body["data"] is None
+    assert body["message"]
+
+
+def test_model_response_is_a_strict_whitelist():
+    import pytest
+    from app.schemas.llm import LlmModelResponse
+
+    with pytest.raises(Exception):
+        LlmModelResponse(
+            id="config-1",
+            provider="deepseek",
+            display_name="展示",
+            model_name="deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            key_hint="sk-s...cret",
+            lifecycle_status="draft",
+            version=1,
+            runtime_fingerprint="fingerprint",
+            credential_version="must-not-leak",
+        )
+
+
 def test_unsaved_probe_and_create_redact_secret(client, test_db, monkeypatch):
     _, Session = test_db
     db = Session()
@@ -161,6 +204,7 @@ def test_model_crud_pagination_filter_runtime_version_and_conflict(client, test_
     )
     assert stale.status_code == 409
     assert stale.json()["code"] == "llm_config_conflict"
+    assert stale.json()["request_id"]
 
 
 def test_settings_usage_unlock_and_stale_version(client, test_db, monkeypatch):

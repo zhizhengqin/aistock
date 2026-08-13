@@ -23,6 +23,7 @@ from app.models import llm_execution as _llm_execution_models  # noqa: F401
 from app.models import task_record as _task_record_models  # noqa: F401
 from app.models import llm_usage as _llm_usage_models  # noqa: F401
 from app.models.llm_usage import LlmUsage
+from app.models.llm_config import LlmActivationRequest, LlmModelConfig, LlmModelTestRun, LlmRuntimeSetting
 from app.services.llm.provider_client import ProviderResult
 from app.services.llm.provider_client import ProviderClient
 from app.services.llm.call_executor import LlmCallExecutor
@@ -51,14 +52,15 @@ class RecordingExecutor:
         self.calls = []
         self.result = result or ProviderResult(
             result_json={
-                "ok": True,
-                "capabilities": {"json_mode": True, "usage": True},
+                "decision": "hold",
+                "confidence": 0.5,
+                "rationale": "探测样本",
             },
             model="deepseek-chat",
             prompt_tokens=12,
             completion_tokens=8,
             usage_source="provider",
-            response_metadata={"status_code": 200},
+            response_metadata={"status_code": 200, "provider_model_present": True},
         )
 
     async def call(self, **kwargs):
@@ -91,7 +93,7 @@ def _real_service(test_db, monkeypatch):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"ok":true,"capabilities":{"json_mode":true,"usage":true}}'
+                            "content": '{"decision":"hold","confidence":0.5,"rationale":"probe"}'
                         }
                     }
                 ],
@@ -227,6 +229,75 @@ async def test_saved_probe_uses_real_executor_and_audits_config_snapshot(test_db
 
 
 @pytest.mark.asyncio
+async def test_real_enable_and_activate_probes_use_audited_executor(test_db, monkeypatch):
+    db, http_client, service = _real_service(test_db, monkeypatch)
+    try:
+        first = service.create(_candidate(display_name="独立默认"), admin_user_id=1)
+        enabled = await service.enable(first["id"], expected_version=1, admin_user_id=1)
+        assert enabled["lifecycle_status"] == "active"
+
+        second = service.create(_candidate(display_name="待切换"), admin_user_id=1)
+        activated = await service.activate(
+            second["id"],
+            expected_version=1,
+            idempotency_key="activate-real-1",
+            admin_user_id=1,
+        )
+        assert db.query(LlmRuntimeSetting).filter_by(id=1).one().default_model_config_id == second["id"]
+
+        from app.models.llm_execution import LlmCallAttempt
+        attempts = db.query(LlmCallAttempt).all()
+        assert len(attempts) == 2
+        assert all(item.operation_type == "admin_probe" for item in attempts)
+        assert all(item.task_id is None for item in attempts)
+    finally:
+        await http_client.aclose()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        ProviderResult(
+            result_json={"decision": "hold", "confidence": 0.5, "rationale": "ok"},
+            model="deepseek-chat",
+            prompt_tokens=None,
+            completion_tokens=None,
+            usage_source="missing",
+            response_metadata={"provider_model_present": True},
+        ),
+        ProviderResult(
+            result_json={"decision": "hold", "confidence": 0.5, "rationale": "ok"},
+            model="deepseek-chat",
+            prompt_tokens=1,
+            completion_tokens=1,
+            usage_source="provider",
+            response_metadata={"provider_model_present": False},
+        ),
+        ProviderResult(
+            result_json={"decision": "hold"},
+            model="deepseek-chat",
+            prompt_tokens=1,
+            completion_tokens=1,
+            usage_source="provider",
+            response_metadata={"provider_model_present": True},
+        ),
+    ],
+)
+async def test_probe_rejects_missing_usage_model_or_business_shape(test_db, monkeypatch, result):
+    _configure_keyring(monkeypatch)
+    _, Session = test_db
+    db = Session()
+    service = LlmConfigService(db, executor=RecordingExecutor(result=result))
+    response = await service.test_unsaved(_candidate())
+    assert response["status"] == "failed"
+    assert response["error_code"] == "llm_probe_invalid"
+    assert db.query(LlmModelTestRun).one().status == "failed"
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_activation_is_idempotent_and_conflicting_payload_is_rejected(test_db, monkeypatch):
     from app.services.llm.config_service import LlmConfigService
 
@@ -264,6 +335,46 @@ async def test_activation_is_idempotent_and_conflicting_payload_is_rejected(test
 
 
 @pytest.mark.asyncio
+async def test_failed_activation_persists_only_stable_redacted_error(test_db, monkeypatch):
+    _configure_keyring(monkeypatch)
+    _, Session = test_db
+    db = Session()
+    executor = RecordingExecutor(
+        result=ProviderResult(
+            result_json={"unexpected": "provider-body"},
+            model="deepseek-chat",
+            prompt_tokens=1,
+            completion_tokens=1,
+            usage_source="provider",
+            response_metadata={"provider_model_present": True},
+        )
+    )
+    service = LlmConfigService(db, executor=executor)
+    created = service.create(_candidate(), admin_user_id=1)
+
+    with pytest.raises(Exception) as exc:
+        await service.activate(
+            created["id"],
+            expected_version=1,
+            idempotency_key="failed-activation",
+            admin_user_id=1,
+        )
+    assert getattr(exc.value, "code", None) == "llm_probe_failed"
+    request = db.query(LlmActivationRequest).one()
+    assert request.status == "failed"
+    assert request.response_json == {
+        "__error__": True,
+        "code": "llm_probe_failed",
+        "message": "模型测试失败，默认模型未切换",
+        "status_code": 503,
+        "field": None,
+    }
+    assert "sk-super-secret" not in repr(request.response_json)
+    assert "provider-body" not in repr(request.response_json)
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_disable_then_enable_runs_a_new_matching_probe(test_db, monkeypatch):
     _configure_keyring(monkeypatch)
     _, Session = test_db
@@ -275,12 +386,27 @@ async def test_disable_then_enable_runs_a_new_matching_probe(test_db, monkeypatc
     enabled = await service.enable(created["id"], expected_version=1, admin_user_id=1)
     assert enabled["lifecycle_status"] == "active"
     first_test_id = enabled["verified_test_id"]
-    disabled = service.disable(created["id"], expected_version=1, admin_user_id=1)
+    disabled = service.disable(created["id"], expected_version=2, admin_user_id=1)
     assert disabled["lifecycle_status"] == "disabled"
-    reenabled = await service.enable(created["id"], expected_version=2, admin_user_id=1)
+    reenabled = await service.enable(created["id"], expected_version=3, admin_user_id=1)
     assert reenabled["lifecycle_status"] == "active"
     assert reenabled["verified_test_id"] != first_test_id
     assert len(executor.calls) == 2
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_independent_default_switch_keeps_previous_model_active(test_db, monkeypatch):
+    _configure_keyring(monkeypatch)
+    _, Session = test_db
+    db = Session()
+    service = LlmConfigService(db, executor=RecordingExecutor())
+    first = service.create(_candidate(display_name="第一个"), admin_user_id=1)
+    await service.activate(first["id"], expected_version=1, idempotency_key="independent-a", admin_user_id=1)
+    second = service.create(_candidate(display_name="第二个"), admin_user_id=1)
+    await service.activate(second["id"], expected_version=1, idempotency_key="independent-b", admin_user_id=1)
+    assert db.get(LlmModelConfig, first["id"]).lifecycle_status == "active"
+    assert db.get(LlmModelConfig, second["id"]).lifecycle_status == "active"
     db.close()
 
 
@@ -310,9 +436,21 @@ def test_default_cannot_be_disabled_or_deleted_and_unlock_is_audited(test_db, mo
         service.delete(created["id"], admin_user_id=1)
     assert getattr(exc.value, "code", None) == "llm_default_delete_forbidden"
 
-    unlocked = service.unlock_settings(expected_version=3, reason="恢复额度后继续验证", admin_user_id=1)
+    setting.default_model_config_id = None
+    setting.budget_locked = False
+    setting.version = 5
+    config = db.get(LlmModelConfig, created["id"])
+    config.lifecycle_status = "active"
+    config.deleted_at = None
+    setting.budget_locked = True
+    db.commit()
+    with pytest.raises(Exception) as exc:
+        service.delete(created["id"], admin_user_id=1)
+    assert getattr(exc.value, "code", None) == "llm_active_delete_forbidden"
+
+    unlocked = service.unlock_settings(expected_version=5, reason="恢复额度后继续验证", admin_user_id=1)
     assert unlocked["budget_locked"] is False
-    assert unlocked["version"] == 4
+    assert unlocked["version"] == 6
     assert db.query(LlmAdminAuditEvent).filter_by(event_type="budget_unlock").count() == 1
     ledger = db.query(LlmDailyBudget).one()
     assert (ledger.reserved_tokens, ledger.settled_tokens) == (17, 23)

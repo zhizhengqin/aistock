@@ -76,6 +76,28 @@ async def test_complete_json_uses_exact_compatible_protocol(provider, base_url, 
     assert result.result_json == {"ok": True}
     assert result.prompt_tokens == 7
     assert result.completion_tokens == 3
+    assert result.response_metadata["provider_model_present"] is True
+
+
+@pytest.mark.asyncio
+async def test_provider_model_metadata_is_false_when_upstream_omits_model():
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"ok":true}'}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await ProviderClient(client=client).complete_json(
+        runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+        [{"role": "user", "content": "hello"}],
+    )
+    await client.aclose()
+    assert result.model == "model-x"
+    assert result.response_metadata["provider_model_present"] is False
 
 
 @pytest.mark.asyncio

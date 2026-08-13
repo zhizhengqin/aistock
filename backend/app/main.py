@@ -1,6 +1,11 @@
-from fastapi import FastAPI
+from uuid import uuid4
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -30,6 +35,38 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def llm_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return a redacted stable envelope for model-center DTO failures.
+
+    Pydantic's structured errors include the original ``input`` and ``ctx``
+    values.  Those fields can contain an API key, so the administrator model
+    API intentionally exposes only a fixed Chinese message and a safe field
+    name.  Existing non-LLM endpoints retain FastAPI's historical response.
+    """
+
+    if not request.url.path.startswith(f"{settings.API_PREFIX}/admin/llm"):
+        return await request_validation_exception_handler(request, exc)
+    field = None
+    if exc.errors():
+        location = exc.errors()[0].get("loc", ())
+        if location:
+            candidate = location[-1]
+            if isinstance(candidate, str) and candidate not in {"body", "query", "path"}:
+                field = candidate
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    return JSONResponse(
+        status_code=422,
+        content={
+            "code": "llm_validation_error",
+            "message": "请求参数校验失败",
+            "data": None,
+            "field": field,
+            "request_id": request_id,
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,

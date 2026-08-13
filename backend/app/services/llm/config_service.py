@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -22,13 +23,12 @@ from app.models.llm_config import (
     LlmModelTestRun,
     LlmRuntimeSetting,
 )
-from app.models.llm_execution import LlmCallAttempt
 from app.models.llm_usage import LlmUsage
+from app.schemas.llm import LlmModelResponse
 from app.services.llm.call_executor import LlmCallExecutor
 from app.services.llm.crypto import CredentialEnvelope, decrypt_api_key, encrypt_api_key
 from app.services.llm.errors import LlmError
 from app.services.llm.provider_client import ProviderResult
-from app.services.llm.providers import provider_profile
 from app.services.llm.types import LlmRuntimeConfig, ModelLifecycle, Provider
 from app.services.llm.url_security import canonicalize_base_url, validate_base_url
 
@@ -209,6 +209,21 @@ class LlmConfigService:
             session.flush()
         return row
 
+    def _locked_settings(self, session: Session, *, create: bool = True) -> LlmRuntimeSetting | None:
+        """Load the singleton under a row lock for lifecycle writes."""
+
+        row = session.execute(
+            select(LlmRuntimeSetting)
+            .where(LlmRuntimeSetting.id == 1)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if row is None and create:
+            row = self._settings(session)
+            # A newly inserted singleton is owned by this short transaction;
+            # no second SELECT is needed to establish the lock.
+        return row
+
     def _audit(
         self,
         session: Session,
@@ -244,11 +259,17 @@ class LlmConfigService:
                 ModelLifecycle.ACTIVE.value,
                 ModelLifecycle.DISABLED.value,
             },
-            "can_delete": not deleted and not is_default,
+            "can_delete": not deleted
+            and not is_default
+            and status in {
+                ModelLifecycle.DRAFT.value,
+                ModelLifecycle.DISABLED.value,
+                ModelLifecycle.RETIRED.value,
+            },
         }
 
     def _serialize(self, config: LlmModelConfig, setting: LlmRuntimeSetting | None = None, *, created_new_version=False) -> dict[str, Any]:
-        return {
+        payload = {
             "id": config.id,
             "provider": config.provider,
             "display_name": config.display_name,
@@ -258,7 +279,6 @@ class LlmConfigService:
             "lifecycle_status": config.lifecycle_status,
             "version": int(config.version),
             "runtime_fingerprint": config.runtime_fingerprint,
-            "credential_version": config.credential_version,
             "verified_test_id": config.verified_test_id,
             "last_probe_status": config.last_probe_status,
             "last_probe_at": _iso(config.last_probe_at),
@@ -270,6 +290,9 @@ class LlmConfigService:
             "created_new_version": created_new_version,
             "capabilities": self._capabilities(config, setting),
         }
+        # The whitelist DTO is the only response serialization boundary: it
+        # exposes admin-displayable prices/limits but never credential metadata.
+        return LlmModelResponse.model_validate(payload).model_dump(mode="json")
 
     def _candidate_values(self, payload: Any, *, require_key: bool = True) -> dict[str, Any]:
         values = _as_dict(payload)
@@ -398,9 +421,7 @@ class LlmConfigService:
         if not isinstance(expected, int) or expected <= 0:
             raise _service_error("llm_config_conflict", "配置版本已变化，请刷新后重试", status_code=409)
         with self._session() as session:
-            config = session.get(LlmModelConfig, config_id)
-            if config is None or config.deleted_at is not None:
-                raise _service_error("llm_config_not_found", "模型配置不存在", status_code=404)
+            config = self._get_config(session, config_id, for_update=True)
             if int(config.version) != expected:
                 raise _service_error("llm_config_conflict", "配置版本已变化，请刷新后重试", status_code=409)
             # Pydantic has already trimmed DTO values; direct service callers
@@ -485,30 +506,72 @@ class LlmConfigService:
 
     def _probe_messages(self) -> list[dict[str, str]]:
         return [
-            {"role": "system", "content": "你是模型能力探测器。只能返回 JSON 对象。"},
+            {
+                "role": "system",
+                "content": "你是 A 股投研结构化输出探测器，只能返回 JSON 对象，不得添加 Markdown。",
+            },
             {
                 "role": "user",
-                "content": "请返回 {\"ok\":true,\"capabilities\":{\"json_mode\":true,\"usage\":true}}，不要添加 Markdown。",
+                "content": (
+                    "请对示例行情做最小投资判断，并严格返回："
+                    '{"decision":"hold","confidence":0.5,"rationale":"一句话理由"}。'
+                    "decision 只能是 buy/hold/sell，confidence 必须是 0 到 1 的数字，"
+                    "rationale 必须是非空字符串。"
+                ),
             },
         ]
 
     def _probe_result(self, result: ProviderResult) -> dict[str, Any]:
         payload = result.result_json
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            raise _service_error("llm_probe_invalid", "模型未返回预期的 JSON 能力结果", status_code=503)
-        capabilities = payload.get("capabilities")
-        if not isinstance(capabilities, dict):
-            capabilities = {"json_mode": True, "usage": result.usage_source == "provider"}
-        if capabilities.get("json_mode") is False:
-            raise _service_error("llm_capability_unsupported", "模型不支持 JSON 模式", status_code=503)
-        return {str(key): bool(value) for key, value in capabilities.items()}
+        if not isinstance(payload, dict):
+            raise _service_error("llm_probe_invalid", "模型未返回预期的业务 JSON", status_code=503)
+        decision = payload.get("decision")
+        confidence = payload.get("confidence")
+        rationale = payload.get("rationale")
+        if (
+            decision not in {"buy", "hold", "sell"}
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0 <= float(confidence) <= 1
+            or not isinstance(rationale, str)
+            or not rationale.strip()
+        ):
+            raise _service_error("llm_probe_invalid", "模型未返回预期的业务 JSON", status_code=503)
+        if (
+            result.usage_source != "provider"
+            or not isinstance(result.prompt_tokens, int)
+            or result.prompt_tokens < 0
+            or not isinstance(result.completion_tokens, int)
+            or result.completion_tokens < 0
+            or not bool(result.response_metadata.get("provider_model_present"))
+            or not isinstance(result.model, str)
+            or not result.model.strip()
+        ):
+            raise _service_error("llm_probe_invalid", "模型未提供完整的真实调用证据", status_code=503)
+        # These are derived from protocol evidence, not trusted from model
+        # echo fields.  A successful response proves the hard max_tokens was
+        # accepted; provider metadata proves identity; usage counters prove
+        # billing support; and the business schema proves JSON mode.
+        return {
+            "json_mode": True,
+            "usage": True,
+            "max_output_tokens": True,
+            "model_identity": True,
+        }
 
-    async def _run_probe(self, runtime: LlmRuntimeConfig, *, model_config_id: str | None, admin_user_id: int | None) -> dict[str, Any]:
+    async def _run_probe(
+        self,
+        runtime: LlmRuntimeConfig,
+        *,
+        model_config_id: str | None,
+        admin_user_id: int | None,
+        test_type: str,
+    ) -> dict[str, Any]:
         fingerprint = runtime.runtime_fingerprint
         run = LlmModelTestRun(
             model_config_id=model_config_id,
             runtime_fingerprint=fingerprint,
-            test_type="probe",
+            test_type=test_type,
             created_by=admin_user_id,
             status="started",
         )
@@ -585,24 +648,43 @@ class LlmConfigService:
             output_price_micro_yuan_per_million=values.get("output_price_micro_yuan_per_million"),
             runtime_fingerprint=fingerprint,
         )
-        result = await self._run_probe(runtime, model_config_id=None, admin_user_id=admin_user_id)
+        result = await self._run_probe(
+            runtime,
+            model_config_id=None,
+            admin_user_id=admin_user_id,
+            test_type="candidate",
+        )
         result["key_hint"] = _key_hint(values["api_key"])
         return result
 
-    def _get_config(self, session: Session, config_id: str) -> LlmModelConfig:
-        config = session.get(LlmModelConfig, config_id)
+    def _get_config(self, session: Session, config_id: str, *, for_update: bool = False) -> LlmModelConfig:
+        statement = select(LlmModelConfig).where(LlmModelConfig.id == config_id)
+        if for_update:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        config = session.execute(statement).scalar_one_or_none()
         if config is None or config.deleted_at is not None:
             raise _service_error("llm_config_not_found", "模型配置不存在", status_code=404)
         return config
 
-    async def test_saved(self, config_id: str, *, admin_user_id: int | None = None) -> dict[str, Any]:
+    async def test_saved(
+        self,
+        config_id: str,
+        *,
+        admin_user_id: int | None = None,
+        test_type: str = "saved",
+    ) -> dict[str, Any]:
         with self._session() as session:
-            config = self._get_config(session, config_id)
+            config = self._get_config(session, config_id, for_update=True)
             runtime = self._runtime(config)
             expected_fingerprint = config.runtime_fingerprint
-        result = await self._run_probe(runtime, model_config_id=config_id, admin_user_id=admin_user_id)
+        result = await self._run_probe(
+            runtime,
+            model_config_id=config_id,
+            admin_user_id=admin_user_id,
+            test_type=test_type,
+        )
         with self._session() as session:
-            current = self._get_config(session, config_id)
+            current = self._get_config(session, config_id, for_update=True)
             if current.runtime_fingerprint != expected_fingerprint:
                 # Keep the run for audit, but never grant verification to stale
                 # runtime parameters.
@@ -625,23 +707,36 @@ class LlmConfigService:
                 raise _service_error("llm_invalid_state_transition", "当前状态不能启用", status_code=409)
         # Always run a fresh test.  A supplied test_run_id is an optional
         # client hint, never a bypass of the production probe.
-        result = await self.test_saved(config_id, admin_user_id=admin_user_id)
+        result = await self.test_saved(config_id, admin_user_id=admin_user_id, test_type="enable")
         if result["status"] != "success":
             raise _service_error("llm_probe_failed", "模型测试失败，不能启用", status_code=503)
         with self._session() as session:
-            config = self._get_config(session, config_id)
-            if int(config.version) != expected_version:
+            setting = self._locked_settings(session)
+            config = self._get_config(session, config_id, for_update=True)
+            if int(config.version) != expected_version or config.lifecycle_status not in {
+                ModelLifecycle.DRAFT.value,
+                ModelLifecycle.DISABLED.value,
+            }:
                 raise _service_error("llm_config_conflict", "配置版本已变化，请刷新后重试")
+            test_run = session.get(LlmModelTestRun, result["test_run_id"])
+            if (
+                test_run is None
+                or test_run.status != "success"
+                or test_run.model_config_id != config.id
+                or test_run.runtime_fingerprint != config.runtime_fingerprint
+            ):
+                raise _service_error("llm_probe_invalid", "模型测试结果已失效，不能启用", status_code=409)
             config.lifecycle_status = ModelLifecycle.ACTIVE.value
             config.verified_test_id = result["test_run_id"]
+            config.version += 1
             self._audit(session, event_type="model_enable", admin_user_id=admin_user_id, model_config_id=config.id)
             session.flush()
-            return self._serialize(config, self._settings(session)) | {"test_run_id": result["test_run_id"]}
+            return self._serialize(config, setting) | {"test_run_id": result["test_run_id"]}
 
     def disable(self, config_id: str, *, expected_version: int, admin_user_id: int | None = None) -> dict[str, Any]:
         with self._session() as session:
-            config = self._get_config(session, config_id)
-            setting = self._settings(session)
+            setting = self._locked_settings(session)
+            config = self._get_config(session, config_id, for_update=True)
             if setting.default_model_config_id == config.id:
                 raise _service_error("llm_default_disable_forbidden", "默认模型不能停用", status_code=409)
             if int(config.version) != expected_version:
@@ -656,82 +751,240 @@ class LlmConfigService:
 
     def delete(self, config_id: str, *, admin_user_id: int | None = None) -> None:
         with self._session() as session:
-            config = self._get_config(session, config_id)
-            setting = self._settings(session)
+            setting = self._locked_settings(session)
+            config = self._get_config(session, config_id, for_update=True)
             if setting.default_model_config_id == config.id:
                 raise _service_error("llm_default_delete_forbidden", "默认模型不能删除", status_code=409)
+            if config.lifecycle_status == ModelLifecycle.ACTIVE.value:
+                raise _service_error("llm_active_delete_forbidden", "启用中的模型不能删除，请先停用", status_code=409)
+            if config.lifecycle_status not in {
+                ModelLifecycle.DRAFT.value,
+                ModelLifecycle.DISABLED.value,
+                ModelLifecycle.RETIRED.value,
+            }:
+                raise _service_error("llm_invalid_state_transition", "当前状态不能删除", status_code=409)
             config.deleted_at = self.clock()
             config.lifecycle_status = ModelLifecycle.RETIRED.value
             self._audit(session, event_type="model_delete", admin_user_id=admin_user_id, model_config_id=config.id)
 
-    async def activate(self, config_id: str, *, expected_version: int, idempotency_key: str, admin_user_id: int | None = None) -> dict[str, Any]:
-        request_payload = {"model_config_id": config_id, "expected_version": expected_version}
-        request_hash = hashlib.sha256(json.dumps(request_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        with self._session() as session:
-            existing = session.execute(select(LlmActivationRequest).where(LlmActivationRequest.idempotency_key == idempotency_key)).scalar_one_or_none()
-            if existing is not None:
-                if existing.request_hash != request_hash:
+    @staticmethod
+    def _activation_error_payload(exc: LlmConfigServiceError) -> dict[str, Any]:
+        return {
+            "__error__": True,
+            "code": exc.code,
+            "message": exc.user_message,
+            "status_code": int(getattr(exc, "status_code", 409)),
+            "field": getattr(exc, "field", None),
+        }
+
+    @staticmethod
+    def _raise_activation_error(payload: Mapping[str, Any]) -> None:
+        raise _service_error(
+            str(payload.get("code", "llm_activation_failed")),
+            str(payload.get("message", "默认模型切换失败")),
+            status_code=int(payload.get("status_code", 409)),
+            field=payload.get("field"),
+        )
+
+    async def _wait_activation(self, idempotency_key: str, request_hash: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with self._session() as session:
+                request = session.execute(
+                    select(LlmActivationRequest)
+                    .where(LlmActivationRequest.idempotency_key == idempotency_key)
+                    .execution_options(populate_existing=True)
+                ).scalar_one_or_none()
+                if request is None:
+                    raise _service_error("llm_activation_in_progress", "默认模型切换正在初始化，请稍后重试", status_code=409)
+                if request.request_hash != request_hash:
                     raise _service_error("llm_idempotency_conflict", "幂等键已用于其他切换请求", status_code=409)
-                if existing.response_json is not None:
-                    return dict(existing.response_json)
-            config = self._get_config(session, config_id)
-            if int(config.version) != expected_version:
-                raise _service_error("llm_config_conflict", "配置版本已变化，请刷新后重试")
-            if config.lifecycle_status not in {
-                ModelLifecycle.DRAFT.value,
-                ModelLifecycle.ACTIVE.value,
-                ModelLifecycle.DISABLED.value,
-            }:
-                raise _service_error("llm_invalid_state_transition", "当前状态不能切换为默认模型", status_code=409)
-            runtime = self._runtime(config)
-            fingerprint = config.runtime_fingerprint
-        probe = await self._run_probe(runtime, model_config_id=config_id, admin_user_id=admin_user_id)
-        if probe["status"] != "success":
-            raise _service_error("llm_probe_failed", "模型测试失败，默认模型未切换", status_code=503)
+                if request.status == "success" and request.response_json is not None:
+                    return dict(request.response_json)
+                if request.status == "failed" and isinstance(request.response_json, Mapping):
+                    self._raise_activation_error(request.response_json)
+            await asyncio.sleep(0.02)
+        raise _service_error("llm_activation_in_progress", "默认模型切换仍在进行，请稍后重试", status_code=409)
+
+    def _finish_activation_failure(
+        self,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+        error: LlmConfigServiceError,
+    ) -> None:
         with self._session() as session:
-            setting = session.execute(select(LlmRuntimeSetting).where(LlmRuntimeSetting.id == 1).with_for_update()).scalar_one_or_none()
-            if setting is None:
-                setting = LlmRuntimeSetting(id=1, daily_token_limit=getattr(settings, "DAILY_TOKEN_LIMIT", 2_000_000))
-                session.add(setting)
-                session.flush()
-            config = self._get_config(session, config_id)
-            if int(config.version) != expected_version or config.runtime_fingerprint != fingerprint:
-                raise _service_error("llm_config_conflict", "测试期间配置已修改，不能切换默认模型")
-            config.lifecycle_status = ModelLifecycle.ACTIVE.value
-            config.verified_test_id = probe["test_run_id"]
-            config.last_probe_status = "success"
-            config.last_probe_at = self.clock()
-            config.last_probe_latency_ms = probe["latency_ms"]
-            previous_id = setting.default_model_config_id
-            if previous_id and previous_id != config.id:
-                previous = session.get(LlmModelConfig, previous_id)
-                if previous and previous.deleted_at is None:
-                    previous.lifecycle_status = ModelLifecycle.RETIRED.value
-            setting.default_model_config_id = config.id
-            setting.switched_by = admin_user_id
-            setting.switched_at = self.clock()
-            setting.version += 1
-            response = self._serialize(config, setting) | {"switched_at": _iso(setting.switched_at)}
-            request = session.execute(select(LlmActivationRequest).where(LlmActivationRequest.idempotency_key == idempotency_key)).scalar_one_or_none()
-            if request is None:
-                request = LlmActivationRequest(
+            request = session.execute(
+                select(LlmActivationRequest)
+                .where(LlmActivationRequest.idempotency_key == idempotency_key)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if request is not None and request.request_hash == request_hash and request.status == "pending":
+                request.status = "failed"
+                request.response_json = self._activation_error_payload(error)
+
+    async def activate(
+        self,
+        config_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        admin_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        request_payload = {"model_config_id": config_id, "expected_version": expected_version}
+        request_hash = hashlib.sha256(
+            json.dumps(request_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        owner = False
+        runtime: LlmRuntimeConfig | None = None
+        fingerprint: str | None = None
+        try:
+            try:
+                with self._session() as session:
+                    existing = session.execute(
+                        select(LlmActivationRequest).where(
+                            LlmActivationRequest.idempotency_key == idempotency_key
+                        )
+                    ).scalar_one_or_none()
+                    if existing is not None:
+                        if existing.request_hash != request_hash:
+                            raise _service_error("llm_idempotency_conflict", "幂等键已用于其他切换请求", status_code=409)
+                        if existing.status == "success" and existing.response_json is not None:
+                            return dict(existing.response_json)
+                        if existing.status == "failed" and isinstance(existing.response_json, Mapping):
+                            self._raise_activation_error(existing.response_json)
+                    else:
+                        config = self._get_config(session, config_id)
+                        if int(config.version) != expected_version:
+                            raise _service_error("llm_config_conflict", "配置版本已变化，请刷新后重试")
+                        if config.lifecycle_status not in {
+                            ModelLifecycle.DRAFT.value,
+                            ModelLifecycle.ACTIVE.value,
+                            ModelLifecycle.DISABLED.value,
+                        }:
+                            raise _service_error("llm_invalid_state_transition", "当前状态不能切换为默认模型", status_code=409)
+                        runtime = self._runtime(config)
+                        fingerprint = config.runtime_fingerprint
+                        session.add(
+                            LlmActivationRequest(
+                                idempotency_key=idempotency_key,
+                                request_hash=request_hash,
+                                model_config_id=config.id,
+                                expected_version=expected_version,
+                                created_by=admin_user_id,
+                                status="pending",
+                            )
+                        )
+                        session.flush()
+                        owner = True
+            except IntegrityError:
+                # Another transaction inserted the unique idempotency key.
+                # The short transaction has rolled back; reload and wait.
+                return await self._wait_activation(idempotency_key, request_hash)
+
+            if not owner:
+                return await self._wait_activation(idempotency_key, request_hash)
+
+            try:
+                probe = await self._run_probe(
+                    runtime,
+                    model_config_id=config_id,
+                    admin_user_id=admin_user_id,
+                    test_type="activate",
+                )
+                if probe["status"] != "success":
+                    raise _service_error("llm_probe_failed", "模型测试失败，默认模型未切换", status_code=503)
+            except LlmConfigServiceError as exc:
+                self._finish_activation_failure(
                     idempotency_key=idempotency_key,
                     request_hash=request_hash,
-                    model_config_id=config.id,
-                    expected_version=expected_version,
-                    created_by=admin_user_id,
-                    status="success",
-                    response_json=response,
+                    error=exc,
                 )
-                session.add(request)
-            elif request.request_hash != request_hash:
-                raise _service_error("llm_idempotency_conflict", "幂等键已用于其他切换请求", status_code=409)
-            else:
-                request.response_json = response
-                request.status = "success"
-            self._audit(session, event_type="model_activate", admin_user_id=admin_user_id, model_config_id=config.id, runtime_settings_version=setting.version)
-            session.flush()
-            return response
+                raise
+            except LlmError as exc:
+                safe = _service_error("llm_probe_failed", "模型测试失败，默认模型未切换", status_code=503)
+                self._finish_activation_failure(
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    error=safe,
+                )
+                raise safe from None
+
+            try:
+                with self._session() as session:
+                    setting = self._locked_settings(session)
+                    config = self._get_config(session, config_id, for_update=True)
+                    if (
+                        int(config.version) != expected_version
+                        or config.runtime_fingerprint != fingerprint
+                        or config.lifecycle_status
+                        not in {
+                            ModelLifecycle.DRAFT.value,
+                            ModelLifecycle.ACTIVE.value,
+                            ModelLifecycle.DISABLED.value,
+                        }
+                    ):
+                        raise _service_error("llm_config_conflict", "测试期间配置已修改，不能切换默认模型")
+                    test_run = session.get(LlmModelTestRun, probe["test_run_id"])
+                    if (
+                        test_run is None
+                        or test_run.status != "success"
+                        or test_run.model_config_id != config.id
+                        or test_run.runtime_fingerprint != config.runtime_fingerprint
+                    ):
+                        raise _service_error("llm_probe_invalid", "模型测试结果已失效，不能切换默认模型", status_code=409)
+                    config.lifecycle_status = ModelLifecycle.ACTIVE.value
+                    config.verified_test_id = probe["test_run_id"]
+                    config.version += 1
+                    config.last_probe_status = "success"
+                    config.last_probe_at = self.clock()
+                    config.last_probe_latency_ms = probe["latency_ms"]
+                    previous_id = setting.default_model_config_id
+                    if previous_id and previous_id != config.id:
+                        previous = session.execute(
+                            select(LlmModelConfig)
+                            .where(LlmModelConfig.id == previous_id)
+                            .with_for_update()
+                        ).scalar_one_or_none()
+                        if (
+                            previous
+                            and previous.deleted_at is None
+                            and config.supersedes_id == previous.id
+                        ):
+                            previous.lifecycle_status = ModelLifecycle.RETIRED.value
+                    setting.default_model_config_id = config.id
+                    setting.switched_by = admin_user_id
+                    setting.switched_at = self.clock()
+                    setting.version += 1
+                    response = self._serialize(config, setting) | {"switched_at": _iso(setting.switched_at)}
+                    request = session.execute(
+                        select(LlmActivationRequest)
+                        .where(LlmActivationRequest.idempotency_key == idempotency_key)
+                        .with_for_update()
+                    ).scalar_one()
+                    if request.request_hash != request_hash or request.status != "pending":
+                        raise _service_error("llm_idempotency_conflict", "幂等键已用于其他切换请求", status_code=409)
+                    request.response_json = response
+                    request.status = "success"
+                    self._audit(
+                        session,
+                        event_type="model_activate",
+                        admin_user_id=admin_user_id,
+                        model_config_id=config.id,
+                        runtime_settings_version=setting.version,
+                    )
+                    session.flush()
+                    return response
+            except LlmConfigServiceError as exc:
+                self._finish_activation_failure(
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    error=exc,
+                )
+                raise
+        except IntegrityError:
+            return await self._wait_activation(idempotency_key, request_hash)
 
     def patch_settings(self, *, expected_version: int, daily_token_limit: int, admin_user_id: int | None = None) -> dict[str, Any]:
         if daily_token_limit <= 0:

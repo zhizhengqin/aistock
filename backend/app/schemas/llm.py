@@ -146,7 +146,7 @@ class LlmSettingsUnlockRequest(BaseModel):
 
 
 class LlmModelResponse(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     provider: Provider
@@ -161,6 +161,9 @@ class LlmModelResponse(BaseModel):
     last_probe_status: str | None = None
     last_probe_at: str | None = None
     last_probe_latency_ms: int | None = None
+    input_price_micro_yuan_per_million: int | None = None
+    output_price_micro_yuan_per_million: int | None = None
+    max_output_tokens: int | None = None
     created_new_version: bool = False
     supersedes_id: str | None = None
     capabilities: dict[str, bool] = Field(default_factory=dict)

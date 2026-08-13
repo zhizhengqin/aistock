@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.models.base import Base
@@ -90,6 +90,7 @@ def _real_executor(
     api_key="sk-smoke-secret",
     expected_max_tokens=256,
     status_code=200,
+    error_message="invalid key",
 ):
     db = db_factory()
 
@@ -98,7 +99,11 @@ def _real_executor(
         body = request.read()
         assert json.loads(body)["max_tokens"] == expected_max_tokens
         if status_code != 200:
-            return httpx.Response(status_code, json={"error": {"message": "invalid key"}}, request=request)
+            return httpx.Response(
+                status_code,
+                json={"error": {"message": error_message}},
+                request=request,
+            )
         return httpx.Response(
             200,
             json={
@@ -216,11 +221,17 @@ def test_bootstrap_probe_failure_persists_candidate_notifies_and_exits_zero(
     monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-cli-secret")
     notifications = []
     monkeypatch.setattr(cli, "_notify_admins", lambda *args, **kwargs: notifications.append(args))
-    executor = RecordingExecutor(
-        error=LlmError("模型密钥无效，请管理员检查配置", code="llm_auth_failed")
+    db, http_client, executor = _real_executor(
+        db_factory,
+        api_key="sk-cli-secret",
+        expected_max_tokens=4096,
+        status_code=401,
     )
-
-    result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    try:
+        result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
 
     assert result == 0
     assert notifications
@@ -230,6 +241,163 @@ def test_bootstrap_probe_failure_persists_candidate_notifies_and_exits_zero(
         assert config.lifecycle_status == "draft"
         assert db.get(LlmRuntimeSetting, 1).default_model_config_id is None
         assert db.query(LlmModelTestRun).one().status == "failed"
+
+
+def test_bootstrap_real_provider_daily_limit_is_nonfatal_with_attempt_evidence(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-provider-daily-secret")
+    db, http_client, executor = _real_executor(
+        db_factory,
+        api_key="sk-provider-daily-secret",
+        expected_max_tokens=4096,
+        status_code=400,
+        error_message="daily_limit reached by provider",
+    )
+    try:
+        result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
+
+    assert result == 0
+    with db_factory() as db:
+        config = db.query(LlmModelConfig).one()
+        attempt = db.query(LlmCallAttempt).one()
+        reservation = db.get(LlmTokenReservation, attempt.reservation_id)
+        assert config.lifecycle_status == "draft"
+        assert attempt.error_code == "llm_daily_limit_reached"
+        assert attempt.status == "failed"
+        assert reservation.status == "settled"
+
+
+def test_bootstrap_local_budget_lock_is_fatal_without_attempt(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-local-budget-secret")
+    with db_factory() as db:
+        db.add(LlmRuntimeSetting(id=1, daily_token_limit=100_000, budget_locked=True))
+        db.commit()
+    db, http_client, executor = _real_executor(
+        db_factory,
+        api_key="sk-local-budget-secret",
+        expected_max_tokens=4096,
+    )
+    try:
+        result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
+
+    assert result == 1
+    with db_factory() as db:
+        assert db.query(LlmCallAttempt).count() == 0
+        assert db.query(LlmModelConfig).count() == 0
+
+
+class _FailOnceCommitSession(Session):
+    def commit(self):
+        if self.info.pop("fail_commit_once", False):
+            raise RuntimeError("simulated cleanup persistence failure")
+        return super().commit()
+
+
+def test_bootstrap_cleanup_persistence_failure_recovers_same_candidate(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-recover-secret")
+    engine = db_factory.kw["bind"] if hasattr(db_factory, "kw") else None
+    # Build a factory which fails exactly on the cleanup commit (build and
+    # started-test commits have already succeeded), then behaves normally.
+    assert engine is not None
+    maker = sessionmaker(bind=engine, class_=_FailOnceCommitSession, expire_on_commit=False)
+    calls = 0
+
+    def flaky_factory():
+        nonlocal calls
+        calls += 1
+        session = maker()
+        if calls == 3:
+            session.info["fail_commit_once"] = True
+        return session
+
+    first = cli.run_bootstrap(
+        session_factory=flaky_factory,
+        executor=RecordingExecutor(error=RuntimeError("programming failure")),
+    )
+    assert first == 1
+    with db_factory() as db:
+        assert db.query(LlmModelConfig).count() == 1
+        assert db.query(LlmModelTestRun).count() == 1
+        assert db.query(LlmModelTestRun).one().status == "failed"
+
+    second = cli.run_bootstrap(
+        session_factory=flaky_factory,
+        executor=RecordingExecutor(),
+    )
+    assert second == 0
+    with db_factory() as db:
+        config = db.query(LlmModelConfig).one()
+        assert config.lifecycle_status == "active"
+        assert db.get(LlmRuntimeSetting, 1).default_model_config_id == config.id
+        runs = db.query(LlmModelTestRun).order_by(LlmModelTestRun.created_at).all()
+        assert len(runs) == 2
+        assert runs[0].status == "failed"
+        assert runs[1].status == "success"
+
+
+def test_bootstrap_multiple_legacy_candidates_is_safe_noop(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-ambiguous-secret")
+    from app.services.llm.config_service import runtime_fingerprint
+    from app.services.llm.crypto import encrypt_api_key
+
+    with db_factory() as db:
+        for suffix in ("one", "two"):
+            config_id = f"legacy-candidate-{suffix}"
+            envelope = encrypt_api_key(
+                f"sk-{suffix}-secret",
+                config_id=config_id,
+                provider=Provider.DEEPSEEK,
+                keyring=cli.settings.LLM_CONFIG_ENCRYPTION_KEYS,
+            )
+            db.add(
+                LlmModelConfig(
+                    id=config_id,
+                    provider="deepseek",
+                    display_name="DeepSeek 环境变量迁移",
+                    model_name="deepseek-chat",
+                    base_url="https://api.deepseek.com/v1",
+                    encrypted_api_key=envelope.encrypted_api_key,
+                    encryption_key_id=envelope.encryption_key_id,
+                    envelope_version=envelope.envelope_version,
+                    nonce=envelope.nonce,
+                    runtime_fingerprint=runtime_fingerprint(
+                        provider=Provider.DEEPSEEK,
+                        model_name="deepseek-chat",
+                        base_url="https://api.deepseek.com/v1",
+                        credential_version="ambiguous-credential",
+                        max_output_tokens=4096,
+                    ),
+                    lifecycle_status="draft",
+                )
+            )
+        db.add(LlmRuntimeSetting(id=1))
+        db.commit()
+    executor = RecordingExecutor()
+
+    result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+
+    assert result == 0
+    assert executor.calls == []
+    with db_factory() as db:
+        assert db.query(LlmModelConfig).count() == 2
+        assert db.get(LlmRuntimeSetting, 1).default_model_config_id is None
 
 
 @pytest.mark.parametrize(
@@ -274,13 +442,17 @@ def test_bootstrap_local_or_programming_probe_failure_is_fatal_and_retryable(
 def test_bootstrap_upstream_llm_error_is_persisted_and_exits_zero(db_factory, keyring, monkeypatch):
     cli = _cli(monkeypatch)
     monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-upstream-secret")
-
-    result = cli.run_bootstrap(
-        session_factory=db_factory,
-        executor=RecordingExecutor(
-            error=LlmError("上游拒绝访问", code="llm_auth_failed")
-        ),
+    db, http_client, executor = _real_executor(
+        db_factory,
+        api_key="sk-upstream-secret",
+        expected_max_tokens=4096,
+        status_code=401,
     )
+    try:
+        result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
 
     assert result == 0
     with db_factory() as db:

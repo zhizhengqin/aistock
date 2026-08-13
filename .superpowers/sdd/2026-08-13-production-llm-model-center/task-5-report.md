@@ -156,15 +156,56 @@ psql -h localhost -p 5432 -d postgres -Atqc \
 
 无残留数据库。
 
-## 提交与边界
+## Review round2/5：来源分类与中断 candidate 恢复
 
-本轮提交信息：
+在 `ecbc67db` 先补真实行为测试再实现。有效 RED 为：
 
-```text
-fix(llm): harden bootstrap and migration gates
+- 使用真实 `LlmCallExecutor + ProviderClient + httpx.MockTransport` 返回 HTTP 400 `daily_limit` 时，已有真实 `bootstrap` attempt/供应商错误证据却被错误地判为 fatal（exit 1，期望 exit 0 并保留 draft/audit）。
+- 使用真实 `TokenBudgetService` 在本地 `budget_locked`、reserve 前拒绝时，确认无 attempt 并返回 fatal（该新增行为测试先通过，作为来源分类对照）。
+- 模拟首次 RuntimeError 后 cleanup persistence commit 失败，第二次 bootstrap 在旧实现中永久 no-op/draft，无法复用原 config；期望保留历史审计、创建新 run、同一 config 成功成为 default。
+
+本轮修复：
+
+- bootstrap 异常携带 `run_id/config_id` 查询精确关联的 `LlmCallAttempt`；稳定 provider code 只有在匹配 attempt 已离开 `started` 且 `error_code` 一致时才允许 exit 0。`llm_daily_limit_reached` 因此区分供应商 HTTP 响应（非 fatal）与本地额度锁（无 attempt，fatal）；`llm_transport_config`、任意非 `LlmError`、审计/数据库异常仍 fatal。
+- advisory lock 内先识别唯一、精确显示名、`created_by IS NULL`、draft、未删除且非默认的旧 bootstrap-owned candidate；若其 bootstrap test run 没有 `started` 中的 in-flight 记录，则解密并复核 base URL、runtime fingerprint，恢复同一 config，保留旧 attempts/usages/tests 并新建 probe run。多候选、管理员模型、active/default/deleted、密钥或指纹不可验证均安全 no-op/fatal，不覆盖配置。
+- cleanup 失败时不吞掉恢复信号：首次仍 exit 1、错误信息不含密钥；随后 best-effort 将旧 run 标为 `failed`，使下一次 bootstrap 能区分“中断”与“当前探测进行中”。race 场景中的 `started` run 保持 in-flight，第二进程不重复 probe。
+
+Round2 focused/PG 验证：
+
+```bash
+cd backend
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest \
+  tests/cli/test_llm_config_cli.py tests/cli/test_database_cli.py -q
 ```
 
-未 amend、未 push、未部署；没有改写 `a7922919`。`.venv`、`__pycache__`、构建产物和工作区原有改动均未纳入提交。测试中的 `httpx.MockTransport` 只替代外部 HTTP；产品 bootstrap/live-smoke 路径仍显式使用 Task 3 `LlmCallExecutor`，live-smoke 成功预算证据只接受 `settled`，readiness 不触发任何模型调用。
+```text
+24 passed, 2 warnings
+```
+
+```bash
+TEST_DATABASE_URL='postgresql+psycopg2://qinzz@localhost:5432/postgres' \
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest \
+  tests/integration/test_llm_bootstrap_lock.py \
+  tests/integration/test_llm_database_cli.py -q
+```
+
+```text
+5 passed, 16 warnings
+```
+
+Task1–5 focused（含 PG，round2 后）：`144 passed, 17 warnings`。
+
+全 backend（显式 PostgreSQL admin/base URL）：`265 passed, 21 warnings`。
+
+## 提交与边界
+
+Round2 提交信息：
+
+```text
+fix(llm): recover interrupted bootstrap candidates
+```
+
+未 amend、未 push、未部署；没有改写 `a7922919` 或 `ecbc67db`。`.venv`、`__pycache__`、构建产物和工作区原有改动均未纳入提交。测试中的 `httpx.MockTransport` 只替代外部 HTTP；产品 bootstrap/live-smoke 路径仍显式使用 Task 3 `LlmCallExecutor`，live-smoke 成功预算证据只接受 `settled`，readiness 不触发任何模型调用。
 
 ## 已知非阻塞差距
 

@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 from sqlalchemy import create_engine, select
@@ -5,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.base import Base
 from app.models.llm_execution import LlmCallAttempt, LlmTokenReservation
+from app.models.llm_usage import LlmUsage
 from app.services.llm.budget import TokenBudgetService
 from app.services.llm.call_executor import LlmCallExecutor
 from app.services.llm.provider_client import ProviderClient
@@ -136,6 +139,50 @@ async def test_unknown_timeout_settles_upper_bound_and_never_replays(session):
     assert attempt.status == "failed_unknown"
     assert reservation.status == "settled"
     assert reservation.settled_tokens == reservation.reserved_tokens
+
+
+@pytest.mark.asyncio
+async def test_provider_cancellation_settles_unknown_attempt_and_usage(session):
+    calls = 0
+    provider_started = asyncio.Event()
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        provider_started.set()
+        await asyncio.sleep(60)
+        raise AssertionError("cancelled provider must not return a result")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    executor = LlmCallExecutor(
+        session,
+        provider_client=ProviderClient(client=client),
+        budget=TokenBudgetService(session, daily_token_limit=1000),
+    )
+    task = asyncio.create_task(
+        executor.call(
+            runtime_config=runtime(),
+            operation_type="bootstrap",
+            step_key="cancelled-provider",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+    )
+    await asyncio.wait_for(provider_started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await client.aclose()
+
+    assert calls == 1
+    attempt = session.execute(select(LlmCallAttempt)).scalar_one()
+    reservation = session.execute(select(LlmTokenReservation)).scalar_one()
+    usage = session.execute(select(LlmUsage)).scalar_one()
+    assert attempt.status == "failed_unknown"
+    assert attempt.error_code == "llm_failed_unknown"
+    assert reservation.status == "settled"
+    assert reservation.settled_tokens == reservation.reserved_tokens
+    assert usage.status == "failed_unknown"
+    assert usage.error_code == "llm_failed_unknown"
 
 
 @pytest.mark.asyncio

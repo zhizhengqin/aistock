@@ -487,10 +487,20 @@ def test_bootstrap_real_executor_hard_deadline_keeps_failed_candidate(
     with db_factory() as db:
         config = db.query(LlmModelConfig).one()
         run = db.query(LlmModelTestRun).one()
+        attempt = db.query(LlmCallAttempt).one()
+        reservation = db.get(LlmTokenReservation, attempt.reservation_id)
+        usage = db.query(LlmUsage).one()
         assert config.deleted_at is None
         assert config.lifecycle_status == "draft"
         assert run.status == "failed"
         assert run.error_code == "llm_probe_timeout"
+        assert attempt.step_key == f"bootstrap:{run.id}"
+        assert attempt.status == "failed_unknown"
+        assert attempt.error_code == "llm_failed_unknown"
+        assert reservation.status == "settled"
+        assert reservation.settled_tokens == reservation.reserved_tokens
+        assert usage.status == "failed_unknown"
+        assert usage.error_code == "llm_failed_unknown"
 
 
 def test_bootstrap_stale_started_run_is_failed_and_candidate_recovered(

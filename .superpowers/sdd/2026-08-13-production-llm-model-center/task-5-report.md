@@ -247,15 +247,50 @@ Task1–5 focused（含 PG）：`151 passed, 7 warnings`；全 backend（显式 
 
 静态/边界检查：`sh -n backend/docker-entrypoint.sh`、CLI compileall、`git diff --check` 均通过；`LLM_MOCK` 在两个 Compose 文件中无匹配，worker 不含三个 legacy secret 字段；Compose config 使用命令行临时变量，无 `.env` 写入或 secret 展开打印。readiness 继续使用 no-autoflush/rollback 只读 scope，不解密、不调用 executor、不提交调用方 pending。
 
-## 提交与边界
+## Review round4/5：取消安全与 hard-timeout 账本终态
 
-Round3 提交信息：
+### 有效 RED（基线 `9d12d274`）
 
-```text
-fix(llm): finalize bootstrap recovery semantics
+先补充真实延迟 provider 与真实 bootstrap executor 测试，再执行：
+
+```bash
+cd backend
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest \
+  tests/services/llm/test_call_executor.py::test_provider_cancellation_settles_unknown_attempt_and_usage \
+  tests/cli/test_llm_config_cli.py::test_bootstrap_real_executor_hard_deadline_keeps_failed_candidate -q
 ```
 
-未 amend、未 push、未部署；没有改写 `a7922919`、`ecbc67db` 或 `9994d53b`。`.venv`、`__pycache__`、构建产物和工作区原有改动均未纳入提交。测试中的 `httpx.MockTransport` 只替代外部 HTTP；产品 bootstrap/live-smoke 路径仍显式使用 Task 3 `LlmCallExecutor`，live-smoke 成功预算证据只接受 `settled`，readiness 不触发任何模型调用。
+结果：`2 failed`。两项均暴露产品行为而非导入/测试基础设施问题：任务取消后旧 executor 没有写入 `llm_usage`，取消测试查询不到 usage；真实 bootstrap hard deadline 同样留下 provider attempt/reservation 未终态化，run 虽为 `llm_probe_timeout`，但没有 failed-unknown usage 证据。
+
+### 修复语义
+
+- `LlmCallExecutor` 在每次 physical provider await 处显式捕获 `asyncio.CancelledError`（BaseException），构造安全的 `llm_failed_unknown` 错误（`may_have_sent=True`、`confirmed_unsent=False`、不可重试）。
+- 取消路径不再进入普通 retry 分支：同步以预留上界 `settle(..., unknown=True)`，将 attempt 写为 `failed_unknown` 并记录稳定错误码，再通过既有 `_persist_usage` 接口写入 `failed_unknown/llm_failed_unknown` usage；该终态化过程没有 await，数据库异常不被吞掉。
+- 终态化成功后原样重新抛出 `CancelledError`。因此 CLI 的 `asyncio.timeout` 能安全转换为 `TimeoutError`，bootstrap 继续写入 `llm_probe_timeout` failed run 并以 exit 0 返回；真实 attempt 的精确 `bootstrap:{run_id}` step、settled reservation 和 failed-unknown usage 均保留。
+
+### Round4 验证
+
+```bash
+cd backend
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest \
+  tests/services/llm/test_call_executor.py tests/cli/test_llm_config_cli.py -q
+```
+
+结果：`37 passed, 2 warnings`。
+
+Task1–5 focused（显式 PostgreSQL admin/base URL）：`152 passed, 7 warnings`；全 backend（显式 PostgreSQL admin/base URL）：`274 passed, 21 warnings`。
+
+PG race/migration 回归：`5 passed, 16 warnings`；所有 disposable PostgreSQL 库均在 `finally` 清理，扫描无残留。Shell/compile/diff/Compose/secret 边界沿用 round3 结果。
+
+## 提交与边界
+
+Round4 提交信息：
+
+```text
+fix(llm): settle cancelled provider attempts
+```
+
+未 amend、未 push、未部署；没有改写 `a7922919`、`ecbc67db`、`9994d53b` 或 `9d12d274`。`.venv`、`__pycache__`、构建产物和工作区原有改动均未纳入提交。测试中的 `httpx.MockTransport` 只替代外部 HTTP；产品 bootstrap/live-smoke 路径仍显式使用 Task 3 `LlmCallExecutor`，live-smoke 成功预算证据只接受 `settled`，readiness 不触发任何模型调用。
 
 ## 已知非阻塞差距
 

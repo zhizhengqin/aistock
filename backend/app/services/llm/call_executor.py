@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -366,6 +367,34 @@ class LlmCallExecutor:
                     result=result,
                 )
                 return result
+            except asyncio.CancelledError:
+                # Cancellation can happen after bytes have reached the
+                # provider but before normal settlement.  Finalize the
+                # physical attempt synchronously at the conservative upper
+                # bound, then propagate the original cancellation so an
+                # outer asyncio.timeout/task owner can make the final
+                # decision.  There is deliberately no await in this block.
+                cancelled_error = _error(
+                    "llm_failed_unknown",
+                    "大模型响应状态未知，请勿自动重试",
+                )
+                cancelled_error.retryable = False
+                cancelled_error.confirmed_unsent = False
+                cancelled_error.may_have_sent = True
+                self.budget.settle(reservation.id, None, unknown=True)
+                self._update_attempt(
+                    operation_id,
+                    status="failed_unknown",
+                    error=cancelled_error,
+                )
+                self._persist_usage(
+                    runtime_config,
+                    operation_type=operation_type,
+                    task_id=task_id,
+                    status="failed_unknown",
+                    error=cancelled_error,
+                )
+                raise
             except LlmError as exc:
                 last_error = exc
             except Exception:

@@ -197,15 +197,65 @@ Task1–5 focused（含 PG，round2 后）：`144 passed, 17 warnings`。
 
 全 backend（显式 PostgreSQL admin/base URL）：`265 passed, 21 warnings`。
 
-## 提交与边界
+## Review round3/5：来源证据、probe 租约与历史恢复
 
-Round2 提交信息：
+### 有效 RED（基线 `9994d53b`）
 
-```text
-fix(llm): recover interrupted bootstrap candidates
+先补充真实行为测试，再执行：
+
+```bash
+cd backend
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/cli/test_llm_config_cli.py -q
 ```
 
-未 amend、未 push、未部署；没有改写 `a7922919` 或 `ecbc67db`。`.venv`、`__pycache__`、构建产物和工作区原有改动均未纳入提交。测试中的 `httpx.MockTransport` 只替代外部 HTTP；产品 bootstrap/live-smoke 路径仍显式使用 Task 3 `LlmCallExecutor`，live-smoke 成功预算证据只接受 `settled`，readiness 不触发任何模型调用。
+结果：`27 collected, 4 failed, 23 passed`。失败均为产品行为而非导入/测试基础设施问题：
+
+- 真实 `LlmCallExecutor + ProviderClient + httpx.MockTransport` 返回 HTTP 200 但业务 JSON 形状错误时，旧实现错误返回 fatal 1，而应保留 success attempt、failed draft/run，返回 0 且 readiness 仍为 not-ready。
+- 同一真实 executor 注入显式 resolver 抛 `socket.gaierror` 时，旧实现未将 `llm_dns_unavailable` 作为已完成 provider attempt 的非 fatal 结果。
+- 候选唯一但旧 bootstrap run 为过期 `started` 时，旧实现永久 no-op，无法将 owner 标记丢失并恢复同一 config。
+- 全部历史均为严格 bootstrap-owned、retired、deleted 配置时，旧实现永久 no-op，无法从当前 legacy env 创建下一候选；普通 deleted/admin 历史仍保持 no-op。
+
+另：早期 fork 进程测试在 macOS 上出现 SIGSEGV（`exitcode=-11`），属于测试基础设施错误，不计入 RED；race helper 使用 `multiprocessing spawn`，并在 `finally` 中 terminate/join 所有已启动子进程。
+
+### 修复语义
+
+- `_probe_attempt_evidence` 返回同一 `config_id + bootstrap:{run_id}` 的结构化 `status/error_code`。`llm_probe_invalid` 仅在该 run 的真实 attempt 已 `success` 时非 fatal；DNS、provider 稳定错误及供应商 `llm_daily_limit_reached` 仅在 matching completed `failed/failed_unknown` attempt 时非 fatal；本地 transport/budget/audit/config/encryption 等 denylist 和任意非 `LlmError` 始终 fatal。
+- bootstrap probe 使用 `asyncio.timeout(195s)`，超时写入稳定 `llm_probe_timeout`，保留 failed draft/run（退出 0）；租约失效窗口为 `195s + 15s grace`，时间统一按 UTC 处理。新增真实 executor 慢响应测试确认候选不被删除。
+- advisory lock 内仅在短事务中处理 lease：新鲜 `started` run 仍 no-op；过期 run 行锁复核后原子写 `failed/llm_bootstrap_owner_lost`，再恢复同一 candidate。最终化固定 settings→candidate→run 锁序并 `populate_existing`，先复核 run 仍 `started`；旧 owner 晚到不能改写 failed 终态、激活 candidate 或修改 default。新增 late-owner fence 行为测试。
+- 无未删除模型且历史全部严格 bootstrap-owned（显示名精确、`created_by IS NULL`、非默认、retired+deleted）时允许 legacy env 创建新 config，旧审计和软删除行保留；任意 admin/default/含糊历史仍 fail-closed。新增真实 executor transport fatal→软删除→修复后新 config 成功测试。
+
+### Round3 验证
+
+```bash
+cd backend
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest \
+  tests/cli/test_llm_config_cli.py tests/cli/test_database_cli.py -q
+```
+
+结果：`32 passed, 2 warnings`。
+
+```bash
+TEST_DATABASE_URL='postgresql+psycopg2://qinzz@localhost:5432/postgres' \
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest \
+  tests/integration/test_llm_bootstrap_lock.py \
+  tests/integration/test_llm_database_cli.py -q
+```
+
+结果：`5 passed, 16 warnings`；四个独立进程/连接 race、成功与失败 probe、settings-only 空库和 probe barrier 均通过。随机 disposable 数据库全部在 `finally` 中删除，扫描无残留。
+
+Task1–5 focused（含 PG）：`151 passed, 7 warnings`；全 backend（显式 PostgreSQL admin/base URL）：`273 passed, 21 warnings`。
+
+静态/边界检查：`sh -n backend/docker-entrypoint.sh`、CLI compileall、`git diff --check` 均通过；`LLM_MOCK` 在两个 Compose 文件中无匹配，worker 不含三个 legacy secret 字段；Compose config 使用命令行临时变量，无 `.env` 写入或 secret 展开打印。readiness 继续使用 no-autoflush/rollback 只读 scope，不解密、不调用 executor、不提交调用方 pending。
+
+## 提交与边界
+
+Round3 提交信息：
+
+```text
+fix(llm): finalize bootstrap recovery semantics
+```
+
+未 amend、未 push、未部署；没有改写 `a7922919`、`ecbc67db` 或 `9994d53b`。`.venv`、`__pycache__`、构建产物和工作区原有改动均未纳入提交。测试中的 `httpx.MockTransport` 只替代外部 HTTP；产品 bootstrap/live-smoke 路径仍显式使用 Task 3 `LlmCallExecutor`，live-smoke 成功预算证据只接受 `settled`，readiness 不触发任何模型调用。
 
 ## 已知非阻塞差距
 

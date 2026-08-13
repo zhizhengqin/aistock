@@ -17,7 +17,7 @@ import json
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping
 from uuid import uuid4
 
@@ -48,6 +48,8 @@ PROBE_PROMPT_VERSION = "bootstrap-v1"
 SMOKE_PROMPT_VERSION = "live-smoke-v1"
 BOOTSTRAP_LOCK_KEY = "aistock_llm_bootstrap_v1"
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
+BOOTSTRAP_PROBE_DEADLINE_SECONDS = 195
+BOOTSTRAP_PROBE_GRACE_SECONDS = 15
 _SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
 
 # Only errors which are unambiguously produced by the upstream provider are a
@@ -62,12 +64,40 @@ _UPSTREAM_PROBE_ERROR_CODES = frozenset(
         "llm_quota_exceeded",
         "llm_rate_limited",
         "llm_timeout",
+        "llm_probe_timeout",
         "llm_failed_unknown",
         "llm_daily_limit_reached",
         "llm_invalid_json",
         "llm_unavailable",
+        "llm_dns_unavailable",
         "llm_redirect_blocked",
         "llm_response_too_large",
+        "llm_probe_invalid",
+    }
+)
+
+# These codes describe a local refusal or persistence/configuration defect.
+# They remain fatal even if a malformed adapter happens to persist an attempt
+# row before raising the same error.
+_LOCAL_PROBE_ERROR_CODES = frozenset(
+    {
+        "llm_transport_config",
+        "llm_budget_locked",
+        "llm_audit_database",
+        "llm_database",
+        "llm_config",
+        "llm_configuration",
+        "llm_credential_error",
+        "llm_encryption_error",
+        "llm_provider_invalid",
+        "llm_runtime_invalid",
+        "llm_input_invalid",
+        "llm_input_too_large",
+        "llm_max_tokens_invalid",
+        "llm_operation_invalid",
+        "llm_reservation_invalid",
+        "llm_usage_invalid",
+        "llm_attempt_conflict",
     }
 )
 
@@ -108,6 +138,14 @@ class _BootstrapCandidate:
     settings_version: int
 
 
+@dataclass(frozen=True, slots=True)
+class _ProbeAttemptEvidence:
+    """Durable evidence for the one physical bootstrap call."""
+
+    status: str | None = None
+    error_code: str | None = None
+
+
 def _redact_text(value: str, secrets: Iterable[str] = ()) -> str:
     output = str(value)
     for secret in secrets:
@@ -124,6 +162,24 @@ def _safe_key_hint(api_key: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize SQLite-naive and PostgreSQL-aware timestamps to UTC."""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _bootstrap_run_expired(run: LlmModelTestRun, *, now: datetime | None = None) -> bool:
+    created_at = _as_utc(run.created_at)
+    if created_at is None:
+        return False
+    deadline = BOOTSTRAP_PROBE_DEADLINE_SECONDS + BOOTSTRAP_PROBE_GRACE_SECONDS
+    return (_as_utc(now) or _now()) >= created_at + timedelta(seconds=deadline)
 
 
 def _as_provider(value: Provider | str) -> Provider:
@@ -296,19 +352,35 @@ def _build_candidate(session: Session) -> _BootstrapCandidate | None:
             # duplicate config or returning a permanent no-op.
             existing = owned_candidates[0]
             # A second process must not mistake a provider probe currently in
-            # flight for an interrupted candidate. Cleanup failure marks its
-            # old run failed; only then can the next bootstrap recover it.
-            inflight = session.execute(
-                select(func.count())
-                .select_from(LlmModelTestRun)
+            # flight for an interrupted candidate.  A fresh started run owns
+            # the candidate; an expired lease is atomically marked failed
+            # before the next owner is allowed to recover it.
+            started_runs = session.execute(
+                select(LlmModelTestRun)
                 .where(
                     LlmModelTestRun.model_config_id == existing.id,
                     LlmModelTestRun.test_type == "bootstrap",
                     LlmModelTestRun.status == "started",
                 )
-            ).scalar_one()
-            if int(inflight) > 0:
-                return None
+                .order_by(LlmModelTestRun.created_at.asc())
+            ).scalars().all()
+            now = _now()
+            for started_run in started_runs:
+                if not _bootstrap_run_expired(started_run, now=now):
+                    return None
+                locked_run = session.execute(
+                    select(LlmModelTestRun)
+                    .where(LlmModelTestRun.id == started_run.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).scalar_one_or_none()
+                if locked_run is not None and locked_run.status == "started":
+                    if not _bootstrap_run_expired(locked_run, now=now):
+                        return None
+                    locked_run.status = "failed"
+                    locked_run.error_code = "llm_bootstrap_owner_lost"
+                    locked_run.error_message = "大模型首次引导探测已失效，请重新测试"
+                    session.flush()
             try:
                 runtime = _runtime_from_config(existing)
                 expected_base_url = validate_base_url(
@@ -339,9 +411,20 @@ def _build_candidate(session: Session) -> _BootstrapCandidate | None:
         # bootstrap command must not infer ownership from ambiguous rows.
         return None
     if all_configs:
-        # Deleted/retired bootstrap history is intentionally not resurrected;
-        # an operator must make an explicit new model-center choice.
-        return None
+        # A deleted history row is safe to retain, but only a strictly
+        # bootstrap-owned retired history permits the legacy environment to
+        # create a fresh candidate.  Any administrator/ambiguous history
+        # remains fail-closed and must be handled explicitly in the UI.
+        history_is_bootstrap_owned = all(
+            config.deleted_at is not None
+            and config.lifecycle_status == ModelLifecycle.RETIRED.value
+            and config.display_name == "DeepSeek 环境变量迁移"
+            and config.created_by is None
+            and setting.default_model_config_id != config.id
+            for config in all_configs
+        )
+        if not history_is_bootstrap_owned:
+            return None
     api_key = str(getattr(settings, "DEEPSEEK_API_KEY", "") or "").strip()
     if not api_key:
         return None
@@ -406,30 +489,58 @@ def _probe_attempt_evidence(
     *,
     config_id: str,
     run_id: str,
-    error_code: str,
-) -> bool:
-    """Return whether this probe has a durable, matching provider attempt."""
+) -> _ProbeAttemptEvidence:
+    """Return structured evidence for this probe's durable call attempt."""
 
     with _readonly_session_scope(session_factory) as session:
         attempt = session.execute(
-            select(LlmCallAttempt.id)
+            select(LlmCallAttempt.status, LlmCallAttempt.error_code)
             .where(
                 LlmCallAttempt.model_config_id == config_id,
                 LlmCallAttempt.operation_type == "bootstrap",
                 LlmCallAttempt.step_key == f"bootstrap:{run_id}",
-                LlmCallAttempt.status != "started",
-                LlmCallAttempt.error_code == error_code,
             )
+            .order_by(LlmCallAttempt.created_at.desc())
             .limit(1)
-        ).scalar_one_or_none()
-        return attempt is not None
+        ).one_or_none()
+        if attempt is None:
+            return _ProbeAttemptEvidence()
+        return _ProbeAttemptEvidence(status=attempt[0], error_code=attempt[1])
 
 
-def _is_upstream_probe_error(error: BaseException, *, attempt_evidence: bool) -> bool:
+def _is_upstream_probe_error(
+    error: BaseException,
+    *,
+    attempt_evidence: _ProbeAttemptEvidence,
+) -> bool:
+    """Classify only a provider-backed, durably audited probe as non-fatal."""
+
+    if not isinstance(error, LlmError):
+        return False
+    code = getattr(error, "code", None)
+    if code in _LOCAL_PROBE_ERROR_CODES:
+        return False
+    if code == "llm_probe_invalid":
+        # The HTTP/provider call succeeded; only our business-schema contract
+        # failed.  Keep the successful attempt and failed probe result.
+        return attempt_evidence.status == "success"
+    if code == "llm_probe_timeout":
+        # This is the bootstrap's own hard deadline (not a provider response)
+        # and must remain an auditable failed candidate so a slow/partitioned
+        # provider does not turn the one-shot migration into a fatal startup.
+        return True
+    if code == "llm_daily_limit_reached":
+        # This code is also used by the local budget service.  A matching
+        # completed attempt is the evidence that the provider, not the local
+        # preflight guard, returned the daily-limit response.
+        return (
+            attempt_evidence.status in {"failed", "failed_unknown"}
+            and attempt_evidence.error_code == code
+        )
     return (
-        isinstance(error, LlmError)
-        and attempt_evidence
-        and getattr(error, "code", None) in _UPSTREAM_PROBE_ERROR_CODES
+        code in _UPSTREAM_PROBE_ERROR_CODES
+        and attempt_evidence.status in {"failed", "failed_unknown"}
+        and attempt_evidence.error_code == code
     )
 
 
@@ -583,16 +694,21 @@ async def _probe_candidate(
     fatal_error: BaseException | None = None
     probe_error: LlmError | None = None
     try:
-        result = await executor.call(
-            runtime_config=candidate.runtime,
-            operation_type="bootstrap",
-            step_key=f"bootstrap:{run_id}",
-            messages=_probe_messages(),
-            task_id=None,
-            prompt_version=PROBE_PROMPT_VERSION,
-        )
+        async with asyncio.timeout(BOOTSTRAP_PROBE_DEADLINE_SECONDS):
+            result = await executor.call(
+                runtime_config=candidate.runtime,
+                operation_type="bootstrap",
+                step_key=f"bootstrap:{run_id}",
+                messages=_probe_messages(),
+                task_id=None,
+                prompt_version=PROBE_PROMPT_VERSION,
+            )
         capabilities = _validate_structured_result(result, candidate.runtime, purpose="bootstrap")
         status = "success"
+    except asyncio.TimeoutError:
+        error_code = "llm_probe_timeout"
+        error_message = "模型测试超时，请稍后重试"
+        probe_error = LlmError(error_message, code=error_code)
     except LlmError as exc:
         error_code = getattr(exc, "code", "llm_probe_failed")
         error_message = _redact_text(str(exc), [candidate.runtime.api_key])
@@ -610,18 +726,17 @@ async def _probe_candidate(
 
     if probe_error is not None:
         try:
-            has_attempt = _probe_attempt_evidence(
+            attempt_evidence = _probe_attempt_evidence(
                 session_factory,
                 config_id=candidate.config_id,
                 run_id=run_id,
-                error_code=error_code or "llm_probe_failed",
             )
         except Exception as exc:
             # If audit evidence cannot be read, fail closed rather than
             # classifying an unverified exception as an upstream failure.
             fatal_error = exc
         else:
-            if not _is_upstream_probe_error(probe_error, attempt_evidence=has_attempt):
+            if not _is_upstream_probe_error(probe_error, attempt_evidence=attempt_evidence):
                 fatal_error = probe_error
 
     if fatal_error is not None:
@@ -662,60 +777,72 @@ async def _probe_candidate(
                 .with_for_update()
                 .execution_options(populate_existing=True)
             ).scalar_one_or_none()
-            run = session.get(LlmModelTestRun, run_id)
+            run = session.execute(
+                select(LlmModelTestRun)
+                .where(LlmModelTestRun.id == run_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
             if run is None or setting is None:
                 raise RuntimeError("模型测试记录保存失败")
-            run.status = status
-            run.capability_json = capabilities or None
-            run.result_json = result.result_json if result is not None else None
-            run.response_model = result.model if result is not None else None
-            run.error_code = error_code
-            run.error_message = error_message
-            run.input_tokens = result.prompt_tokens if result is not None else None
-            run.output_tokens = result.completion_tokens if result is not None else None
-            if config is None:
-                # A Task4 delete is a soft delete, so this branch is only for
-                # an external hard-delete race.  Preserve the successful
-                # audit row when possible and report a safe no-op.
+            if run.status != "started":
+                # A stale owner may finish after another bootstrap has marked
+                # its lease lost.  Preserve that historical row exactly and
+                # never let the late result change model state/defaults.
                 conflict = True
             else:
-                other_count = int(
-                    session.execute(
-                        select(func.count())
-                        .select_from(LlmModelConfig)
-                        .where(
-                            LlmModelConfig.deleted_at.is_(None),
-                            LlmModelConfig.id != candidate.config_id,
-                        )
-                    ).scalar_one()
-                )
-                owns_candidate = (
-                    config.deleted_at is None
-                    and config.lifecycle_status == ModelLifecycle.DRAFT.value
-                    and int(config.version) == candidate.config_version
-                    and config.runtime_fingerprint == candidate.runtime.runtime_fingerprint
-                    and int(setting.version) == candidate.settings_version
-                    and setting.default_model_config_id in {None, candidate.config_id}
-                    and other_count == 0
-                )
-                if status == "success" and owns_candidate:
-                    config.lifecycle_status = ModelLifecycle.ACTIVE.value
-                    config.verified_test_id = run.id
-                    config.last_probe_status = "success"
-                    config.last_probe_at = _now()
-                    setting.default_model_config_id = config.id
-                elif status == "success":
-                    # Preserve the successful probe audit but never overwrite
-                    # an administrator's status/default after the network wait.
+                run.status = status
+                run.capability_json = capabilities or None
+                run.result_json = result.result_json if result is not None else None
+                run.response_model = result.model if result is not None else None
+                run.error_code = error_code
+                run.error_message = error_message
+                run.input_tokens = result.prompt_tokens if result is not None else None
+                run.output_tokens = result.completion_tokens if result is not None else None
+                if config is None:
+                    # A Task4 delete is a soft delete, so this branch is only
+                    # for an external hard-delete race.  Preserve the
+                    # successful audit row and report a safe no-op.
                     conflict = True
-                elif owns_candidate:
-                    config.lifecycle_status = ModelLifecycle.DRAFT.value
-                    config.last_probe_status = "failed"
-                    config.last_probe_at = _now()
                 else:
-                    # A delete/modify/activate/default change during the
-                    # probe owns the outcome; keep its state untouched.
-                    conflict = True
+                    other_count = int(
+                        session.execute(
+                            select(func.count())
+                            .select_from(LlmModelConfig)
+                            .where(
+                                LlmModelConfig.deleted_at.is_(None),
+                                LlmModelConfig.id != candidate.config_id,
+                            )
+                        ).scalar_one()
+                    )
+                    owns_candidate = (
+                        config.deleted_at is None
+                        and config.lifecycle_status == ModelLifecycle.DRAFT.value
+                        and int(config.version) == candidate.config_version
+                        and config.runtime_fingerprint == candidate.runtime.runtime_fingerprint
+                        and int(setting.version) == candidate.settings_version
+                        and setting.default_model_config_id in {None, candidate.config_id}
+                        and other_count == 0
+                    )
+                    if status == "success" and owns_candidate:
+                        config.lifecycle_status = ModelLifecycle.ACTIVE.value
+                        config.verified_test_id = run.id
+                        config.last_probe_status = "success"
+                        config.last_probe_at = _now()
+                        setting.default_model_config_id = config.id
+                    elif status == "success":
+                        # Preserve the successful probe audit but never
+                        # overwrite an administrator's status/default after
+                        # the network wait.
+                        conflict = True
+                    elif owns_candidate:
+                        config.lifecycle_status = ModelLifecycle.DRAFT.value
+                        config.last_probe_status = "failed"
+                        config.last_probe_at = _now()
+                    else:
+                        # A delete/modify/activate/default change during the
+                        # probe owns the outcome; keep its state untouched.
+                        conflict = True
     except Exception:
         cleanup_ok = _fatal_probe_cleanup(
             session_factory,

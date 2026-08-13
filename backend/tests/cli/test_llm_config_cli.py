@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import socket
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -91,6 +93,10 @@ def _real_executor(
     expected_max_tokens=256,
     status_code=200,
     error_message="invalid key",
+    result_json=None,
+    transport_error=None,
+    resolver=None,
+    handler_delay=0,
 ):
     db = db_factory()
 
@@ -98,6 +104,10 @@ def _real_executor(
         assert request.headers["authorization"] == f"Bearer {api_key}"
         body = request.read()
         assert json.loads(body)["max_tokens"] == expected_max_tokens
+        if handler_delay:
+            await asyncio.sleep(handler_delay)
+        if transport_error is not None:
+            raise transport_error
         if status_code != 200:
             return httpx.Response(
                 status_code,
@@ -112,7 +122,8 @@ def _real_executor(
                     {
                         "message": {
                             "content": json.dumps(
-                                {"decision": "hold", "confidence": 0.5, "rationale": "probe"}
+                                    result_json
+                                    or {"decision": "hold", "confidence": 0.5, "rationale": "probe"}
                             )
                         }
                     }
@@ -126,7 +137,7 @@ def _real_executor(
         transport=httpx.MockTransport(handler),
         follow_redirects=False,
     )
-    provider_client = ProviderClient(client=client)
+    provider_client = ProviderClient(client=client, resolver=resolver)
     executor = LlmCallExecutor(
         db=db,
         provider_client=provider_client,
@@ -398,6 +409,310 @@ def test_bootstrap_multiple_legacy_candidates_is_safe_noop(
     with db_factory() as db:
         assert db.query(LlmModelConfig).count() == 2
         assert db.get(LlmRuntimeSetting, 1).default_model_config_id is None
+
+
+def test_bootstrap_real_executor_malformed_success_is_nonfatal_and_not_ready(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-malformed-secret")
+    db, http_client, executor = _real_executor(
+        db_factory,
+        api_key="sk-malformed-secret",
+        expected_max_tokens=4096,
+        result_json={"unexpected": "business payload"},
+    )
+    try:
+        result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
+
+    assert result == 0
+    with db_factory() as db:
+        config = db.query(LlmModelConfig).one()
+        run = db.query(LlmModelTestRun).one()
+        attempt = db.query(LlmCallAttempt).one()
+        assert config.lifecycle_status == "draft"
+        assert run.status == "failed"
+        assert run.error_code == "llm_probe_invalid"
+        assert attempt.status == "success"
+    assert cli.run_readiness(session_factory=db_factory).exit_code == 1
+
+
+def test_bootstrap_real_executor_dns_failure_is_nonfatal_with_completed_attempt(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-dns-secret")
+    db, http_client, executor = _real_executor(
+        db_factory,
+        api_key="sk-dns-secret",
+        expected_max_tokens=4096,
+        resolver=lambda hostname, port: (_ for _ in ()).throw(socket.gaierror("resolver failed")),
+    )
+    try:
+        result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
+
+    assert result == 0
+    with db_factory() as db:
+        attempt = db.query(LlmCallAttempt).one()
+        assert attempt.status in {"failed", "failed_unknown"}
+        assert attempt.error_code == "llm_dns_unavailable"
+        assert db.query(LlmModelConfig).one().lifecycle_status == "draft"
+
+
+def test_bootstrap_real_executor_hard_deadline_keeps_failed_candidate(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-slow-provider-secret")
+    monkeypatch.setattr(cli, "BOOTSTRAP_PROBE_DEADLINE_SECONDS", 0.01)
+    db, http_client, executor = _real_executor(
+        db_factory,
+        api_key="sk-slow-provider-secret",
+        expected_max_tokens=4096,
+        handler_delay=0.1,
+    )
+    try:
+        result = cli.run_bootstrap(session_factory=db_factory, executor=executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
+
+    assert result == 0
+    with db_factory() as db:
+        config = db.query(LlmModelConfig).one()
+        run = db.query(LlmModelTestRun).one()
+        assert config.deleted_at is None
+        assert config.lifecycle_status == "draft"
+        assert run.status == "failed"
+        assert run.error_code == "llm_probe_timeout"
+
+
+def test_bootstrap_stale_started_run_is_failed_and_candidate_recovered(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-stale-secret")
+    monkeypatch.setattr(cli, "_fatal_probe_cleanup", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "_mark_probe_cleanup_failed", lambda *args, **kwargs: None)
+
+    first = cli.run_bootstrap(
+        session_factory=db_factory,
+        executor=RecordingExecutor(error=RuntimeError("owner was killed")),
+    )
+    assert first == 1
+    with db_factory() as db:
+        run = db.query(LlmModelTestRun).one()
+        run.created_at = datetime.now(timezone.utc) - timedelta(seconds=300)
+        db.commit()
+
+    second = cli.run_bootstrap(session_factory=db_factory, executor=RecordingExecutor())
+
+    assert second == 0
+    with db_factory() as db:
+        config = db.query(LlmModelConfig).one()
+        runs = db.query(LlmModelTestRun).order_by(LlmModelTestRun.created_at).all()
+        assert config.lifecycle_status == "active"
+        assert db.get(LlmRuntimeSetting, 1).default_model_config_id == config.id
+        assert [item.status for item in runs] == ["failed", "success"]
+        assert runs[0].error_code == "llm_bootstrap_owner_lost"
+
+
+def test_bootstrap_late_owner_cannot_finalize_after_run_lease_is_lost(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-late-owner-secret")
+
+    class LateOwnerExecutor:
+        calls: list[dict] = []
+
+        async def call(self, **kwargs):
+            self.calls.append(kwargs)
+            with db_factory() as db:
+                run = db.get(LlmModelTestRun, kwargs["step_key"].split(":", 1)[1])
+                assert run is not None
+                run.status = "failed"
+                run.error_code = "llm_bootstrap_owner_lost"
+                run.error_message = "大模型首次引导探测已失效，请重新测试"
+                db.commit()
+            return ProviderResult(
+                result_json={"decision": "hold", "confidence": 0.5, "rationale": "late"},
+                model="deepseek-chat",
+                prompt_tokens=8,
+                completion_tokens=4,
+                usage_source="provider",
+                response_metadata={"provider_model_present": True},
+            )
+
+    executor = LateOwnerExecutor()
+    result = asyncio.run(cli.bootstrap_async(session_factory=db_factory, executor=executor))
+
+    assert result.exit_code == 0
+    with db_factory() as db:
+        config = db.query(LlmModelConfig).one()
+        run = db.query(LlmModelTestRun).one()
+        assert result.status == "bootstrap_noop"
+        assert config.lifecycle_status == "draft"
+        assert db.get(LlmRuntimeSetting, 1).default_model_config_id is None
+        assert run.status == "failed"
+        assert run.error_code == "llm_bootstrap_owner_lost"
+
+
+def test_bootstrap_deleted_bootstrap_history_allows_new_candidate(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-new-after-delete-secret")
+    from app.services.llm.config_service import runtime_fingerprint
+    from app.services.llm.crypto import encrypt_api_key
+
+    old_id = "deleted-bootstrap-history"
+    envelope = encrypt_api_key(
+        "sk-old-history-secret",
+        config_id=old_id,
+        provider=Provider.DEEPSEEK,
+        keyring=cli.settings.LLM_CONFIG_ENCRYPTION_KEYS,
+    )
+    with db_factory() as db:
+        db.add(
+            LlmModelConfig(
+                id=old_id,
+                provider="deepseek",
+                display_name="DeepSeek 环境变量迁移",
+                model_name="deepseek-chat",
+                base_url="https://api.deepseek.com/v1",
+                encrypted_api_key=envelope.encrypted_api_key,
+                encryption_key_id=envelope.encryption_key_id,
+                envelope_version=envelope.envelope_version,
+                nonce=envelope.nonce,
+                credential_version="old-history",
+                runtime_fingerprint=runtime_fingerprint(
+                    provider=Provider.DEEPSEEK,
+                    model_name="deepseek-chat",
+                    base_url="https://api.deepseek.com/v1",
+                    credential_version="old-history",
+                    max_output_tokens=4096,
+                ),
+                lifecycle_status="retired",
+                deleted_at=datetime.now(timezone.utc),
+            )
+        )
+        db.add(LlmRuntimeSetting(id=1))
+        db.commit()
+
+    result = cli.run_bootstrap(session_factory=db_factory, executor=RecordingExecutor())
+
+    assert result == 0
+    with db_factory() as db:
+        configs = db.query(LlmModelConfig).order_by(LlmModelConfig.created_at).all()
+        assert len(configs) == 2
+        assert configs[0].deleted_at is not None
+        assert configs[1].lifecycle_status == "active"
+        assert db.get(LlmRuntimeSetting, 1).default_model_config_id == configs[1].id
+
+
+def test_bootstrap_local_fatal_deleted_history_allows_new_config_after_fix(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-transport-retry-secret")
+
+    class LocalTransportFailure:
+        async def complete_json(self, *args, **kwargs):
+            raise LlmError("网络客户端配置无效", code="llm_transport_config")
+
+    first_db = db_factory()
+    first_executor = LlmCallExecutor(
+        db=first_db,
+        provider_client=LocalTransportFailure(),
+        budget=TokenBudgetService(first_db, daily_token_limit=100_000),
+    )
+    try:
+        first = cli.run_bootstrap(session_factory=db_factory, executor=first_executor)
+    finally:
+        first_db.close()
+    assert first == 1
+
+    with db_factory() as db:
+        old = db.query(LlmModelConfig).one()
+        assert old.deleted_at is not None
+        assert old.lifecycle_status == "retired"
+        assert db.query(LlmCallAttempt).one().error_code == "llm_transport_config"
+
+    second_db, http_client, second_executor = _real_executor(
+        db_factory,
+        api_key="sk-transport-retry-secret",
+        expected_max_tokens=4096,
+    )
+    try:
+        second = cli.run_bootstrap(session_factory=db_factory, executor=second_executor)
+    finally:
+        asyncio.run(http_client.aclose())
+        second_db.close()
+    assert second == 0
+
+    with db_factory() as db:
+        configs = db.query(LlmModelConfig).order_by(LlmModelConfig.created_at).all()
+        assert len(configs) == 2
+        assert configs[0].deleted_at is not None
+        assert configs[1].deleted_at is None
+        assert configs[1].lifecycle_status == "active"
+        assert db.get(LlmRuntimeSetting, 1).default_model_config_id == configs[1].id
+
+
+def test_bootstrap_deleted_admin_history_remains_safe_noop(
+    db_factory, keyring, monkeypatch
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-admin-history-secret")
+    from app.services.llm.config_service import runtime_fingerprint
+    from app.services.llm.crypto import encrypt_api_key
+
+    admin_id = "deleted-admin-history"
+    envelope = encrypt_api_key(
+        "sk-admin-history-old",
+        config_id=admin_id,
+        provider=Provider.DEEPSEEK,
+        keyring=cli.settings.LLM_CONFIG_ENCRYPTION_KEYS,
+    )
+    with db_factory() as db:
+        db.add(
+            LlmModelConfig(
+                id=admin_id,
+                provider="deepseek",
+                display_name="管理员历史配置",
+                model_name="deepseek-chat",
+                base_url="https://api.deepseek.com/v1",
+                encrypted_api_key=envelope.encrypted_api_key,
+                encryption_key_id=envelope.encryption_key_id,
+                envelope_version=envelope.envelope_version,
+                nonce=envelope.nonce,
+                credential_version="admin-history",
+                runtime_fingerprint=runtime_fingerprint(
+                    provider=Provider.DEEPSEEK,
+                    model_name="deepseek-chat",
+                    base_url="https://api.deepseek.com/v1",
+                    credential_version="admin-history",
+                    max_output_tokens=4096,
+                ),
+                lifecycle_status="retired",
+                deleted_at=datetime.now(timezone.utc),
+            )
+        )
+        db.add(LlmRuntimeSetting(id=1))
+        db.commit()
+
+    executor = RecordingExecutor()
+    assert cli.run_bootstrap(session_factory=db_factory, executor=executor) == 0
+    assert executor.calls == []
+    with db_factory() as db:
+        assert db.query(LlmModelConfig).count() == 1
 
 
 @pytest.mark.parametrize(

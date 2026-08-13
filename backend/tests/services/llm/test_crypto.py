@@ -2,7 +2,9 @@ import base64
 from dataclasses import replace
 
 import pytest
+from pydantic import ValidationError
 
+from app.core.config import Settings
 from app.services.llm.crypto import CredentialEnvelope, decrypt_api_key, encrypt_api_key
 from app.services.llm.errors import LlmCredentialError
 from app.services.llm.types import Provider
@@ -80,7 +82,11 @@ def test_envelope_rejects_missing_historical_key(keyring):
     assert "old" not in str(exc.value)
 
 
-def test_key_rotation_is_dual_read_single_write(keyring):
+def test_key_rotation_is_dual_read_single_write(keyring, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LLM_CONFIG_ENCRYPTION_KEY_ID", "current")
+
     old_envelope = encrypt_api_key(
         "sk-secret",
         config_id="cfg-a",
@@ -97,10 +103,24 @@ def test_key_rotation_is_dual_read_single_write(keyring):
         config_id="cfg-a",
         provider=Provider.KIMI,
         keyring=keyring,
-        key_id="current",
     )
     assert new_envelope.encryption_key_id == "current"
     assert new_envelope.encryption_key_id != old_envelope.encryption_key_id
+
+
+def test_production_keyring_validation_redacts_secret_from_errors():
+    secret = base64.b64encode(b"master-key-material-that-is-not-valid-length").decode("ascii")
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(
+            _env_file=None,
+            ENV="production",
+            LLM_CONFIG_ENCRYPTION_KEY_ID="current",
+            LLM_CONFIG_ENCRYPTION_KEYS={"current": secret},
+        )
+
+    assert secret not in str(exc.value)
+    assert secret not in repr(exc.value.errors())
 
 
 def test_crypto_errors_are_redacted(keyring):

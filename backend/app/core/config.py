@@ -3,12 +3,18 @@ import binascii
 import json
 from collections.abc import Mapping
 
-from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic import ValidationError, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        hide_input_in_errors=True,
+    )
 
     # General
     APP_NAME: str = "睿见投研"
@@ -61,9 +67,22 @@ class Settings(BaseSettings):
     SMTP_USE_SSL: bool = True
     EMAIL_ENABLED: bool = False  # false = log to console (dev mode)
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    def __init__(self, **values):
+        """Keep validation errors free of environment-provided secrets.
+
+        Pydantic's ``hide_input_in_errors`` protects the human-readable
+        message, while ``ValidationError.errors()`` still includes ``input``
+        by default.  Rebuilding the error without inputs protects callers
+        that serialize structured errors for logs or health endpoints too.
+        """
+
+        try:
+            super().__init__(**values)
+        except ValidationError as exc:
+            raise ValidationError.from_exception_data(
+                exc.title,
+                exc.errors(include_input=False),
+            ) from None
 
     @field_validator("LLM_CONFIG_ENCRYPTION_KEYS", mode="before")
     @classmethod

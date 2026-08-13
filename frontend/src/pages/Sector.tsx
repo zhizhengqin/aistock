@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
+import { isTaskFailure } from '../utils/taskStatus'
 
 type Tab = 'analysis' | 'history'
 
@@ -61,7 +62,7 @@ function AnalysisView() {
           setReport(r2.data.data)
           setLoading(false); return
         }
-        if (d.status === 'failed') { setError(d.error || '分析失败'); setLoading(false); return }
+        if (isTaskFailure(d.status)) { setError(d.error || '分析失败'); setLoading(false); return }
       } catch {}
     }
     setError('轮询超时'); setLoading(false)

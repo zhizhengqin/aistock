@@ -20,6 +20,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.base import Base
+from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
+from app.models.llm_usage import LlmUsage
 from app.models.task_record import TaskRecord
 from app.services.task_execution import TaskExecutionFenced, TaskExecutionRunner
 
@@ -124,6 +126,91 @@ def test_postgres_twenty_deliveries_have_one_execution():
         with Session(engine) as db:
             task = db.get(TaskRecord, task_id)
             assert task.status == "success"
+
+
+def test_postgres_twenty_reclaims_fence_started_attempt_once():
+    """Concurrent reclaimers settle unknown provider work without replay."""
+    with _temporary_database(os.environ["TEST_DATABASE_URL"]) as engine:
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+        now = datetime.now(timezone.utc)
+        with factory() as db:
+            task = TaskRecord(
+                task_type="stock_analysis",
+                status="running",
+                progress=20,
+                input_snapshot={"_args": {"stock_code": "600519"}},
+                prompt_version="pg-runner-v1",
+                execution_token="old-owner",
+                lease_expires_at=now - timedelta(seconds=1),
+            )
+            db.add(task)
+            db.flush()
+            ledger = LlmDailyBudget(budget_date=now.date(), reserved_tokens=100, settled_tokens=0)
+            db.add(ledger)
+            db.flush()
+            reservation = LlmTokenReservation(
+                task_id=task.id,
+                step_key="analysis",
+                budget_date=now.date(),
+                reserved_tokens=100,
+                settled_tokens=0,
+                status="reserved",
+                lease_expires_at=now - timedelta(seconds=1),
+            )
+            db.add(reservation)
+            db.flush()
+            db.add(
+                LlmCallAttempt(
+                    task_id=task.id,
+                    operation_type="task",
+                    step_key="analysis",
+                    provider_snapshot="deepseek",
+                    model_snapshot="deepseek-chat",
+                    runtime_fingerprint="pg-test",
+                    reservation_id=reservation.id,
+                    status="started",
+                )
+            )
+            db.commit()
+            task_id = int(task.id)
+            reservation_id = reservation.id
+
+        start = threading.Barrier(20)
+        calls = 0
+        calls_lock = threading.Lock()
+
+        def worker(_index: int):
+            nonlocal calls
+            runner = TaskExecutionRunner(factory, lease_seconds=30, heartbeat_interval_seconds=60)
+
+            async def execute(_ctx):
+                nonlocal calls
+                with calls_lock:
+                    calls += 1
+                return {"must_not": "replay"}
+
+            start.wait(timeout=10)
+            return asyncio.run(runner.run(task_id, execute, lambda db, task, result: None))
+
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            results = [future.result(timeout=15) for future in [pool.submit(worker, i) for i in range(20)]]
+
+        assert calls == 0
+        assert all(result is None for result in results)
+        with Session(engine) as db:
+            task = db.get(TaskRecord, task_id)
+            attempt = db.query(LlmCallAttempt).filter_by(task_id=task_id).one()
+            reservation = db.get(LlmTokenReservation, reservation_id)
+            ledger = db.get(LlmDailyBudget, now.date())
+            usage_rows = db.query(LlmUsage).filter_by(task_id=task_id).all()
+            assert task.status == "failed_unknown"
+            assert attempt.status == "failed_unknown"
+            assert reservation.status == "settled"
+            assert reservation.settled_tokens == 100
+            assert ledger.reserved_tokens == 0
+            assert ledger.settled_tokens == 100
+            assert len(usage_rows) == 1
+            assert usage_rows[0].status == "failed_unknown"
 
 
 @pytest.mark.asyncio

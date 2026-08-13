@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
+import { isTaskFailure } from '../utils/taskStatus'
 
 type Tab = 'stock' | 'portfolio' | 'active'
 
@@ -97,7 +98,7 @@ function StockRiskView() {
           setLoading(false)
           return
         }
-        if (d.status === 'failed') {
+        if (isTaskFailure(d.status)) {
           setError(d.error || '分析失败')
           setLoading(false)
           return
@@ -206,7 +207,7 @@ function PortfolioRiskView() {
             setLoading(false)
             return
           }
-          if (t.data.data.status === 'failed') {
+          if (isTaskFailure(t.data.data.status)) {
             setError(t.data.data.error || '扫描失败')
             setLoading(false)
             return

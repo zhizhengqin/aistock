@@ -9,7 +9,7 @@ from app.services.task_execution import TaskExecutionContext, TaskExecutionRunne
 async def portfolio_risk_task(ctx, task_id: int, user_id: int):
     async def execute(execution_ctx: TaskExecutionContext):
         args = validate_snapshot_args(execution_ctx, {"user_id": user_id})
-        selected_user_id = args.get("user_id", execution_ctx.user_id)
+        selected_user_id = args["user_id"]
         db = SessionLocal()
         try:
             stocks = db.query(PortfolioStock).filter(PortfolioStock.user_id == selected_user_id).all()

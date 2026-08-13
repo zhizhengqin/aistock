@@ -22,12 +22,27 @@
 
 ## 验证
 
-- `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py -q`：14 passed，2 warnings。
-- `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/integration/test_task_execution_concurrency.py -q`：2 passed，覆盖 PostgreSQL 20 路同 task 恰 1 execute 与旧 owner 存活时 stale reclaim/fencing。
-- Task 1–7 focused（含 Task 6 duplicate/outbox）：73 passed，8 warnings。
-- Task 1–7 focused + 显式 PostgreSQL runner：27 passed，2 warnings。
-- `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q`：304 passed，21 warnings。
+- `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py -q`：21 passed，2 warnings。
+- `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/integration/test_task_execution_concurrency.py -q`：3 passed，覆盖 PostgreSQL 20 路同 task 恰 1 execute、20 路 started-attempt reclaim（execute=0）与旧 owner fencing。
+- Task 1–7 focused（含 Task 6 duplicate/outbox）：54 passed，2 warnings（本轮 fix focused fresh）。
+- Task 1–7 focused + 显式 PostgreSQL runner：33 passed，2 warnings（本轮 fix focused fresh）。
+- `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q`：314 passed，21 warnings（fresh 全量）。
 - `git diff --check`：通过；未提交密钥、数据库或构建产物。工作区原有 pycache、`.venv`、前端 `tsconfig.tsbuildinfo` 未纳入本任务提交。
+
+## Fix Round 1 收口证据
+
+- 旧 HEAD `6cbc1de2` 先复现 4 个 RED：heartbeat fencing/存储异常不会取消阻塞 execute、取消时关联 `failed_unknown` attempt 仍把任务写成普通 `failed`、新闻同步抓取阻塞事件循环。随后新增结构化 heartbeat/execute 并发等待，heartbeat 错误立即取消并 await execute；新闻 fetch 改为 `asyncio.to_thread`。
+- `TaskRecord.status=failed_unknown` 保留审计语义；API 原样返回该终态，错误只使用稳定中文“模型调用结果未知，任务未自动重试”。前端集中 helper 将 `failed_unknown` 视作失败终态并停止轮询。
+- 严格快照校验拒绝缺 key、类型强转和任何 delivery 值兜底；九个 wrapper 的业务输入均来自持久化 `_args`。最终 persist 也从 durable snapshot 取标识字段。
+- reclaim 竞态：过期任务若存在 `LlmCallAttempt.status=started`，claim 在新 execute 前锁定并保守终结 attempt 为 `failed_unknown`，结算关联 reserved reservation，写唯一 `LlmUsage.failed_unknown`，TaskRecord 进入终态；因此旧 owner/new owner 均不会再次发起模型调用。
+- Task 6 ack-gap 联动：真实 `OutboxDispatcher` 第一次 ack 持久化失败、第二次重投仍只触发一次 runner execute/persist；TaskRecord terminal claim 是唯一执行闸门。
+
+## Fix Round 1 验证（fresh）
+
+- `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py tests/services/test_outbox_dispatcher.py tests/services/test_task_submission.py tests/test_news.py tests/api/test_admin_llm.py -q`：53 passed，2 warnings。
+- `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/integration/test_task_execution_concurrency.py tests/integration/test_task_submission_concurrency.py tests/services/test_task_execution.py tests/services/test_outbox_dispatcher.py -q`：31 passed，2 warnings；包含 PostgreSQL 20 路 duplicate、20 路 started-attempt reclaim（execute=0、唯一结算/usage）及旧 owner fencing。
+- `cd frontend && npm test -- --run`：2 test files / 14 tests passed；`npm run build`：通过。
+- `cd frontend && node tests/e2e/task-failed-unknown.mjs`：390px 与 1440px 注入 `failed_unknown`，Analysis/News 均停止轮询并显示中文错误，无 page/console error。
 
 ## 文件范围
 
@@ -42,6 +57,9 @@
 
 - 九个 `backend/app/tasks/*.py` wrapper
 - `backend/app/services/news_collector.py`（按批准裁决，仅拆执行边界，未清理 Task 10 的 Mock/fallback 语义）
+- `backend/tests/services/test_outbox_dispatcher.py`、`backend/tests/integration/test_task_execution_concurrency.py`
+- 前端八个轮询页面、`frontend/src/utils/taskStatus.ts` 及其 Vitest 测试
+- `frontend/tests/e2e/task-failed-unknown.mjs`（本地 route interception QA）
 
 ## 后续边界
 

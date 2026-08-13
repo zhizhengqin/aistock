@@ -13,7 +13,7 @@ async def main_force_task(ctx, task_id: int, user_id: int):
         from app.services.main_force_orchestrator import run_main_force_selection
 
         return await run_main_force_selection(
-            args.get("user_id", execution_ctx.user_id),
+            args["user_id"],
             execution_ctx,
             None,
         )

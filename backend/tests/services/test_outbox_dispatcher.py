@@ -9,6 +9,8 @@ import pytest
 
 from app.models.task_outbox import TaskOutbox
 from app.models.task_record import TaskRecord
+from app.models.analysis_report import AnalysisReport  # noqa: F401
+from app.models.user import User
 
 
 class FakeSender:
@@ -150,4 +152,90 @@ async def test_enqueue_success_ack_failure_is_retried_after_stale_recovery(test_
     assert sender.jobs[0][2] == sender.jobs[1][2] == f"task:{task.id}"
     db.expire_all()
     assert db.get(TaskOutbox, task.id).status == "delivered"
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_ack_gap_replays_dispatch_but_runner_executes_once(test_db, monkeypatch):
+    """A real dispatcher ack gap invokes the wrapper twice but persists once."""
+    from app.services.outbox_dispatcher import OutboxDispatcher
+    from app.tasks import analysis as analysis_module
+    from app.services import analysis_orchestrator
+
+    _, session_factory = test_db
+    db = session_factory()
+    user = User(
+        username="ack-gap-runner",
+        email="ack-gap-runner@example.test",
+        password_hash="test-only",
+        tier="free",
+        role="user",
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    task = TaskRecord(
+        task_type="stock_analysis",
+        user_id=user.id,
+        status="pending",
+        input_snapshot={"_args": {"stock_code": "600519", "user_id": user.id}},
+        prompt_version="stock-analysis-v1",
+    )
+    db.add(task)
+    db.flush()
+    db.add(TaskOutbox(task_id=task.id))
+    db.commit()
+    task_id = task.id
+    user_id = user.id
+    db.close()
+
+    monkeypatch.setattr(analysis_module, "SessionLocal", session_factory)
+    calls = 0
+
+    async def fake_orchestrator(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "stock_code": "600519",
+            "stock_name": "测试",
+            "decision": {"rating": "观察", "confidence": 50},
+        }
+
+    monkeypatch.setattr(analysis_orchestrator, "run_full_analysis", fake_orchestrator)
+
+    class WrapperSender:
+        def __init__(self):
+            self.jobs = 0
+
+        async def enqueue_job(self, task_name, *args, _job_id=None, **kwargs):
+            self.jobs += 1
+            assert task_name == "analyze_stock_task"
+            await analysis_module.analyze_stock_task(None, *args)
+
+    sender = WrapperSender()
+    first = OutboxDispatcher(session_factory, sender=sender, lock_timeout_seconds=1)
+    original_mark_success = first._mark_success
+
+    def fail_ack_once(outbox_id):
+        first._mark_success = original_mark_success
+        raise RuntimeError("ack database unavailable")
+
+    first._mark_success = fail_ack_once
+    with pytest.raises(RuntimeError, match="ack database unavailable"):
+        await first.dispatch_once()
+
+    db = session_factory()
+    outbox = db.get(TaskOutbox, task_id)
+    outbox.locked_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    db.commit()
+    db.close()
+
+    second = OutboxDispatcher(session_factory, sender=sender, lock_timeout_seconds=1)
+    assert await second.dispatch_once() == 1
+    assert sender.jobs == 2
+    assert calls == 1
+    db = session_factory()
+    assert db.get(TaskRecord, task_id).status == "success"
+    assert db.query(AnalysisReport).count() == 1
+    assert db.get(TaskOutbox, task_id).status == "delivered"
     db.close()

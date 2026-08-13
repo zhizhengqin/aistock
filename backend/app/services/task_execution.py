@@ -18,7 +18,8 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.llm_execution import LlmCallAttempt
+from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
+from app.models.llm_usage import LlmUsage
 from app.models.task_record import TaskRecord
 
 
@@ -117,6 +118,107 @@ class TaskExecutionRunner:
             return self.session_factory, False
         return self.session_factory(), True
 
+    def _fence_started_attempts(self, db: Session, task: TaskRecord, now: datetime) -> bool:
+        """Conservatively terminate provider work before reclaiming a lease.
+
+        A worker can crash after creating a ``started`` attempt but before the
+        provider response is durable.  Reclaiming the task in that window
+        would issue a second model request.  Mark those attempts unknown and
+        settle every still-reserved token for this task in the same claim
+        transaction, then let the caller expose a terminal task state.
+        """
+        reservations = db.execute(
+            select(LlmTokenReservation)
+            .where(
+                LlmTokenReservation.task_id == task.id,
+                LlmTokenReservation.status == "reserved",
+            )
+            .with_for_update()
+        ).scalars().all()
+        attempts = db.execute(
+            select(LlmCallAttempt)
+            .where(
+                LlmCallAttempt.task_id == task.id,
+                LlmCallAttempt.status == "started",
+            )
+            .with_for_update()
+        ).scalars().all()
+        if not attempts and not reservations:
+            return False
+
+        # With no provider-attempt row, the budget reaper's invariant applies:
+        # the request was never sent, so releasing (rather than charging as
+        # unknown) is safe and the task may be reclaimed normally.
+        if not attempts:
+            for reservation in reservations:
+                ledger = db.execute(
+                    select(LlmDailyBudget)
+                    .where(LlmDailyBudget.budget_date == reservation.budget_date)
+                    .with_for_update()
+                ).scalar_one()
+                ledger.reserved_tokens = max(0, int(ledger.reserved_tokens) - int(reservation.reserved_tokens))
+                reservation.status = "released"
+                reservation.settled_tokens = 0
+            db.commit()
+            return False
+
+        for reservation in reservations:
+            ledger = db.execute(
+                select(LlmDailyBudget)
+                .where(LlmDailyBudget.budget_date == reservation.budget_date)
+                .with_for_update()
+            ).scalar_one()
+            reserved = int(reservation.reserved_tokens)
+            ledger.reserved_tokens = max(0, int(ledger.reserved_tokens) - reserved)
+            ledger.settled_tokens += reserved
+            reservation.status = "settled"
+            reservation.settled_tokens = reserved
+
+        for attempt in attempts:
+            attempt.status = "failed_unknown"
+            attempt.error_code = "llm_failed_unknown"
+            attempt.error_message = "大模型响应状态未知，请勿自动重试"
+            attempt.usage_source = "unknown"
+            usage_exists = db.execute(
+                select(LlmUsage.id)
+                .where(
+                    LlmUsage.task_id == task.id,
+                    LlmUsage.module == attempt.operation_type,
+                    LlmUsage.model_snapshot == attempt.model_snapshot,
+                    LlmUsage.status == "failed_unknown",
+                    LlmUsage.error_code == "llm_failed_unknown",
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if usage_exists is None:
+                db.add(
+                    LlmUsage(
+                        user_id=task.user_id,
+                        module=attempt.operation_type,
+                        model=attempt.model_snapshot,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        cost_fen=0,
+                        task_id=task.id,
+                        model_config_id=attempt.model_config_id,
+                        provider_snapshot=attempt.provider_snapshot,
+                        model_snapshot=attempt.model_snapshot,
+                        input_price_snapshot=attempt.input_price_snapshot,
+                        output_price_snapshot=attempt.output_price_snapshot,
+                        status="failed_unknown",
+                        error_code="llm_failed_unknown",
+                    )
+                )
+
+        task.status = "failed_unknown"
+        task.error = "llm_failed_unknown: 模型调用结果未知，任务未自动重试"
+        task.finished_at = now
+        task.execution_token = None
+        task.heartbeat_at = now
+        task.lease_expires_at = None
+        db.commit()
+        return True
+
     def _claim(self, task_id: int, *, fence_event: asyncio.Event | None = None) -> _Claim:
         db, owned = self._session()
         now = self.clock()
@@ -136,6 +238,9 @@ class TaskExecutionRunner:
             if task.status == "running" and current_lease is not None and current_lease > now:
                 db.rollback()
                 return _Claim(None)
+
+            if self._fence_started_attempts(db, task, now):
+                return _Claim(None, terminal=True)
 
             # A provider request whose outcome is unknown must never be
             # replayed merely because a worker lease expired.
@@ -255,8 +360,22 @@ class TaskExecutionRunner:
         db, owned = self._session()
         now = self.clock()
         try:
-            message = getattr(error, "user_message", None) or "任务执行失败"
-            code = getattr(error, "code", None) or "task_execution_failed"
+            unknown = db.execute(
+                select(LlmCallAttempt.id)
+                .where(
+                    LlmCallAttempt.task_id == task_id,
+                    LlmCallAttempt.status == "failed_unknown",
+                )
+                .limit(1)
+            ).scalar_one_or_none() is not None
+            if unknown:
+                status = "failed_unknown"
+                code = "llm_failed_unknown"
+                message = "模型调用结果未知，任务未自动重试"
+            else:
+                status = "failed"
+                message = getattr(error, "user_message", None) or "任务执行失败"
+                code = getattr(error, "code", None) or "task_execution_failed"
             result = db.execute(
                 update(TaskRecord)
                 .where(
@@ -265,7 +384,7 @@ class TaskExecutionRunner:
                     TaskRecord.status == "running",
                 )
                 .values(
-                    status="failed",
+                    status=status,
                     error=f"{code}: {message}"[:1000],
                     finished_at=now,
                     heartbeat_at=now,
@@ -334,9 +453,16 @@ class TaskExecutionRunner:
         except TaskExecutionFenced:
             if context._fence_event is not None:
                 context._fence_event.set()
-            return
+            raise
         except asyncio.CancelledError:
             return
+        except BaseException:
+            # A storage failure is also an ownership stop signal.  Business
+            # code that catches cancellation must still fail its next
+            # ``ensure_current`` gate rather than advancing to another step.
+            if context._fence_event is not None:
+                context._fence_event.set()
+            raise
 
     async def run(
         self,
@@ -352,12 +478,47 @@ class TaskExecutionRunner:
             return None
         stop = asyncio.Event()
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(context, stop))
+        execute_task = asyncio.create_task(execute(context))
         try:
-            result = await execute(context)
-            if heartbeat_task.done() and not heartbeat_task.cancelled():
-                heartbeat_error = heartbeat_task.exception()
-                if heartbeat_error is not None:
-                    raise heartbeat_error
+            done, _ = await asyncio.wait(
+                {execute_task, heartbeat_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # A heartbeat failure/fence wins over a simultaneously completed
+            # business task.  Cancel and await the business callback before
+            # propagating the lease/storage error so stale owners cannot move
+            # to another model step.
+            if heartbeat_task in done:
+                heartbeat_error: BaseException | None = None
+                if not heartbeat_task.cancelled():
+                    heartbeat_error = heartbeat_task.exception()
+                if heartbeat_error is None:
+                    heartbeat_error = TaskExecutionFenced("任务执行权已变更")
+                if not execute_task.done():
+                    execute_task.cancel()
+                try:
+                    await execute_task
+                except BaseException:
+                    # Drain any simultaneous business exception; the
+                    # heartbeat/storage failure is the authoritative owner
+                    # signal and is propagated below.
+                    pass
+                raise heartbeat_error
+
+            result = execute_task.result()
+            # The business callback has returned; stop the background lease
+            # renewer before doing the final short transaction.  Otherwise a
+            # storage failure racing with persistence could escape from the
+            # cleanup path after the task was already marked successful.
+            stop.set()
+            if not heartbeat_task.done():
+                heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except BaseException as heartbeat_error:
+                raise heartbeat_error
             await context.ensure_current()
             await self._persist_success(context, result, persist_result)
             return result
@@ -375,6 +536,22 @@ class TaskExecutionRunner:
             try:
                 await heartbeat_task
             except asyncio.CancelledError:
+                pass
+            except BaseException:
+                # A heartbeat exception is handled by the main path when it
+                # wins the race.  Cleanup must not replace a caller's
+                # cancellation or business exception with that same error.
+                pass
+            if not execute_task.done():
+                execute_task.cancel()
+            try:
+                await execute_task
+            except asyncio.CancelledError:
+                pass
+            except BaseException:
+                # The business exception was already observed by the main
+                # path; draining the task here prevents an unhandled-task
+                # warning during cleanup.
                 pass
 
 
@@ -394,15 +571,8 @@ def validate_snapshot_args(
     args = snapshot_args(context)
     for key, value in supplied.items():
         if key not in args:
-            continue
-        expected = args[key]
-        if key in {"period_days", "days", "user_id"} and expected is not None and value is not None:
-            try:
-                expected = int(expected)
-                value = int(value)
-            except (TypeError, ValueError):
-                pass
-        if expected != value:
+            raise TaskExecutionInputError("任务参数与持久化快照不一致")
+        if args[key] != value:
             raise TaskExecutionInputError("任务参数与持久化快照不一致")
     return args
 

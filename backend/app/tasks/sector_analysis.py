@@ -13,7 +13,7 @@ async def sector_analysis_task(ctx, task_id: int, user_id: int = 0):
         from app.services.sector_orchestrator import run_sector_analysis
 
         return await run_sector_analysis(
-            args.get("user_id", execution_ctx.user_id),
+            args["user_id"],
             execution_ctx,
             None,
         )

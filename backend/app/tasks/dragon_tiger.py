@@ -14,16 +14,17 @@ async def dragon_tiger_task(ctx, task_id: int, period_days: int, user_id: int):
         from app.services.dragon_tiger_orchestrator import run_dragon_tiger_analysis
 
         return await run_dragon_tiger_analysis(
-            int(args.get("period_days", period_days)),
-            args.get("user_id", execution_ctx.user_id),
+            int(args["period_days"]),
+            args["user_id"],
             execution_ctx,
             None,
         )
 
     def persist_result(db, task, result):
+        durable_args = (task.input_snapshot or {}).get("_args") or {}
         report = DragonTigerReport(
             user_id=task.user_id,
-            period_days=int(result.get("period_days", period_days)),
+            period_days=int(durable_args["period_days"]),
             stats_json=result.get("stats", {}),
             top_stocks_json=result.get("top_stocks", []),
             institutions_json=result.get("institutions", []),

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
+import { isTaskFailure } from '../utils/taskStatus'
 
 type Tab = 'analysis' | 'history'
 
@@ -119,7 +120,7 @@ function AnalysisView() {
           setLoading(false)
           return
         }
-        if (d.status === 'failed') {
+        if (isTaskFailure(d.status)) {
           setError(d.error || '选股失败')
           setLoading(false)
           return

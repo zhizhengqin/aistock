@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
+import { isTaskFailure } from '../utils/taskStatus'
 
 type Tab = 'single' | 'batch' | 'history'
 
@@ -84,7 +85,7 @@ function SingleAnalysis() {
           setLoading(false)
           return
         }
-        if (data.status === 'failed') {
+        if (isTaskFailure(data.status)) {
           setError(data.error || '分析失败')
           setLoading(false)
           return
@@ -170,8 +171,8 @@ function BatchAnalysis() {
                 setResults([...updated])
                 break
               }
-              if (d.status === 'failed') {
-                updated[i] = { code: tasks[i].stock_code, status: 'failed' }
+              if (isTaskFailure(d.status)) {
+                updated[i] = { code: tasks[i].stock_code, status: d.status, report_id: undefined }
                 setResults([...updated])
                 break
               }
@@ -214,7 +215,7 @@ function BatchAnalysis() {
                     <td className="mono">{r.code}</td>
                     <td>
                       {r.status === 'success' && <span className="badge down">完成</span>}
-                      {r.status === 'failed' && <span className="badge up">失败</span>}
+                      {isTaskFailure(r.status) && <span className="badge up">失败</span>}
                       {r.status === 'pending' && <span className="badge">等待中...</span>}
                     </td>
                   </tr>

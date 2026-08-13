@@ -1,5 +1,7 @@
 """ARQ adapter for the pure-data news collection task."""
 
+import asyncio
+
 from app.core.database import SessionLocal
 from app.services.news_collector import fetch_news_candidates, persist_news
 from app.services.task_execution import TaskExecutionContext, TaskExecutionRunner
@@ -9,7 +11,7 @@ async def news_collect_task(ctx, task_id: int):
     async def execute(execution_ctx: TaskExecutionContext):
         # Fetching, parsing and deterministic tagging occur without a DB
         # session.  The returned values are held only in this task callback.
-        candidates, errors = fetch_news_candidates()
+        candidates, errors = await asyncio.to_thread(fetch_news_candidates)
         return {"candidates": candidates, "errors": errors}
 
     def persist_result(db, task, result):

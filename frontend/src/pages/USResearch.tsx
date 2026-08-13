@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import client from '../api/client'
+import { isTaskFailure, isTaskTerminal } from '../utils/taskStatus'
 
 interface Cards {
   us_sentiment: string
@@ -71,10 +72,10 @@ export default function USResearch() {
       pollRef.current = setInterval(async () => {
         const t = await client.get(`/tasks/${taskId}`)
         const status = t.data.data.status
-        if (status === 'success' || status === 'failed') {
+        if (isTaskTerminal(status)) {
           if (pollRef.current) clearInterval(pollRef.current)
           setGenerating(false)
-          if (status === 'failed') setMsg('生成失败，请重试')
+          if (isTaskFailure(status)) setMsg(t.data.data.error || '生成失败，请重试')
           load()
         }
       }, 2000)

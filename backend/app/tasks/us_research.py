@@ -14,12 +14,13 @@ async def us_research_task(ctx, task_id: int, trade_date: str, user_id: int = 0)
         from app.services.us_research_orchestrator import build_report
 
         return await build_report(
-            str(args.get("trade_date", trade_date)),
-            user_id=args.get("user_id", execution_ctx.user_id),
+            str(args["trade_date"]),
+            user_id=args["user_id"],
         )
 
     def persist_result(db, task, result):
-        selected_trade_date = str(result["trade_date"])
+        durable_args = (task.input_snapshot or {}).get("_args") or {}
+        selected_trade_date = str(durable_args["trade_date"])
         report = db.query(UsResearchReport).filter(
             UsResearchReport.trade_date == selected_trade_date
         ).first()

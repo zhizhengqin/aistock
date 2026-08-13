@@ -14,16 +14,17 @@ async def stock_risk_task(ctx, task_id: int, stock_code: str, days: int, user_id
         from app.services.risk_orchestrator import run_stock_risk_analysis
 
         return await run_stock_risk_analysis(
-            str(args.get("stock_code", stock_code)),
-            int(args.get("days", days)),
-            args.get("user_id", execution_ctx.user_id),
+            str(args["stock_code"]),
+            int(args["days"]),
+            args["user_id"],
             execution_ctx,
             None,
         )
 
     def persist_result(db, task, result):
-        selected_stock = str(result.get("stock_code", stock_code))
-        selected_days = int(result.get("days", days))
+        durable_args = (task.input_snapshot or {}).get("_args") or {}
+        selected_stock = str(durable_args["stock_code"])
+        selected_days = int(durable_args["days"])
         for warning_data in result.get("warnings", []):
             db.add(
                 RiskWarning(

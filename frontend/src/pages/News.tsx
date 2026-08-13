@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import client from '../api/client'
+import { isTaskFailure, isTaskTerminal } from '../utils/taskStatus'
 
 interface NewsItem {
   id: number
@@ -50,6 +51,7 @@ export default function News() {
   const [sources, setSources] = useState<SourceOption[]>([])
   const [loading, setLoading] = useState(false)
   const [collecting, setCollecting] = useState(false)
+  const [collectError, setCollectError] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const load = useCallback(async () => {
@@ -73,6 +75,7 @@ export default function News() {
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
 
   const collect = async () => {
+    setCollectError('')
     setCollecting(true)
     try {
       const resp = await client.post('/news/collect')
@@ -81,9 +84,10 @@ export default function News() {
       pollRef.current = setInterval(async () => {
         const t = await client.get(`/tasks/${taskId}`)
         const status = t.data.data.status
-        if (status === 'success' || status === 'failed') {
+        if (isTaskTerminal(status)) {
           if (pollRef.current) clearInterval(pollRef.current)
           setCollecting(false)
+          if (isTaskFailure(status)) setCollectError(t.data.data.error || '采集失败')
           load()
           loadSources()
         }
@@ -116,6 +120,7 @@ export default function News() {
         </div>
         <span className="caption">共 {total} 条</span>
       </div>
+      {collectError && <p className="small" style={{ color: 'var(--up)' }}>{collectError}</p>}
 
       {loading ? (
         <div className="empty">加载中…</div>

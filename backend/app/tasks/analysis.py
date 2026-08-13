@@ -21,16 +21,18 @@ async def analyze_stock_task(ctx, task_id: int, stock_code: str, user_id: int):
 
         return await run_full_analysis(
             str(args["stock_code"]),
-            args.get("user_id", execution_ctx.user_id),
+            args["user_id"],
             execution_ctx,
             None,
         )
 
     def persist_result(db, task, result):
+        durable_args = (task.input_snapshot or {}).get("_args") or {}
+        durable_stock_code = str(durable_args["stock_code"])
         report = AnalysisReport(
             user_id=task.user_id,
-            stock_code=str(result.get("stock_code", stock_code)),
-            stock_name=result.get("stock_name", stock_code),
+            stock_code=durable_stock_code,
+            stock_name=result.get("stock_name", durable_stock_code),
             rating=result.get("decision", {}).get("rating", ""),
             confidence=result.get("decision", {}).get("confidence", 0),
             report_json=result,

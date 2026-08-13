@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react"
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
+import { isTaskFailure } from '../utils/taskStatus'
 
 type Tab = 'holdings' | 'diagnosis' | 'history'
 
@@ -258,7 +259,7 @@ function DiagnosisView() {
           setLoading(false)
           return
         }
-        if (d.status === 'failed') {
+        if (isTaskFailure(d.status)) {
           setError(d.error || '诊断失败')
           setLoading(false)
           return

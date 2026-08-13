@@ -8,9 +8,11 @@ production and the service must pass the full operation metadata to it.
 
 from __future__ import annotations
 
+import asyncio
 import base64
-from datetime import datetime, timezone
-from types import SimpleNamespace
+import hashlib
+import json
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -68,6 +70,30 @@ class RecordingExecutor:
         return self.result
 
 
+class DelayedExecutor(RecordingExecutor):
+    def __init__(self, delay_seconds: float, result=None):
+        super().__init__(result=result)
+        self.delay_seconds = delay_seconds
+
+    async def call(self, **kwargs):
+        self.calls.append(kwargs)
+        await asyncio.sleep(self.delay_seconds)
+        return self.result
+
+
+class GateExecutor(RecordingExecutor):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def call(self, **kwargs):
+        self.calls.append(kwargs)
+        self.started.set()
+        await self.release.wait()
+        return self.result
+
+
 def _configure_keyring(monkeypatch):
     from app.core.config import settings
 
@@ -76,14 +102,19 @@ def _configure_keyring(monkeypatch):
     monkeypatch.setattr(settings, "LLM_CONFIG_ENCRYPTION_KEYS", {"test-current": key})
 
 
-def _real_service(test_db, monkeypatch):
+def _real_service(test_db, monkeypatch, *, result_content=None, delay_seconds=0):
     """Build the production executor against a deterministic HTTP boundary."""
 
     _configure_keyring(monkeypatch)
     _, Session = test_db
     db = Session()
 
+    if result_content is None:
+        result_content = '{"decision":"hold","confidence":0.5,"rationale":"probe"}'
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        if delay_seconds:
+            await asyncio.sleep(delay_seconds)
         assert request.url.path.endswith("/chat/completions")
         assert request.headers["authorization"] == "Bearer sk-super-secret"
         return httpx.Response(
@@ -93,7 +124,7 @@ def _real_service(test_db, monkeypatch):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"decision":"hold","confidence":0.5,"rationale":"probe"}'
+                            "content": result_content
                         }
                     }
                 ],
@@ -298,6 +329,39 @@ async def test_probe_rejects_missing_usage_model_or_business_shape(test_db, monk
 
 
 @pytest.mark.asyncio
+async def test_invalid_business_shape_keeps_provider_evidence_and_usage_audit(test_db, monkeypatch):
+    db, http_client, service = _real_service(
+        test_db,
+        monkeypatch,
+        result_content='{"unexpected":"provider-body"}',
+    )
+    try:
+        response = await service.test_unsaved(_candidate())
+        assert response["status"] == "failed"
+        assert response["error_code"] == "llm_probe_invalid"
+
+        from app.models.llm_execution import LlmCallAttempt
+
+        run = db.query(LlmModelTestRun).one()
+        attempt = db.query(LlmCallAttempt).one()
+        usage = db.query(LlmUsage).one()
+        assert run.status == "failed"
+        assert run.result_json == {"unexpected": "provider-body"}
+        assert run.response_model == "deepseek-chat"
+        assert (run.input_tokens, run.output_tokens) == (12, 8)
+        assert attempt.status == "success"
+        assert attempt.result_json == {"unexpected": "provider-body"}
+        assert attempt.response_model_snapshot == "deepseek-chat"
+        assert (attempt.input_tokens, attempt.output_tokens) == (12, 8)
+        assert attempt.operation_type == "admin_probe"
+        assert usage.status == "success"
+        assert (usage.input_tokens, usage.output_tokens) == (12, 8)
+    finally:
+        await http_client.aclose()
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_activation_is_idempotent_and_conflicting_payload_is_rejected(test_db, monkeypatch):
     from app.services.llm.config_service import LlmConfigService
 
@@ -371,6 +435,191 @@ async def test_failed_activation_persists_only_stable_redacted_error(test_db, mo
     }
     assert "sk-super-secret" not in repr(request.response_json)
     assert "provider-body" not in repr(request.response_json)
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_same_key_waits_for_slow_owner_without_duplicate_probe(test_db, monkeypatch):
+    _configure_keyring(monkeypatch)
+    _, Session = test_db
+    setup = Session()
+    created = LlmConfigService(setup, executor=RecordingExecutor()).create(_candidate(), admin_user_id=1)
+    setup.close()
+    executor = DelayedExecutor(0.2)
+
+    async def call(admin_user_id):
+        db = Session()
+        try:
+            return await LlmConfigService(
+                db,
+                executor=executor,
+                probe_deadline_seconds=0.5,
+                activation_completion_grace_seconds=2.0,
+            ).activate(
+                created["id"],
+                expected_version=1,
+                idempotency_key="slow-owner",
+                admin_user_id=admin_user_id,
+            )
+        finally:
+            db.close()
+
+    first, second = await asyncio.gather(call(1), call(2))
+    assert first == second
+    assert len(executor.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_pending_is_marked_owner_lost_without_reprobe(test_db, monkeypatch):
+    _configure_keyring(monkeypatch)
+    _, Session = test_db
+    db = Session()
+    created = LlmConfigService(db, executor=RecordingExecutor()).create(_candidate(), admin_user_id=1)
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {"model_config_id": created["id"], "expected_version": 1},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    db.add(
+        LlmActivationRequest(
+            idempotency_key="owner-crashed",
+            request_hash=request_hash,
+            model_config_id=created["id"],
+            expected_version=1,
+            status="pending",
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+    )
+    db.commit()
+    executor = RecordingExecutor()
+    service = LlmConfigService(
+        db,
+        executor=executor,
+        probe_deadline_seconds=0.05,
+        activation_completion_grace_seconds=0.01,
+    )
+
+    with pytest.raises(Exception) as exc:
+        await service.activate(
+            created["id"],
+            expected_version=1,
+            idempotency_key="owner-crashed",
+            admin_user_id=1,
+        )
+    assert getattr(exc.value, "code", None) == "llm_activation_owner_lost"
+    assert executor.calls == []
+    request = db.query(LlmActivationRequest).one()
+    assert request.status == "failed"
+    assert request.response_json["code"] == "llm_activation_owner_lost"
+    assert request.response_json["message"]
+
+    with pytest.raises(Exception) as replay_exc:
+        await service.activate(
+            created["id"],
+            expected_version=1,
+            idempotency_key="owner-crashed",
+            admin_user_id=2,
+        )
+    assert getattr(replay_exc.value, "code", None) == "llm_activation_owner_lost"
+    assert executor.calls == []
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_cannot_finalize_after_competitor_marks_failed(test_db, monkeypatch):
+    _configure_keyring(monkeypatch)
+    _, Session = test_db
+    setup = Session()
+    created = LlmConfigService(setup, executor=RecordingExecutor()).create(_candidate(), admin_user_id=1)
+    setup.close()
+    owner_db = Session()
+    owner_executor = GateExecutor()
+    owner = LlmConfigService(
+        owner_db,
+        executor=owner_executor,
+        probe_deadline_seconds=0.05,
+        activation_completion_grace_seconds=0.01,
+    )
+    owner_task = asyncio.create_task(
+        owner.activate(
+            created["id"],
+            expected_version=1,
+            idempotency_key="stale-owner",
+            admin_user_id=1,
+        )
+    )
+    await owner_executor.started.wait()
+
+    age_db = Session()
+    pending = age_db.query(LlmActivationRequest).filter_by(idempotency_key="stale-owner").one()
+    pending.created_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    age_db.commit()
+    age_db.close()
+
+    competitor_db = Session()
+    competitor = LlmConfigService(
+        competitor_db,
+        executor=RecordingExecutor(),
+        probe_deadline_seconds=0.05,
+        activation_completion_grace_seconds=0.01,
+    )
+    with pytest.raises(Exception) as competitor_exc:
+        await competitor.activate(
+            created["id"],
+            expected_version=1,
+            idempotency_key="stale-owner",
+            admin_user_id=2,
+        )
+    assert getattr(competitor_exc.value, "code", None) == "llm_activation_owner_lost"
+    owner_executor.release.set()
+    with pytest.raises(Exception) as owner_exc:
+        await owner_task
+    assert getattr(owner_exc.value, "code", None) == "llm_activation_owner_lost"
+
+    check_db = Session()
+    setting = check_db.query(LlmRuntimeSetting).filter_by(id=1).one()
+    config = check_db.get(LlmModelConfig, created["id"])
+    request = check_db.query(LlmActivationRequest).filter_by(idempotency_key="stale-owner").one()
+    assert setting.default_model_config_id is None
+    assert config.lifecycle_status == "draft"
+    assert config.deleted_at is None
+    assert request.status == "failed"
+    check_db.close()
+    competitor_db.close()
+    owner_db.close()
+
+
+@pytest.mark.asyncio
+async def test_probe_timeout_persists_failed_run_and_pending_terminal_error(test_db, monkeypatch):
+    _configure_keyring(monkeypatch)
+    _, Session = test_db
+    db = Session()
+    created = LlmConfigService(db, executor=RecordingExecutor()).create(_candidate(), admin_user_id=1)
+    executor = DelayedExecutor(0.2)
+    service = LlmConfigService(
+        db,
+        executor=executor,
+        probe_deadline_seconds=0.05,
+        activation_completion_grace_seconds=0.05,
+    )
+
+    with pytest.raises(Exception) as exc:
+        await service.activate(
+            created["id"],
+            expected_version=1,
+            idempotency_key="timeout-owner",
+            admin_user_id=1,
+        )
+    assert getattr(exc.value, "code", None) == "llm_probe_timeout"
+    run = db.query(LlmModelTestRun).one()
+    request = db.query(LlmActivationRequest).one()
+    assert run.status == "failed"
+    assert run.error_code == "llm_probe_timeout"
+    assert request.status == "failed"
+    assert request.response_json["code"] == "llm_probe_timeout"
+    assert executor.calls
     db.close()
 
 

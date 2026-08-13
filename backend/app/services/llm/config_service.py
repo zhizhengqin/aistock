@@ -35,6 +35,9 @@ from app.services.llm.url_security import canonicalize_base_url, validate_base_u
 
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
 PROBE_PROMPT_VERSION = "admin-probe-v1"
+DEFAULT_PROBE_DEADLINE_SECONDS = 195.0
+DEFAULT_ACTIVATION_COMPLETION_GRACE_SECONDS = 15.0
+DEFAULT_ACTIVATION_POLL_INTERVAL_SECONDS = 0.02
 
 
 class LlmConfigServiceError(LlmError):
@@ -116,6 +119,16 @@ def _iso(value: datetime | None) -> str | None:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _utc(value: datetime | None) -> datetime | None:
+    """Normalize database timestamps from SQLite/PostgreSQL to UTC-aware values."""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _as_dict(payload: Any) -> dict[str, Any]:
     if hasattr(payload, "model_dump"):
         return payload.model_dump(exclude_unset=True)
@@ -133,10 +146,22 @@ class LlmConfigService:
         *,
         executor: LlmCallExecutor | Any | None = None,
         clock: Callable[[], datetime] | None = None,
+        probe_deadline_seconds: float = DEFAULT_PROBE_DEADLINE_SECONDS,
+        activation_completion_grace_seconds: float = DEFAULT_ACTIVATION_COMPLETION_GRACE_SECONDS,
+        activation_poll_interval_seconds: float = DEFAULT_ACTIVATION_POLL_INTERVAL_SECONDS,
     ) -> None:
         self.db = db
         self.clock = clock or _now
         self.executor = executor or LlmCallExecutor(db=db)
+        if probe_deadline_seconds <= 0:
+            raise ValueError("probe_deadline_seconds must be positive")
+        if activation_completion_grace_seconds < 0:
+            raise ValueError("activation_completion_grace_seconds must be nonnegative")
+        if activation_poll_interval_seconds <= 0:
+            raise ValueError("activation_poll_interval_seconds must be positive")
+        self.probe_deadline_seconds = float(probe_deadline_seconds)
+        self.activation_completion_grace_seconds = float(activation_completion_grace_seconds)
+        self.activation_poll_interval_seconds = float(activation_poll_interval_seconds)
 
     @contextmanager
     def _session(self):
@@ -580,25 +605,38 @@ class LlmConfigService:
             session.flush()
             run_id = run.id
         started = time.perf_counter()
+        result: ProviderResult | None = None
+        capabilities: dict[str, bool] | None = None
+        status = "failed"
+        error_code: str | None = None
+        error_message: str | None = None
         try:
-            result = await self.executor.call(
-                runtime_config=runtime,
-                operation_type="admin_probe",
-                step_key=f"admin-probe:{run_id}",
-                messages=self._probe_messages(),
-                task_id=None,
-                prompt_version=PROBE_PROMPT_VERSION,
-            )
-            capabilities = self._probe_result(result)
-            status = "success"
-            error_code = None
-            error_message = None
+            async with asyncio.timeout(self.probe_deadline_seconds):
+                result = await self.executor.call(
+                    runtime_config=runtime,
+                    operation_type="admin_probe",
+                    step_key=f"admin-probe:{run_id}",
+                    messages=self._probe_messages(),
+                    task_id=None,
+                    prompt_version=PROBE_PROMPT_VERSION,
+                )
+                capabilities = self._probe_result(result)
+                status = "success"
         except LlmError as exc:
-            result = None
-            capabilities = None
-            status = "failed"
             error_code = getattr(exc, "code", "llm_probe_failed")
             error_message = str(exc)
+        except TimeoutError:
+            result = None
+            capabilities = None
+            error_code = "llm_probe_timeout"
+            error_message = "模型探测超时，请稍后重试"
+        except Exception:
+            # The executor contract normally surfaces LlmError.  Keep a
+            # provider/programming failure safe if an adapter violates it.
+            result = None
+            capabilities = None
+            error_code = "llm_probe_failed"
+            error_message = "模型测试失败，请稍后重试"
         latency_ms = int((time.perf_counter() - started) * 1000)
         with self._session() as session:
             run = session.get(LlmModelTestRun, run_id)
@@ -778,17 +816,78 @@ class LlmConfigService:
         }
 
     @staticmethod
-    def _raise_activation_error(payload: Mapping[str, Any]) -> None:
-        raise _service_error(
+    def _activation_error(payload: Mapping[str, Any]) -> LlmConfigServiceError:
+        return _service_error(
             str(payload.get("code", "llm_activation_failed")),
             str(payload.get("message", "默认模型切换失败")),
             status_code=int(payload.get("status_code", 409)),
             field=payload.get("field"),
         )
 
+    @classmethod
+    def _raise_activation_error(cls, payload: Mapping[str, Any]) -> None:
+        raise cls._activation_error(payload)
+
+    def _activation_owner_lost(self) -> LlmConfigServiceError:
+        return _service_error(
+            "llm_activation_owner_lost",
+            "默认模型切换负责人已失联，请重新发起切换",
+            status_code=503,
+        )
+
+    def _activation_pending_expired(self, request: LlmActivationRequest) -> bool:
+        created_at = _utc(request.created_at)
+        if created_at is None:
+            return False
+        now = _utc(self.clock()) or _now()
+        deadline = created_at + timedelta(
+            seconds=self.probe_deadline_seconds + self.activation_completion_grace_seconds
+        )
+        return now >= deadline
+
+    def _expire_pending_activation(
+        self,
+        session: Session,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> bool:
+        """Atomically terminalize an abandoned pending activation if expired."""
+
+        request = session.execute(
+            select(LlmActivationRequest)
+            .where(LlmActivationRequest.idempotency_key == idempotency_key)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if request is None:
+            raise _service_error(
+                "llm_activation_in_progress",
+                "默认模型切换正在初始化，请稍后重试",
+                status_code=409,
+            )
+        if request.request_hash != request_hash:
+            raise _service_error(
+                "llm_idempotency_conflict",
+                "幂等键已用于其他切换请求",
+                status_code=409,
+            )
+        if request.status == "success" and request.response_json is not None:
+            return False
+        if request.status == "failed" and isinstance(request.response_json, Mapping):
+            return False
+        if request.status != "pending" or not self._activation_pending_expired(request):
+            return False
+        error = self._activation_owner_lost()
+        request.status = "failed"
+        request.response_json = self._activation_error_payload(error)
+        session.flush()
+        return True
+
     async def _wait_activation(self, idempotency_key: str, request_hash: str) -> dict[str, Any]:
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
+        while True:
+            terminal_response: dict[str, Any] | None = None
+            terminal_error: Mapping[str, Any] | None = None
             with self._session() as session:
                 request = session.execute(
                     select(LlmActivationRequest)
@@ -800,11 +899,27 @@ class LlmConfigService:
                 if request.request_hash != request_hash:
                     raise _service_error("llm_idempotency_conflict", "幂等键已用于其他切换请求", status_code=409)
                 if request.status == "success" and request.response_json is not None:
-                    return dict(request.response_json)
+                    terminal_response = dict(request.response_json)
                 if request.status == "failed" and isinstance(request.response_json, Mapping):
-                    self._raise_activation_error(request.response_json)
-            await asyncio.sleep(0.02)
-        raise _service_error("llm_activation_in_progress", "默认模型切换仍在进行，请稍后重试", status_code=409)
+                    terminal_error = dict(request.response_json)
+                if terminal_response is None and terminal_error is None and request.status == "pending" and self._activation_pending_expired(request):
+                    self._expire_pending_activation(
+                        session,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                    )
+                    request = session.execute(
+                        select(LlmActivationRequest)
+                        .where(LlmActivationRequest.idempotency_key == idempotency_key)
+                        .execution_options(populate_existing=True)
+                    ).scalar_one_or_none()
+                    if request is not None and request.status == "failed" and isinstance(request.response_json, Mapping):
+                        terminal_error = dict(request.response_json)
+            if terminal_response is not None:
+                return terminal_response
+            if terminal_error is not None:
+                self._raise_activation_error(terminal_error)
+            await asyncio.sleep(self.activation_poll_interval_seconds)
 
     def _finish_activation_failure(
         self,
@@ -843,9 +958,9 @@ class LlmConfigService:
             try:
                 with self._session() as session:
                     existing = session.execute(
-                        select(LlmActivationRequest).where(
-                            LlmActivationRequest.idempotency_key == idempotency_key
-                        )
+                        select(LlmActivationRequest)
+                        .where(LlmActivationRequest.idempotency_key == idempotency_key)
+                        .execution_options(populate_existing=True)
                     ).scalar_one_or_none()
                     if existing is not None:
                         if existing.request_hash != request_hash:
@@ -894,6 +1009,8 @@ class LlmConfigService:
                     test_type="activate",
                 )
                 if probe["status"] != "success":
+                    if probe.get("error_code") == "llm_probe_timeout":
+                        raise _service_error("llm_probe_timeout", "模型探测超时，请稍后重试", status_code=503)
                     raise _service_error("llm_probe_failed", "模型测试失败，默认模型未切换", status_code=503)
             except LlmConfigServiceError as exc:
                 self._finish_activation_failure(
@@ -913,6 +1030,28 @@ class LlmConfigService:
 
             try:
                 with self._session() as session:
+                    request = session.execute(
+                        select(LlmActivationRequest)
+                        .where(LlmActivationRequest.idempotency_key == idempotency_key)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    ).scalar_one()
+                    if request.request_hash != request_hash:
+                        raise _service_error(
+                            "llm_idempotency_conflict",
+                            "幂等键已用于其他切换请求",
+                            status_code=409,
+                        )
+                    if request.status == "success" and request.response_json is not None:
+                        return dict(request.response_json)
+                    if request.status != "pending":
+                        if isinstance(request.response_json, Mapping):
+                            self._raise_activation_error(request.response_json)
+                        raise _service_error(
+                            "llm_activation_owner_lost",
+                            "默认模型切换负责人已失联，请重新发起切换",
+                            status_code=503,
+                        )
                     setting = self._locked_settings(session)
                     config = self._get_config(session, config_id, for_update=True)
                     if (
@@ -958,13 +1097,6 @@ class LlmConfigService:
                     setting.switched_at = self.clock()
                     setting.version += 1
                     response = self._serialize(config, setting) | {"switched_at": _iso(setting.switched_at)}
-                    request = session.execute(
-                        select(LlmActivationRequest)
-                        .where(LlmActivationRequest.idempotency_key == idempotency_key)
-                        .with_for_update()
-                    ).scalar_one()
-                    if request.request_hash != request_hash or request.status != "pending":
-                        raise _service_error("llm_idempotency_conflict", "幂等键已用于其他切换请求", status_code=409)
                     request.response_json = response
                     request.status = "success"
                     self._audit(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -74,6 +75,13 @@ class RecordingExecutor:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class ReleasedBudget(TokenBudgetService):
+    """Test-only budget adapter that proves released is not settled evidence."""
+
+    def settle(self, reservation, actual_tokens=None, *, actual=None, unknown=False):
+        return self.release(reservation)
 
 
 def _real_executor(
@@ -222,6 +230,89 @@ def test_bootstrap_probe_failure_persists_candidate_notifies_and_exits_zero(
         assert config.lifecycle_status == "draft"
         assert db.get(LlmRuntimeSetting, 1).default_model_config_id is None
         assert db.query(LlmModelTestRun).one().status == "failed"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("programming failure"),
+        LlmError("今日额度已锁定", code="llm_daily_limit_reached"),
+        LlmError("传输配置无效", code="llm_transport_config"),
+        LlmError("预算状态无效", code="llm_budget_locked"),
+    ],
+    ids=["runtime-error", "daily-limit", "transport-config", "budget-locked"],
+)
+def test_bootstrap_local_or_programming_probe_failure_is_fatal_and_retryable(
+    db_factory, keyring, monkeypatch, error
+):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-local-fatal-secret")
+
+    first = cli.run_bootstrap(
+        session_factory=db_factory,
+        executor=RecordingExecutor(error=error),
+    )
+
+    assert first == 1
+    with db_factory() as db:
+        # A local failure must not leave an active candidate that blocks the
+        # next one-shot bootstrap.  Real call evidence may be retained as a
+        # soft-deleted row, but it is never eligible for ownership.
+        assert db.query(LlmModelConfig).filter(LlmModelConfig.deleted_at.is_(None)).count() == 0
+        assert db.get(LlmRuntimeSetting, 1) is not None
+
+    second = cli.run_bootstrap(
+        session_factory=db_factory,
+        executor=RecordingExecutor(),
+    )
+    assert second == 0
+    with db_factory() as db:
+        assert db.query(LlmModelConfig).filter(LlmModelConfig.deleted_at.is_(None)).count() == 1
+        assert db.get(LlmRuntimeSetting, 1).default_model_config_id is not None
+
+
+def test_bootstrap_upstream_llm_error_is_persisted_and_exits_zero(db_factory, keyring, monkeypatch):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-upstream-secret")
+
+    result = cli.run_bootstrap(
+        session_factory=db_factory,
+        executor=RecordingExecutor(
+            error=LlmError("上游拒绝访问", code="llm_auth_failed")
+        ),
+    )
+
+    assert result == 0
+    with db_factory() as db:
+        config = db.query(LlmModelConfig).filter(LlmModelConfig.deleted_at.is_(None)).one()
+        assert config.lifecycle_status == "draft"
+        assert db.query(LlmModelTestRun).one().status == "failed"
+
+
+def test_bootstrap_database_or_audit_failure_is_fatal(monkeypatch, db_factory, keyring):
+    cli = _cli(monkeypatch)
+    monkeypatch.setattr(cli.settings, "DEEPSEEK_API_KEY", "sk-audit-secret")
+
+    async def broken_probe(*args, **kwargs):
+        raise RuntimeError("audit database unavailable")
+
+    monkeypatch.setattr(cli, "_probe_candidate", broken_probe)
+
+    assert cli.run_bootstrap(session_factory=db_factory, executor=RecordingExecutor()) == 1
+
+
+def test_readiness_does_not_commit_caller_pending_objects(db_factory, keyring, monkeypatch):
+    cli = _cli(monkeypatch)
+    caller_session = db_factory()
+    caller_session.add(LlmRuntimeSetting(id=1, daily_token_limit=1234))
+    try:
+        result = cli.run_readiness(session_factory=caller_session)
+    finally:
+        caller_session.close()
+
+    assert result.exit_code == 1
+    with db_factory() as db:
+        assert db.query(LlmRuntimeSetting).count() == 0
 
 
 def test_bootstrap_existing_model_is_noop_and_does_not_override_state(
@@ -422,6 +513,68 @@ def test_live_smoke_requires_matching_provider_and_uses_live_smoke_executor(
         assert attempt.task_id is None
         assert usage.module == "live_smoke"
         assert reservation.status == "settled"
+
+
+def test_live_smoke_rejects_released_budget_as_success_evidence(db_factory, keyring, monkeypatch):
+    cli = _cli(monkeypatch)
+    from app.services.llm.crypto import encrypt_api_key
+    from app.services.llm.config_service import runtime_fingerprint
+
+    config_id = "released-budget-config"
+    fp = runtime_fingerprint(
+        provider=Provider.DEEPSEEK,
+        model_name="deepseek-chat",
+        base_url="https://api.deepseek.com/v1",
+        credential_version="released-credential",
+        max_output_tokens=256,
+    )
+    envelope = encrypt_api_key(
+        "sk-released-secret",
+        config_id=config_id,
+        provider=Provider.DEEPSEEK,
+        keyring=cli.settings.LLM_CONFIG_ENCRYPTION_KEYS,
+    )
+    with db_factory() as db:
+        db.add(
+            LlmModelConfig(
+                id=config_id,
+                provider="deepseek",
+                display_name="Released budget",
+                model_name="deepseek-chat",
+                base_url="https://api.deepseek.com/v1",
+                encrypted_api_key=envelope.encrypted_api_key,
+                encryption_key_id=envelope.encryption_key_id,
+                envelope_version=envelope.envelope_version,
+                nonce=envelope.nonce,
+                credential_version="released-credential",
+                runtime_fingerprint=fp,
+                lifecycle_status="active",
+                max_output_tokens=256,
+            )
+        )
+        db.commit()
+    db, http_client, executor = _real_executor(db_factory, api_key="sk-released-secret")
+    executor.budget = ReleasedBudget(db, daily_token_limit=100_000)
+    try:
+        result = cli.run_live_smoke(
+            provider="deepseek",
+            model_config_id=config_id,
+            session_factory=db_factory,
+            executor=executor,
+        )
+    finally:
+        asyncio.run(http_client.aclose())
+        db.close()
+
+    assert result.exit_code == 1
+    assert result.status == "live_smoke_failed"
+
+
+def test_compose_worker_does_not_receive_legacy_bootstrap_secrets():
+    compose = (Path(__file__).resolve().parents[3] / "deploy" / "docker-compose.yml").read_text()
+    worker = compose.split("\n  worker:\n", 1)[1].split("\n  nginx:\n", 1)[0]
+    for name in ("DEEPSEEK_API_KEY", "LLM_MODEL", "LLM_BASE_URL"):
+        assert f"{name}:" not in worker
 
 
 def test_cli_argument_parser_has_explicit_commands(monkeypatch):

@@ -107,11 +107,6 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       LLM_CONFIG_ENCRYPTION_KEY_ID: ${LLM_CONFIG_ENCRYPTION_KEY_ID:-}
       LLM_CONFIG_ENCRYPTION_KEYS: ${LLM_CONFIG_ENCRYPTION_KEYS:-}
-      # Deprecated observation-release bootstrap inputs; worker never runs
-      # bootstrap and only carries them for mixed-version rollback safety.
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
       DAILY_TOKEN_LIMIT: ${DAILY_TOKEN_LIMIT:-2000000}
       EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}

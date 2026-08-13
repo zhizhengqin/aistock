@@ -7,6 +7,7 @@ import base64
 import multiprocessing
 import os
 import re
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +23,29 @@ from sqlalchemy.orm import sessionmaker
 
 
 _DATABASE_PATTERN = re.compile(r"^aistock_llm_bootstrap_test_[0-9a-f]{12}$")
+
+
+class _ProbeGateExecutor:
+    """Pause a real bootstrap coroutine between probe and finalization."""
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    async def call(self, **kwargs):
+        from app.services.llm.provider_client import ProviderResult
+
+        self.started.set()
+        while not self.release.is_set():
+            await asyncio.sleep(0.01)
+        return ProviderResult(
+            result_json={"decision": "hold", "confidence": 0.5, "rationale": "barrier probe"},
+            model="deepseek-chat",
+            prompt_tokens=8,
+            completion_tokens=4,
+            usage_source="provider",
+            response_metadata={"provider_model_present": True},
+        )
 
 
 def _admin_url() -> str:
@@ -185,13 +209,22 @@ def _run_race(target_url: str, *, api_key: str, response_status: int):
         )
         for _ in range(2)
     ]
-    for process in processes:
-        process.start()
-    start_event.set()
-    for process in processes:
-        process.join(timeout=30)
-        assert process.exitcode == 0
-    return [result_queue.get(timeout=5) for _ in processes]
+    try:
+        for process in processes:
+            process.start()
+        start_event.set()
+        for process in processes:
+            process.join(timeout=30)
+            assert process.exitcode == 0
+        return [result_queue.get(timeout=5) for _ in processes]
+    finally:
+        # A failed assertion or queue timeout must not leak a child process
+        # into the next integration test.
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=10)
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="需要显式 TEST_DATABASE_URL")
@@ -279,3 +312,111 @@ def test_empty_database_without_legacy_key_race_creates_settings_only():
             assert all(item["status"] == "bootstrap_noop" for item in results)
         finally:
             target_engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="需要显式 TEST_DATABASE_URL")
+def test_probe_barrier_preserves_admin_default_and_candidate_state():
+    """An admin write during provider I/O wins the finalization ownership check."""
+
+    from app.core.config import settings
+    from app.models.llm_config import LlmModelConfig, LlmModelTestRun, LlmRuntimeSetting
+    from app.services.llm.config_service import runtime_fingerprint
+    from app.services.llm.crypto import encrypt_api_key
+    from app.services.llm.types import Provider
+    from app.cli import llm_config
+
+    previous = {
+        "DATABASE_URL": getattr(settings, "DATABASE_URL", None),
+        "ENV": getattr(settings, "ENV", None),
+        "LLM_CONFIG_ENCRYPTION_KEY_ID": getattr(settings, "LLM_CONFIG_ENCRYPTION_KEY_ID", None),
+        "LLM_CONFIG_ENCRYPTION_KEYS": getattr(settings, "LLM_CONFIG_ENCRYPTION_KEYS", None),
+        "DEEPSEEK_API_KEY": getattr(settings, "DEEPSEEK_API_KEY", None),
+        "LLM_MODEL": getattr(settings, "LLM_MODEL", None),
+        "LLM_BASE_URL": getattr(settings, "LLM_BASE_URL", None),
+    }
+    try:
+        with _disposable_database() as (target_url, _database_name):
+            settings.DATABASE_URL = target_url
+            settings.ENV = "test"
+            settings.LLM_CONFIG_ENCRYPTION_KEY_ID = "barrier-current"
+            settings.LLM_CONFIG_ENCRYPTION_KEYS = {
+                "barrier-current": base64.b64encode(b"b" * 32).decode("ascii")
+            }
+            settings.DEEPSEEK_API_KEY = "sk-barrier-secret"
+            settings.LLM_MODEL = "deepseek-chat"
+            settings.LLM_BASE_URL = "https://api.deepseek.com/v1"
+            engine = create_engine(target_url, pool_size=4, max_overflow=0)
+            factory = sessionmaker(bind=engine, expire_on_commit=False)
+            gate = _ProbeGateExecutor()
+            holder: dict[str, object] = {}
+
+            def bootstrap_thread():
+                holder["result"] = asyncio.run(
+                    llm_config.bootstrap_async(session_factory=factory, executor=gate)
+                )
+
+            worker = threading.Thread(target=bootstrap_thread)
+            worker.start()
+            assert gate.started.wait(10), "probe did not reach barrier"
+
+            admin_id = "admin-barrier-config"
+            envelope = encrypt_api_key(
+                "sk-admin-secret",
+                config_id=admin_id,
+                provider=Provider.DEEPSEEK,
+                keyring=settings.LLM_CONFIG_ENCRYPTION_KEYS,
+            )
+            admin_fp = runtime_fingerprint(
+                provider=Provider.DEEPSEEK,
+                model_name="deepseek-chat",
+                base_url="https://api.deepseek.com/v1",
+                credential_version="admin-credential",
+                max_output_tokens=256,
+            )
+            with factory() as admin:
+                admin.add(
+                    LlmModelConfig(
+                        id=admin_id,
+                        provider="deepseek",
+                        display_name="管理员配置",
+                        model_name="deepseek-chat",
+                        base_url="https://api.deepseek.com/v1",
+                        encrypted_api_key=envelope.encrypted_api_key,
+                        encryption_key_id=envelope.encryption_key_id,
+                        envelope_version=envelope.envelope_version,
+                        nonce=envelope.nonce,
+                        credential_version="admin-credential",
+                        runtime_fingerprint=admin_fp,
+                        lifecycle_status="active",
+                        max_output_tokens=256,
+                    )
+                )
+                setting = admin.get(LlmRuntimeSetting, 1)
+                setting.default_model_config_id = admin_id
+                setting.version += 1
+                admin.commit()
+
+            gate.release.set()
+            worker.join(timeout=15)
+            assert not worker.is_alive()
+            result = holder["result"]
+            assert result.exit_code == 0
+            assert result.status == "bootstrap_noop"
+
+            with factory() as verify:
+                setting = verify.get(LlmRuntimeSetting, 1)
+                assert setting.default_model_config_id == admin_id
+                admin_config = verify.get(LlmModelConfig, admin_id)
+                assert admin_config.lifecycle_status == "active"
+                candidates = (
+                    verify.query(LlmModelConfig)
+                    .filter(LlmModelConfig.id != admin_id, LlmModelConfig.deleted_at.is_(None))
+                    .all()
+                )
+                assert len(candidates) == 1
+                assert candidates[0].lifecycle_status == "draft"
+                assert verify.query(LlmModelTestRun).one().status == "success"
+            engine.dispose()
+    finally:
+        for name, value in previous.items():
+            setattr(settings, name, value)

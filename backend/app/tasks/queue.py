@@ -9,6 +9,7 @@ from app.tasks.portfolio_risk import portfolio_risk_task
 from app.tasks.news_collect import news_collect_task
 from app.tasks.us_research import us_research_task
 from app.core.config import settings
+from app.services.llm.http_client import close_llm_http_client, get_llm_http_client
 
 
 def get_redis_settings() -> RedisSettings:
@@ -31,12 +32,16 @@ def get_redis_settings() -> RedisSettings:
 async def _on_worker_startup(ctx):
     """arq worker boots the timed-job scheduler (prod owns scheduling here)."""
     from app.tasks.scheduler import start_scheduler
+    get_llm_http_client()
     start_scheduler(force=True)
 
 
 async def _on_worker_shutdown(ctx):
     from app.tasks.scheduler import shutdown_scheduler
-    shutdown_scheduler()
+    try:
+        shutdown_scheduler()
+    finally:
+        await close_llm_http_client()
 
 
 class WorkerSettings:

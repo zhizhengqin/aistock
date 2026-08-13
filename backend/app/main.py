@@ -5,16 +5,23 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.core.logger import logger
 from app.api import health, auth, market, tasks, m3, m4, m5, m6, admin
+from app.services.llm.http_client import close_llm_http_client, get_llm_http_client
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"{settings.APP_NAME} starting in {settings.ENV} mode")
     from app.tasks.scheduler import start_scheduler, shutdown_scheduler
-    start_scheduler()
-    yield
-    shutdown_scheduler()
-    logger.info(f"{settings.APP_NAME} shutting down")
+    get_llm_http_client()
+    try:
+        start_scheduler()
+        yield
+    finally:
+        try:
+            shutdown_scheduler()
+        finally:
+            await close_llm_http_client()
+        logger.info(f"{settings.APP_NAME} shutting down")
 
 
 app = FastAPI(

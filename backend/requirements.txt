@@ -25,6 +25,7 @@ pydantic==2.13.4
 email-validator==2.3.0
 pydantic-settings==2.14.2
 python-dotenv==1.2.2
+cryptography==49.0.0
 
 # Email
 aiosmtplib==3.0.0

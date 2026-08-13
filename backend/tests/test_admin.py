@@ -78,35 +78,31 @@ def test_update_user_invalid_role(client, seed_user, test_db):
     assert resp.status_code == 400
 
 
-# --- LLM config ---
+# --- Legacy LLM config contract is removed ---
 
-def test_get_llm_config_admin(client, test_db):
+def test_get_llm_config_legacy_contract_removed(client, test_db):
     _, TS = test_db
     db = TS()
     aid = _make_admin(db)
     db.close()
     _auth_admin(client, aid)
     resp = client.get("/api/admin/llm-config")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert "llm_mock" in data
-    assert "llm_model" in data
-    assert "deepseek_api_key_masked" in data
+    assert resp.status_code == 404
 
 
-def test_get_llm_config_forbidden(auth_client):
+def test_get_llm_config_legacy_contract_forbidden_no_longer_applies(auth_client):
     resp = auth_client.get("/api/admin/llm-config")
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
-def test_update_llm_config_admin(client, test_db):
+def test_update_llm_config_legacy_contract_removed(client, test_db):
     _, TS = test_db
     db = TS()
     aid = _make_admin(db)
     db.close()
     _auth_admin(client, aid)
     resp = client.put("/api/admin/llm-config", json={"llm_mock": False})
-    assert resp.status_code == 200
+    assert resp.status_code == 404
 
 
 # --- Datasource config ---

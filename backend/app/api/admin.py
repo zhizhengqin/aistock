@@ -2,7 +2,6 @@
 
 All endpoints require admin role. Covers:
 - User management (list / toggle active / change tier / change role)
-- LLM config (view / update runtime keys)
 - Data source config (view / test akshare connectivity)
 - Agent config (view / update agent settings)
 """
@@ -15,7 +14,6 @@ from app.core.config import settings
 from app.core.deps import get_admin_user
 from app.core.response import success
 from app.models.user import User
-from app.models.llm_usage import LlmUsage
 from app.models.membership_plan import MembershipPlan
 from app.models.usage_log import UsageLog
 
@@ -71,82 +69,6 @@ async def update_user(
         user.role = req.role
     db.commit()
     return success(message="用户信息已更新")
-
-
-# ---------------------------------------------------------------------------
-# LLM config
-# ---------------------------------------------------------------------------
-
-class UpdateLlmConfigRequest(BaseModel):
-    llm_mock: bool | None = None
-    llm_model: str | None = None
-    llm_base_url: str | None = None
-    deepseek_api_key: str | None = None
-    daily_token_limit: int | None = None
-
-
-@router.get("/admin/llm-config")
-async def get_llm_config(admin: User = Depends(get_admin_user)):
-    """Return current LLM configuration (API key masked)."""
-    key = settings.DEEPSEEK_API_KEY
-    masked = key[:4] + "****" + key[-4:] if len(key) > 8 else ("****" if key else "")
-    # Recent usage stats
-    return success(data={
-        "llm_mock": settings.LLM_MOCK,
-        "llm_model": settings.LLM_MODEL,
-        "llm_base_url": settings.LLM_BASE_URL,
-        "deepseek_api_key_masked": masked,
-        "daily_token_limit": settings.DAILY_TOKEN_LIMIT,
-    })
-
-
-@router.put("/admin/llm-config")
-async def update_llm_config(
-    req: UpdateLlmConfigRequest,
-    admin: User = Depends(get_admin_user),
-):
-    """Update runtime LLM settings (applies to current process, not persisted to .env)."""
-    if req.llm_mock is not None:
-        settings.LLM_MOCK = req.llm_mock
-    if req.llm_model is not None:
-        settings.LLM_MODEL = req.llm_model
-    if req.llm_base_url is not None:
-        settings.LLM_BASE_URL = req.llm_base_url
-    if req.deepseek_api_key is not None:
-        settings.DEEPSEEK_API_KEY = req.deepseek_api_key
-    if req.daily_token_limit is not None:
-        settings.DAILY_TOKEN_LIMIT = req.daily_token_limit
-    return success(message="大模型配置已更新（当前进程生效，重启后恢复 .env 值）")
-
-
-@router.get("/admin/llm-usage")
-async def llm_usage_stats(
-    days: int = 7,
-    admin: User = Depends(get_admin_user), db: Session = Depends(get_db),
-):
-    """LLM token usage and cost in recent N days."""
-    from datetime import datetime, timedelta, timezone
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = (db.query(
-        LlmUsage.module,
-        func.sum(LlmUsage.prompt_tokens).label("prompt_tokens"),
-        func.sum(LlmUsage.completion_tokens).label("completion_tokens"),
-        func.sum(LlmUsage.cost_fen).label("cost_fen"),
-        func.count(LlmUsage.id).label("calls"),
-    ).filter(LlmUsage.created_at >= since)
-     .group_by(LlmUsage.module).all())
-    total_cost = sum(r.cost_fen or 0 for r in rows)
-    return success(data={
-        "days": days,
-        "total_cost_yuan": total_cost / 100,
-        "modules": [{
-            "module": r.module,
-            "prompt_tokens": int(r.prompt_tokens or 0),
-            "completion_tokens": int(r.completion_tokens or 0),
-            "cost_yuan": (r.cost_fen or 0) / 100,
-            "calls": int(r.calls or 0),
-        } for r in rows],
-    })
 
 
 # ---------------------------------------------------------------------------

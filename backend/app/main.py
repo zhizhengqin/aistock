@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.api import health, auth, market, tasks, m3, m4, m5, m6, admin
+from app.api import health, auth, market, tasks, m3, m4, m5, m6, admin, admin_llm
 from app.services.llm.http_client import close_llm_http_client, get_llm_http_client
 
 
@@ -48,3 +48,4 @@ app.include_router(m4.router, prefix=settings.API_PREFIX)
 app.include_router(m5.router, prefix=settings.API_PREFIX)
 app.include_router(m6.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
+app.include_router(admin_llm.router, prefix=settings.API_PREFIX)

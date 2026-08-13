@@ -279,6 +279,49 @@ async def test_started_attempt_blocks_reclaim_and_settles_reservation(test_db):
 
 
 @pytest.mark.asyncio
+async def test_expired_reservation_without_attempt_is_released_before_reclaim(test_db):
+    """A reservation with no attempt is provably unsent and may be reclaimed."""
+    _, session_factory = test_db
+    clock = MutableClock()
+    db = session_factory()
+    task_id = _task(db)
+    task = db.get(TaskRecord, task_id)
+    task.status = "running"
+    task.execution_token = "old-owner"
+    task.lease_expires_at = clock() - timedelta(seconds=1)
+    db.add(LlmDailyBudget(budget_date=clock().date(), reserved_tokens=20, settled_tokens=0))
+    db.flush()
+    reservation = LlmTokenReservation(
+        task_id=task_id,
+        step_key="analysis",
+        budget_date=clock().date(),
+        reserved_tokens=20,
+        status="reserved",
+        lease_expires_at=clock() - timedelta(seconds=1),
+    )
+    db.add(reservation)
+    db.commit()
+    reservation_id = reservation.id
+    db.close()
+
+    calls = 0
+
+    async def execute(ctx):
+        nonlocal calls
+        calls += 1
+        return {"reclaimed": True}
+
+    runner = TaskExecutionRunner(session_factory, lease_seconds=5, clock=clock)
+    assert await runner.run(task_id, execute, lambda db, task, result: None) == {"reclaimed": True}
+    check = session_factory()
+    assert calls == 1
+    assert check.get(LlmTokenReservation, reservation_id).status == "released"
+    assert check.get(LlmDailyBudget, clock().date()).reserved_tokens == 0
+    assert check.get(TaskRecord, task_id).status == "success"
+    check.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_unknown_attempt_blocks_reclaim_without_execute(test_db):
     _, session_factory = test_db
     db = session_factory()

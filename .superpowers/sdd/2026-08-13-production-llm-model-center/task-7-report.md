@@ -22,7 +22,7 @@
 
 ## 验证
 
-- `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py -q`：21 passed，2 warnings。
+- `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py -q`：22 passed，2 warnings。
 - `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/integration/test_task_execution_concurrency.py -q`：3 passed，覆盖 PostgreSQL 20 路同 task 恰 1 execute、20 路 started-attempt reclaim（execute=0）与旧 owner fencing。
 - Task 1–7 focused（含 Task 6 duplicate/outbox）：54 passed，2 warnings（本轮 fix focused fresh）。
 - Task 1–7 focused + 显式 PostgreSQL runner：33 passed，2 warnings（本轮 fix focused fresh）。

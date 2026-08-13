@@ -139,6 +139,75 @@ async def test_unknown_timeout_settles_upper_bound_and_never_replays(session):
 
 
 @pytest.mark.asyncio
+async def test_retry_budget_is_per_call_even_when_history_has_high_attempt_numbers(session):
+    session.add(
+        LlmCallAttempt(
+            task_id=42,
+            model_config_id=None,
+            operation_type="task",
+            step_key="history",
+            attempt_no=9,
+            provider_snapshot="deepseek",
+            model_snapshot="model-x",
+            runtime_fingerprint="old",
+            status="failed",
+        )
+    )
+    session.commit()
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, text="temporary")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    executor = LlmCallExecutor(
+        session,
+        provider_client=ProviderClient(client=client),
+        budget=TokenBudgetService(session, daily_token_limit=100_000),
+        max_retries=2,
+    )
+    with pytest.raises(Exception) as exc:
+        await executor.call(
+            runtime_config=runtime(),
+            operation_type="task",
+            task_id=42,
+            step_key="history",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+    await client.aclose()
+    assert exc.value.code == "llm_unavailable"
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_retry_attempts_have_no_orphan_reservations_after_all_failures(session):
+    async def handler(request):
+        return httpx.Response(503, text="temporary")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    executor = LlmCallExecutor(
+        session,
+        provider_client=ProviderClient(client=client),
+        budget=TokenBudgetService(session, daily_token_limit=100_000),
+    )
+    with pytest.raises(Exception):
+        await executor.call(
+            runtime_config=runtime(),
+            operation_type="task",
+            task_id=43,
+            step_key="orphan-check",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+    await client.aclose()
+    attempts = session.execute(select(LlmCallAttempt)).scalars().all()
+    reservations = session.execute(select(LlmTokenReservation)).scalars().all()
+    assert len(attempts) == len(reservations) == 3
+    assert {attempt.reservation_id for attempt in attempts} == {row.id for row in reservations}
+
+
+@pytest.mark.asyncio
 async def test_confirmed_unsent_connect_failure_releases_before_retry(session):
     calls = 0
 
@@ -163,6 +232,6 @@ async def test_confirmed_unsent_connect_failure_releases_before_retry(session):
         )
     await client.aclose()
     assert calls == 2
-    assert exc.value.code == "llm_connection_error"
+    assert exc.value.code == "llm_unavailable"
     reservations = session.execute(select(LlmTokenReservation)).scalars().all()
     assert all(row.status == "released" for row in reservations)

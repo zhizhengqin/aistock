@@ -13,7 +13,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models.llm_config import LlmRuntimeSetting
-from app.models.llm_execution import LlmDailyBudget, LlmTokenReservation
+from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
 from app.services.llm.errors import LlmError
 
 
@@ -24,7 +24,7 @@ DEFAULT_LEASE_SECONDS = 300
 
 def _error(code: str, message: str) -> LlmError:
     error = LlmError(message, code=code)
-    error.retryable = code in {"llm_budget_exhausted", "llm_budget_locked"}
+    error.retryable = code == "llm_daily_limit_reached"
     error.user_message = message
     error.confirmed_unsent = True
     error.may_have_sent = False
@@ -179,12 +179,12 @@ class TokenBudgetService:
         with self._session() as session:
             setting = self._runtime_setting(session)
             if bool(setting.budget_locked):
-                raise _error("llm_budget_locked", "大模型额度已锁定，请联系管理员处理")
+                raise _error("llm_daily_limit_reached", "系统今日大模型用量已达上限")
             ledger = self._daily_row(session, day)
             limit = self._effective_limit(setting)
             used = int(ledger.reserved_tokens) + int(ledger.settled_tokens)
             if used + tokens > limit:
-                raise _error("llm_budget_exhausted", "今日大模型 Token 额度不足")
+                raise _error("llm_daily_limit_reached", "系统今日大模型用量已达上限")
             ledger.reserved_tokens += tokens
             reservation = LlmTokenReservation(
                 task_id=task_id,
@@ -264,6 +264,7 @@ class TokenBudgetService:
         """Release a reservation that is confirmed unsent."""
 
         with self._session() as session:
+            self._runtime_setting(session)
             row = self._get_reservation(session, reservation)
             if row.status != "reserved":
                 return row
@@ -281,11 +282,19 @@ class TokenBudgetService:
             return row
 
     def reap_expired(self, now: datetime | None = None) -> int:
-        """Release all expired leases and return the number reaped."""
+        """Reap expired leases without releasing possibly-sent calls.
+
+        A reservation without an attempt is provably never sent and can be
+        released.  Once an attempt row exists, a worker may have reached the
+        provider before crashing; such rows settle at the reserved upper
+        bound and are marked ``failed_unknown``.  A completed successful
+        attempt can use its recorded provider usage exactly.
+        """
 
         current = self._now(now)
         count = 0
         with self._session() as session:
+            self._runtime_setting(session)
             rows = session.execute(
                 select(LlmTokenReservation)
                 .where(
@@ -296,14 +305,42 @@ class TokenBudgetService:
                 .with_for_update()
             ).scalars().all()
             for row in rows:
+                attempt = session.execute(
+                    select(LlmCallAttempt)
+                    .where(LlmCallAttempt.reservation_id == row.id)
+                    .with_for_update()
+                ).scalar_one_or_none()
                 ledger = session.execute(
                     select(LlmDailyBudget)
                     .where(LlmDailyBudget.budget_date == row.budget_date)
                     .with_for_update()
                 ).scalar_one()
-                ledger.reserved_tokens = max(0, int(ledger.reserved_tokens) - int(row.reserved_tokens))
-                row.status = "expired"
-                row.settled_tokens = 0
+                reserved = int(row.reserved_tokens)
+                ledger.reserved_tokens = max(0, int(ledger.reserved_tokens) - reserved)
+                if attempt is None:
+                    row.status = "released"
+                    row.settled_tokens = 0
+                else:
+                    actual = reserved
+                    if (
+                        attempt.status == "success"
+                        and isinstance(attempt.input_tokens, int)
+                        and isinstance(attempt.output_tokens, int)
+                        and attempt.input_tokens >= 0
+                        and attempt.output_tokens >= 0
+                    ):
+                        actual = attempt.input_tokens + attempt.output_tokens
+                    ledger.settled_tokens += actual
+                    if actual > reserved:
+                        setting = self._runtime_setting(session)
+                        setting.budget_locked = True
+                    row.status = "settled"
+                    row.settled_tokens = actual
+                    if attempt.status != "success":
+                        attempt.status = "failed_unknown"
+                        attempt.error_code = "llm_failed_unknown"
+                        attempt.error_message = "大模型响应状态未知，请勿自动重试"
+                        attempt.usage_source = "unknown"
                 count += 1
         return count
 

@@ -34,6 +34,14 @@ def test_qwen_official_business_suffix_and_unicode_trailing_dot_are_canonicalize
     ) == "https://foo.maas.aliyuncs.com/compatible-mode/v1"
 
 
+def test_qwen_path_must_be_the_exact_compatible_mode_prefix():
+    with pytest.raises(Exception) as exc:
+        canonicalize_base_url(
+            "https://dashscope.aliyuncs.com/tenant/compatible-mode/v1", Provider.QWEN
+        )
+    assert exc.value.code == "llm_url_path_not_allowed"
+
+
 @pytest.mark.parametrize("value", ["127.0.0.1", "10.0.0.1", "::1", "fe80::1", "192.0.2.1"])
 def test_non_public_ip_results_are_rejected(value):
     assert not is_public_address(ipaddress.ip_address(value))

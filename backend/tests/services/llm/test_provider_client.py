@@ -1,9 +1,15 @@
 import json
 
 import httpx
+import httpcore
 import pytest
 
-from app.services.llm.provider_client import ProviderClient
+from app.services.llm.provider_client import (
+    ProviderClient,
+    _PINNED_IP,
+    _PinnedNetworkBackend,
+    _PinnedAsyncHTTPTransport,
+)
 from app.services.llm.types import LlmRuntimeConfig, Provider
 
 
@@ -78,7 +84,7 @@ async def test_provider_error_never_exposes_api_key():
             [{"role": "user", "content": "hello"}],
         )
     await client.aclose()
-    assert exc.value.code == "llm_auth_error"
+    assert exc.value.code == "llm_auth_failed"
     assert "sk-test-secret" not in str(exc.value)
 
 
@@ -95,3 +101,161 @@ async def test_oversized_response_is_bounded():
         )
     await client.aclose()
     assert exc.value.code == "llm_response_too_large"
+
+
+@pytest.mark.asyncio
+async def test_transport_connects_to_the_verified_ip_while_preserving_hostname():
+    class Delegate:
+        def __init__(self):
+            self.calls = []
+
+        async def connect_tcp(self, host, port, **kwargs):
+            self.calls.append((host, port))
+            return object()
+
+    delegate = Delegate()
+    backend = _PinnedNetworkBackend(delegate)
+    token = _PINNED_IP.set("8.8.8.8")
+    try:
+        await backend.connect_tcp("api.deepseek.com", 443)
+    finally:
+        _PINNED_IP.reset(token)
+    assert delegate.calls == [("8.8.8.8", 443)]
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_connects_to_verified_ip_but_sends_original_host_and_sni():
+    class Stream(httpcore.AsyncNetworkStream):
+        def __init__(self, calls):
+            self.calls = calls
+            self.response = bytearray(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 53\r\n"
+                b"Content-Type: application/json\r\n\r\n"
+                b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
+            )
+
+        async def read(self, max_bytes, timeout=None):
+            if not self.response:
+                return b""
+            chunk = bytes(self.response[:max_bytes])
+            del self.response[:max_bytes]
+            return chunk
+
+        async def write(self, buffer, timeout=None):
+            self.calls.append(("write", bytes(buffer)))
+
+        async def aclose(self):
+            return None
+
+        async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            self.calls.append(("sni", server_hostname))
+            return self
+
+    class Backend(httpcore.AsyncNetworkBackend):
+        def __init__(self):
+            self.calls = []
+
+        async def connect_tcp(self, host, port, **kwargs):
+            self.calls.append(("tcp", host, port))
+            return Stream(self.calls)
+
+        async def connect_unix_socket(self, path, **kwargs):
+            raise AssertionError("unexpected unix socket")
+
+        async def sleep(self, seconds):
+            return None
+
+    backend = Backend()
+    transport = _PinnedAsyncHTTPTransport(network_backend=backend)
+    client = httpx.AsyncClient(transport=transport, verify=True, trust_env=False)
+    resolver_calls = []
+
+    def resolver(host, port):
+        resolver_calls.append((host, port))
+        return ["8.8.8.8"] if len(resolver_calls) == 1 else ["10.0.0.1"]
+
+    result = await ProviderClient(
+        client=client,
+        resolver=resolver,
+    ).complete_json(
+        runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+        [{"role": "user", "content": "hello"}],
+    )
+    await client.aclose()
+    assert result.result_json == {"ok": True}
+    assert resolver_calls == [("api.deepseek.com", 443)]
+    assert ("tcp", "8.8.8.8", 443) in backend.calls
+    assert ("sni", "api.deepseek.com") in backend.calls
+    writes = [entry[1] for entry in backend.calls if entry[0] == "write"]
+    assert any(b"Host: api.deepseek.com" in payload for payload in writes)
+
+
+@pytest.mark.asyncio
+async def test_streaming_response_stops_before_consuming_tail_after_two_mib():
+    class Stream(httpx.AsyncByteStream):
+        def __init__(self):
+            self.consumed = []
+
+        async def __aiter__(self):
+            self.consumed.append("head")
+            yield b"x" * (2 * 1024 * 1024 + 1)
+            self.consumed.append("tail")
+            yield b"tail"
+
+        async def aclose(self):
+            return None
+
+    stream = Stream()
+
+    async def handler(request):
+        return httpx.Response(200, stream=stream)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(Exception) as exc:
+        await ProviderClient(client=client).complete_json(
+            runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+            [{"role": "user", "content": "hello"}],
+        )
+    await client.aclose()
+    assert exc.value.code == "llm_response_too_large"
+    assert stream.consumed == ["head"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "code"),
+    [
+        (401, "upstream secret sk-test-secret", "llm_auth_failed"),
+        (402, '{"error":{"code":"insufficient_quota","message":"balance sk-test-secret"}}', "llm_quota_exceeded"),
+        (503, "upstream secret sk-test-secret", "llm_unavailable"),
+    ],
+)
+async def test_provider_errors_use_stable_codes_and_redact_upstream_body(status, body, code):
+    async def handler(request):
+        return httpx.Response(status, content=body.encode("utf-8"))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(Exception) as exc:
+        await ProviderClient(client=client).complete_json(
+            runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+            [{"role": "user", "content": "hello"}],
+        )
+    await client.aclose()
+    assert exc.value.code == code
+    assert "sk-test-secret" not in str(exc.value)
+    assert "upstream secret" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_malformed_provider_json_uses_stable_invalid_response_code():
+    async def handler(request):
+        return httpx.Response(200, content=b"not-json")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(Exception) as exc:
+        await ProviderClient(client=client).complete_json(
+            runtime(Provider.DEEPSEEK, "https://api.deepseek.com"),
+            [{"role": "user", "content": "hello"}],
+        )
+    await client.aclose()
+    assert exc.value.code == "llm_invalid_response"

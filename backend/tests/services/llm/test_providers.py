@@ -1,4 +1,5 @@
 import pytest
+from types import MappingProxyType
 
 from app.services.llm.providers import PROVIDER_REGISTRY, ProviderProfile
 from app.services.llm.types import Provider
@@ -20,3 +21,9 @@ def test_registry_contains_immutable_official_defaults():
     }
     with pytest.raises(AttributeError):
         PROVIDER_REGISTRY[Provider.DEEPSEEK].default_base_url = "https://example.com"
+
+
+def test_registry_outer_mapping_is_read_only():
+    assert isinstance(PROVIDER_REGISTRY, MappingProxyType)
+    with pytest.raises(TypeError):
+        PROVIDER_REGISTRY[Provider.DEEPSEEK] = PROVIDER_REGISTRY[Provider.KIMI]

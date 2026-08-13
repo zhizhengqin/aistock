@@ -84,9 +84,7 @@ def _path_allowed(provider: Provider, path: str) -> bool:
         return normalized in {"", "/", "/v1"}
     if provider is Provider.KIMI:
         return normalized in {"", "/", "/v1"}
-    return normalized in {"", "/", "/v1", "/compatible-mode/v1"} or normalized.endswith(
-        "/compatible-mode/v1"
-    )
+    return normalized in {"", "/", "/v1", "/compatible-mode/v1"}
 
 
 def canonicalize_base_url(

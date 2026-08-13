@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.base import Base
 from app.models.llm_config import LlmRuntimeSetting
-from app.models.llm_execution import LlmDailyBudget, LlmTokenReservation
+from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
 from app.services.llm.budget import TokenBudgetService
 
 
@@ -39,7 +39,7 @@ def test_actual_over_reserve_locks_global_budget(session):
     assert setting.budget_locked is True
     with pytest.raises(Exception) as exc:
         service.reserve(1, step_key="next")
-    assert exc.value.code == "llm_budget_locked"
+    assert exc.value.code == "llm_daily_limit_reached"
 
 
 def test_expired_lease_is_reaped(session):
@@ -48,7 +48,38 @@ def test_expired_lease_is_reaped(session):
     reservation = service.reserve(20, step_key="step", lease_expires_at=now - timedelta(seconds=1))
     assert service.reap_expired(now=now) == 1
     row = session.get(LlmTokenReservation, reservation.id)
-    assert row.status == "expired"
+    assert row.status == "released"
+
+
+def test_reaper_conservatively_settles_started_attempt_after_worker_crash(session):
+    now = datetime(2026, 8, 13, tzinfo=timezone.utc)
+    service = TokenBudgetService(session, daily_token_limit=100)
+    reservation = service.reserve(20, step_key="crashed", lease_expires_at=now - timedelta(seconds=1))
+    session.add(
+        LlmCallAttempt(
+            task_id=None,
+            model_config_id=None,
+            operation_type="task",
+            step_key="crashed",
+            attempt_no=1,
+            provider_snapshot="deepseek",
+            model_snapshot="model-x",
+            runtime_fingerprint="fp",
+            reservation_id=reservation.id,
+            status="started",
+        )
+    )
+    session.commit()
+    assert service.reap_expired(now=now) == 1
+    row = session.get(LlmTokenReservation, reservation.id)
+    attempt = session.execute(select(LlmCallAttempt)).scalar_one()
+    ledger = session.execute(select(LlmDailyBudget)).scalar_one()
+    assert row.status == "settled"
+    assert row.settled_tokens == row.reserved_tokens == 20
+    assert attempt.status == "failed_unknown"
+    assert attempt.error_code == "llm_failed_unknown"
+    assert ledger.reserved_tokens == 0
+    assert ledger.settled_tokens == 20
 
 
 def test_beijing_midnight_creates_separate_ledgers(session):

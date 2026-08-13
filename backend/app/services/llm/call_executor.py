@@ -11,6 +11,8 @@ from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.llm_execution import LlmCallAttempt
@@ -113,13 +115,32 @@ class LlmCallExecutor:
     ) -> str:
         operation_id = str(uuid4())
         with self._session() as session:
+            actual_attempt_no = attempt_no
+            if task_id is not None:
+                dialect = session.get_bind().dialect.name
+                if dialect == "postgresql":
+                    # Serialize one task-step's ordinal allocation inside the
+                    # same transaction that inserts the attempt.  The
+                    # reservation was already durable, so any conflict path
+                    # below explicitly releases it before retrying allocation.
+                    session.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+                        {"lock_key": f"aistock:llm-attempt:{task_id}:{step_key}"},
+                    )
+                current = session.execute(
+                    select(func.max(LlmCallAttempt.attempt_no)).where(
+                        LlmCallAttempt.task_id == task_id,
+                        LlmCallAttempt.step_key == step_key,
+                    )
+                ).scalar_one()
+                actual_attempt_no = int(current or 0) + 1
             attempt = LlmCallAttempt(
                 task_id=task_id,
                 model_config_id=runtime_config.config_id,
                 operation_id=operation_id,
                 operation_type=operation_type,
                 step_key=step_key,
-                attempt_no=attempt_no,
+                attempt_no=actual_attempt_no,
                 provider_snapshot=str(runtime_config.provider),
                 model_snapshot=runtime_config.model_name,
                 runtime_fingerprint=runtime_config.runtime_fingerprint,
@@ -133,6 +154,50 @@ class LlmCallExecutor:
             session.add(attempt)
             session.flush()
         return operation_id
+
+    def _reserve_and_write_attempt(
+        self,
+        *,
+        reserve_upper: int,
+        runtime_config: LlmRuntimeConfig,
+        operation_type: str,
+        step_key: str,
+        task_id: int | None,
+        attempt_hint: int,
+        input_snapshot_hash: str,
+        prompt_version: str | None,
+    ) -> tuple[Any, str]:
+        """Create a reservation and its audit row without orphaning either."""
+
+        for collision in range(5):
+            reservation = self.budget.reserve(
+                reserve_upper,
+                task_id=task_id,
+                step_key=step_key,
+            )
+            try:
+                operation_id = self._write_attempt(
+                    runtime_config=runtime_config,
+                    operation_type=operation_type,
+                    step_key=step_key,
+                    task_id=task_id,
+                    attempt_no=attempt_hint,
+                    reservation_id=reservation.id,
+                    input_snapshot_hash=input_snapshot_hash,
+                    prompt_version=prompt_version,
+                )
+                return reservation, operation_id
+            except IntegrityError:
+                # SQLite (and a deployment with a missing advisory lock
+                # extension) may still report an ordinal collision.  Release
+                # the already committed reservation before allocating again.
+                self.budget.release(reservation.id)
+                if task_id is None or collision >= 4:
+                    raise
+            except Exception:
+                self.budget.release(reservation.id)
+                raise
+        raise _error("llm_attempt_conflict", "大模型调用审计编号冲突")
 
     def _next_attempt_no(self, task_id: int | None, step_key: str) -> int:
         """Continue the durable attempt sequence for task-step corrections."""
@@ -259,21 +324,14 @@ class LlmCallExecutor:
             raise
         input_hash = _sha256_json(messages)
         last_error: LlmError | None = None
-        first_attempt_no = self._next_attempt_no(task_id, step_key)
         for attempt_offset in range(self.max_retries + 1):
-            attempt_no = first_attempt_no + attempt_offset
-            reservation = self.budget.reserve(
-                reserve_upper,
-                task_id=task_id,
-                step_key=step_key,
-            )
-            operation_id = self._write_attempt(
+            reservation, operation_id = self._reserve_and_write_attempt(
+                reserve_upper=reserve_upper,
                 runtime_config=runtime_config,
                 operation_type=operation_type,
                 step_key=step_key,
                 task_id=task_id,
-                attempt_no=attempt_no,
-                reservation_id=reservation.id,
+                attempt_hint=attempt_offset + 1,
                 input_snapshot_hash=input_hash,
                 prompt_version=prompt_version,
             )
@@ -339,9 +397,7 @@ class LlmCallExecutor:
                 status=final_status,
                 error=last_error,
             )
-            if retryable and confirmed_unsent and attempt_no <= self.max_retries:
-                continue
-            if retryable and not confirmed_unsent and may_have_sent and attempt_no <= self.max_retries:
+            if retryable and attempt_offset < self.max_retries:
                 # 429/5xx have a definite upstream response and are safe to
                 # retry; unknown timeout/disconnect errors are marked above
                 # with retryable=False and stop here.

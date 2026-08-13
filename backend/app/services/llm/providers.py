@@ -8,6 +8,8 @@ does not get duplicated in callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Mapping
 
 from app.services.llm.types import Provider
 
@@ -50,7 +52,7 @@ class ProviderProfile:
         return self.input_overhead_tokens
 
 
-PROVIDER_REGISTRY: dict[Provider, ProviderProfile] = {
+PROVIDER_REGISTRY: Mapping[Provider, ProviderProfile] = MappingProxyType({
     Provider.DEEPSEEK: ProviderProfile(
         "https://api.deepseek.com", frozenset({"api.deepseek.com"}), 16
     ),
@@ -62,7 +64,7 @@ PROVIDER_REGISTRY: dict[Provider, ProviderProfile] = {
         frozenset({"dashscope.aliyuncs.com"}),
         24,
     ),
-}
+})
 
 
 def provider_profile(provider: Provider | str) -> ProviderProfile:

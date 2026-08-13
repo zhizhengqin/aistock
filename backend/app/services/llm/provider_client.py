@@ -8,22 +8,67 @@ could otherwise accidentally include a credential in an error string).
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import httpcore
 
 from app.services.llm.errors import LlmError
 from app.services.llm.http_client import get_llm_http_client
 from app.services.llm.providers import provider_profile
 from app.services.llm.types import LlmRuntimeConfig, Provider
-from app.services.llm.url_security import validate_base_url
+from app.services.llm.url_security import (
+    resolve_public_addresses,
+    validate_base_url,
+)
 
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_INPUT_TOKENS = 128_000
 DEFAULT_MAX_OUTPUT_TOKENS = 4_096
 MAX_RETRIES = 2
+
+
+# The context variable is set only around one physical request.  httpcore
+# keeps the original Origin host (therefore Host and TLS SNI/certificate
+# validation remain ``api.deepseek.com``) while this backend substitutes the
+# already validated public address for the TCP connect call.
+_PINNED_IP: ContextVar[str | None] = ContextVar("llm_pinned_ip", default=None)
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Route TCP connects to the address validated for the current request."""
+
+    def __init__(self, delegate: httpcore.AsyncNetworkBackend):
+        self._delegate = delegate
+
+    async def connect_tcp(self, host, port, **kwargs):
+        return await self._delegate.connect_tcp(_PINNED_IP.get() or host, port, **kwargs)
+
+    async def connect_unix_socket(self, path, **kwargs):
+        return await self._delegate.connect_unix_socket(path, **kwargs)
+
+    async def sleep(self, seconds):
+        return await self._delegate.sleep(seconds)
+
+
+class _PinnedAsyncHTTPTransport(httpx.AsyncHTTPTransport):
+    """httpx transport with DNS pinning and no reusable idle sockets."""
+
+    def __init__(self, network_backend: httpcore.AsyncNetworkBackend | None = None):
+        super().__init__(
+            verify=True,
+            trust_env=False,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=0),
+        )
+        # httpx 0.28 exposes its httpcore pool privately; this is the narrow
+        # extension point needed to retain the original origin for TLS while
+        # replacing only the TCP destination.
+        self._pool._network_backend = _PinnedNetworkBackend(
+            network_backend or self._pool._network_backend
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +160,12 @@ class ProviderClient:
     ) -> None:
         if http_client is not None and client is not None and http_client is not client:
             raise ValueError("http_client 与 client 不能同时指定")
-        self.http_client = http_client or client or get_llm_http_client()
+        supplied_client = http_client or client
+        self.http_client = supplied_client or get_llm_http_client()
+        if supplied_client is None and not self._is_mock_transport():
+            current_transport = getattr(self.http_client, "_transport", None)
+            if not isinstance(current_transport, _PinnedAsyncHTTPTransport):
+                self.http_client._transport = _PinnedAsyncHTTPTransport()
         self.resolver = resolver
         self.max_input_tokens = max(1, int(max_input_tokens))
         self.response_limit_bytes = min(max(1, int(response_limit_bytes)), MAX_RESPONSE_BYTES)
@@ -147,17 +197,26 @@ class ProviderClient:
         transport = getattr(self.http_client, "_transport", None)
         return transport is not None and transport.__class__.__name__ == "MockTransport"
 
-    async def _validate_for_connect(self, base_url: str, provider: Provider) -> str:
+    async def _validate_for_connect(
+        self, base_url: str, provider: Provider
+    ) -> tuple[str, str | None]:
         # MockTransport is a test-only local transport and must not trigger a
         # real DNS lookup.  An explicit resolver still runs, allowing tests to
         # exercise DNS-rebinding checks through the same path.
         resolve = self.resolver is not None or not self._is_mock_transport()
-        return validate_base_url(
+        canonical = validate_base_url(
             base_url,
             provider,
             resolver=self.resolver,
-            resolve=resolve,
+            resolve=False,
         )
+        if not resolve:
+            return canonical, None
+        from urllib.parse import urlsplit
+
+        hostname = urlsplit(canonical).hostname or ""
+        addresses = resolve_public_addresses(hostname, port=443, resolver=self.resolver)
+        return canonical, addresses[0]
 
     @staticmethod
     def _endpoint(base_url: str) -> str:
@@ -176,6 +235,47 @@ class ProviderClient:
             and isinstance(item.get("content"), str)
             for item in messages
         )
+
+    async def _read_bounded_response(self, response: httpx.Response) -> bytes:
+        """Read a response in bounded chunks, closing as soon as it is too big."""
+
+        content_length = response.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > self.response_limit_bytes:
+                    raise _error(
+                        "llm_response_too_large",
+                        "大模型响应过大",
+                        retryable=False,
+                        may_have_sent=True,
+                    )
+            except ValueError:
+                # Malformed Content-Length is not trusted; the streaming
+                # counter below remains authoritative.
+                pass
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > self.response_limit_bytes:
+                    raise _error(
+                        "llm_response_too_large",
+                        "大模型响应过大",
+                        retryable=False,
+                        may_have_sent=True,
+                    )
+                chunks.append(chunk)
+        except LlmError:
+            raise
+        except httpx.HTTPError:
+            raise _error(
+                "llm_response_too_large",
+                "大模型响应读取失败",
+                retryable=False,
+                may_have_sent=True,
+            ) from None
+        return b"".join(chunks)
 
     async def complete_json(
         self,
@@ -222,7 +322,7 @@ class ProviderClient:
             raise _error(
                 "llm_max_tokens_invalid", "大模型输出上限配置无效", retryable=False, confirmed_unsent=True
             )
-        canonical = await self._validate_for_connect(runtime_config.base_url, provider)
+        canonical, pinned_ip = await self._validate_for_connect(runtime_config.base_url, provider)
         endpoint = self._endpoint(canonical)
         payload: dict[str, Any] = {
             "model": runtime_config.model_name,
@@ -235,13 +335,18 @@ class ProviderClient:
             "Authorization": f"Bearer {runtime_config.api_key}",
             "Content-Type": "application/json",
         }
+        pin_token = _PINNED_IP.set(pinned_ip) if pinned_ip is not None else None
         try:
-            response = await self.http_client.post(
+            async with self.http_client.stream(
+                "POST",
                 endpoint,
                 headers=headers,
                 json=payload,
                 follow_redirects=False,
-            )
+            ) as response:
+                body = await self._read_bounded_response(response)
+                status = response.status_code
+                response_headers = response.headers
         except httpx.ConnectTimeout:
             raise _error(
                 "llm_timeout",
@@ -252,8 +357,8 @@ class ProviderClient:
             ) from None
         except httpx.ConnectError:
             raise _error(
-                "llm_connection_error",
-                "大模型连接失败",
+                "llm_unavailable",
+                "大模型服务暂时不可用",
                 retryable=True,
                 confirmed_unsent=True,
                 may_have_sent=False,
@@ -292,50 +397,30 @@ class ProviderClient:
             ) from None
         except httpx.HTTPError:
             raise _error(
-                "llm_http_error",
-                "大模型网络请求失败",
+                "llm_unavailable",
+                "大模型服务暂时不可用",
                 retryable=False,
                 confirmed_unsent=False,
                 may_have_sent=True,
             ) from None
-
-        content_length = response.headers.get("content-length")
-        if content_length:
-            try:
-                if int(content_length) > self.response_limit_bytes:
-                    raise _error(
-                        "llm_response_too_large",
-                        "大模型响应过大",
-                        retryable=False,
-                        may_have_sent=True,
-                    )
-            except ValueError:
-                # Ignore malformed length and enforce the decoded body bound.
-                pass
-        try:
-            body = response.content
-        except httpx.HTTPError:
-            raise _error(
-                "llm_response_too_large",
-                "大模型响应读取失败",
-                retryable=False,
-                may_have_sent=True,
-            ) from None
-        if len(body) > self.response_limit_bytes:
-            raise _error(
-                "llm_response_too_large",
-                "大模型响应过大",
-                retryable=False,
-                may_have_sent=True,
-            )
+        finally:
+            if pin_token is not None:
+                _PINNED_IP.reset(pin_token)
         status = response.status_code
         if status in {401, 403}:
             raise _error(
-                "llm_auth_error", "大模型鉴权失败，请检查 API Key", retryable=False, may_have_sent=True
+                "llm_auth_failed", "模型密钥无效，请管理员检查配置", retryable=False, may_have_sent=True
             )
         if status == 404:
             raise _error(
                 "llm_model_not_found", "大模型或接口不存在，请检查模型配置", retryable=False, may_have_sent=True
+            )
+        if status == 402:
+            raise _error(
+                "llm_quota_exceeded",
+                "模型供应商余额或调用额度不足",
+                retryable=False,
+                may_have_sent=True,
             )
         if status == 400:
             try:
@@ -354,13 +439,29 @@ class ProviderClient:
                     retryable=False,
                     may_have_sent=True,
                 )
+            if any(
+                marker in provider_code or marker in provider_message
+                for marker in (
+                    "quota",
+                    "balance",
+                    "insufficient",
+                    "rate_limit_exceeded",
+                    "billing",
+                )
+            ):
+                raise _error(
+                    "llm_quota_exceeded",
+                    "模型供应商余额或调用额度不足",
+                    retryable=False,
+                    may_have_sent=True,
+                )
         if status == 429:
             raise _error(
                 "llm_rate_limited", "大模型请求过于频繁，请稍后重试", retryable=True, may_have_sent=True
             )
         if status >= 500:
             raise _error(
-                "llm_provider_unavailable", "大模型服务暂时不可用", retryable=True, may_have_sent=True
+                "llm_unavailable", "模型服务暂时不可用，请稍后重试", retryable=True, may_have_sent=True
             )
         if 300 <= status < 400:
             raise _error(
@@ -368,7 +469,7 @@ class ProviderClient:
             )
         if status >= 400:
             raise _error(
-                "llm_provider_http_error", "大模型请求被拒绝", retryable=False, may_have_sent=True
+                "llm_invalid_response", "模型服务返回了无效响应", retryable=False, may_have_sent=True
             )
         try:
             data = json.loads(body.decode("utf-8"))
@@ -383,7 +484,7 @@ class ProviderClient:
                 raise ValueError
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
             raise _error(
-                "llm_invalid_json", "大模型返回的 JSON 无效", retryable=False, may_have_sent=True
+                "llm_invalid_response", "模型返回格式异常，本次任务未生成报告", retryable=False, may_have_sent=True
             ) from None
         usage = data.get("usage") if isinstance(data, dict) else None
         prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
@@ -398,7 +499,7 @@ class ProviderClient:
             response_model = runtime_config.model_name
         metadata = {
             "status_code": status,
-            "request_id": response.headers.get("x-request-id"),
+            "request_id": response_headers.get("x-request-id"),
         }
         return ProviderResult(
             result_json=result_json,

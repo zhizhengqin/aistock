@@ -1,0 +1,632 @@
+"""One-shot model bootstrap, read-only readiness and explicit live smoke.
+
+The commands in this module deliberately keep network I/O outside short
+database transactions.  PostgreSQL advisory locking only protects creation
+of the singleton settings row and the first candidate; the candidate is
+durable before a provider probe starts, so a second process cannot duplicate
+the migration while the first process is waiting on the network.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import hashlib
+import json
+import re
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable, Iterable, Mapping
+from uuid import uuid4
+
+from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.database import SessionLocal
+# Keep foreign-key mapper targets registered when this module is invoked as a
+# standalone ``python -m`` command (without importing the FastAPI app first).
+from app.models import task_record as _task_record_models  # noqa: F401
+from app.models import user as _user_models  # noqa: F401
+from app.models.llm_config import LlmModelConfig, LlmModelTestRun, LlmRuntimeSetting
+from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
+from app.models.llm_usage import LlmUsage
+from app.services.llm.call_executor import LlmCallExecutor
+from app.services.llm.crypto import CredentialEnvelope, decrypt_api_key, encrypt_api_key
+from app.services.llm.errors import LlmError
+from app.services.llm.provider_client import ProviderClient, ProviderResult
+from app.services.llm.types import LlmRuntimeConfig, ModelLifecycle, Provider
+from app.services.llm.url_security import validate_base_url
+from app.services.llm.config_service import runtime_fingerprint
+
+
+PROBE_PROMPT_VERSION = "bootstrap-v1"
+SMOKE_PROMPT_VERSION = "live-smoke-v1"
+BOOTSTRAP_LOCK_KEY = "aistock_llm_bootstrap_v1"
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
+_SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+
+
+@dataclass(frozen=True, slots=True)
+class CliResult:
+    exit_code: int
+    status: str
+    message: str = ""
+    model_name: str | None = None
+    evidence: Mapping[str, object] | None = None
+    rendered: str = ""
+
+    def with_rendered(self, *, secrets: Iterable[str] = ()) -> "CliResult":
+        payload: dict[str, object] = {"status": self.status}
+        if self.model_name:
+            payload["model_name"] = _redact_text(self.model_name, secrets)
+        if self.message:
+            payload["message"] = _redact_text(self.message, secrets)
+        if self.evidence:
+            payload["evidence"] = dict(self.evidence)
+        rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return CliResult(
+            exit_code=self.exit_code,
+            status=self.status,
+            message=self.message,
+            model_name=self.model_name,
+            evidence=self.evidence,
+            rendered=rendered,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _BootstrapCandidate:
+    config_id: str
+    runtime: LlmRuntimeConfig
+
+
+def _redact_text(value: str, secrets: Iterable[str] = ()) -> str:
+    output = str(value)
+    for secret in secrets:
+        if secret:
+            output = output.replace(secret, "***")
+    return _SECRET_PATTERN.sub("***", output)
+
+
+def _safe_key_hint(api_key: str) -> str:
+    if len(api_key) <= 8:
+        return "****"
+    return f"{api_key[:4]}...{api_key[-4:]}"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_provider(value: Provider | str) -> Provider:
+    try:
+        return value if isinstance(value, Provider) else Provider(value)
+    except (TypeError, ValueError):
+        raise ValueError("供应商必须是 deepseek、kimi 或 qwen") from None
+
+
+def _probe_messages() -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": "你是 A 股投研结构化输出探测器，只能返回 JSON 对象，不得添加 Markdown。",
+        },
+        {
+            "role": "user",
+            "content": (
+                "请对示例行情做最小投资判断，并严格返回："
+                '{"decision":"hold","confidence":0.5,"rationale":"一句话理由"}。'
+                "decision 只能是 buy/hold/sell，confidence 必须是 0 到 1 的数字，"
+                "rationale 必须是非空字符串。"
+            ),
+        },
+    ]
+
+
+def _validate_structured_result(
+    result: ProviderResult,
+    runtime: LlmRuntimeConfig,
+    *,
+    purpose: str,
+) -> dict[str, bool]:
+    payload = result.result_json
+    if not isinstance(payload, dict):
+        raise LlmError("模型未返回预期的业务 JSON", code="llm_probe_invalid")
+    confidence = payload.get("confidence")
+    if (
+        payload.get("decision") not in {"buy", "hold", "sell"}
+        or isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not 0 <= float(confidence) <= 1
+        or not isinstance(payload.get("rationale"), str)
+        or not payload["rationale"].strip()
+    ):
+        raise LlmError("模型未返回预期的业务 JSON", code="llm_probe_invalid")
+    if not isinstance(result.model, str) or not result.model.strip():
+        raise LlmError("模型未提供响应模型信息", code="llm_probe_invalid")
+    if purpose in {"bootstrap", "live_smoke"}:
+        if result.usage_source != "provider":
+            raise LlmError("模型未提供真实 Token 用量", code="llm_probe_invalid")
+        if not isinstance(result.prompt_tokens, int) or result.prompt_tokens < 0:
+            raise LlmError("模型输入 Token 证据无效", code="llm_probe_invalid")
+        if not isinstance(result.completion_tokens, int) or result.completion_tokens < 0:
+            raise LlmError("模型输出 Token 证据无效", code="llm_probe_invalid")
+        if not bool(result.response_metadata.get("provider_model_present")):
+            raise LlmError("模型未提供身份校验信息", code="llm_probe_invalid")
+        if result.completion_tokens > runtime.max_output_tokens:
+            raise LlmError("模型输出超过配置上限", code="llm_probe_invalid")
+        input_upper_bound = ProviderClient.estimate_input_upper_bound(
+            _probe_messages(), runtime.provider
+        )
+        if result.total_tokens is not None and result.total_tokens > (
+            input_upper_bound + runtime.max_output_tokens
+        ):
+            raise LlmError("模型实际用量超过预留上界", code="llm_probe_invalid")
+    return {
+        "json_mode": True,
+        "usage": result.usage_source == "provider",
+        "max_output_tokens": True,
+        "model_identity": bool(result.response_metadata.get("provider_model_present")),
+    }
+
+
+def _session_scope(session_factory: Callable[[], Session] | Session):
+    @contextmanager
+    def scope():
+        own = not isinstance(session_factory, Session)
+        db = session_factory() if own else session_factory
+        try:
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            if own:
+                db.close()
+
+    return scope()
+
+
+def _ensure_runtime_settings(session: Session) -> LlmRuntimeSetting:
+    values = {
+        "id": 1,
+        "daily_token_limit": int(getattr(settings, "DAILY_TOKEN_LIMIT", 2_000_000)),
+        "budget_locked": False,
+        "version": 1,
+    }
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        # The advisory lock must cover both singleton creation and the second
+        # empty-model check.  This is a transaction-scoped lock: it is held
+        # until this short bootstrap transaction commits.
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext('aistock_llm_bootstrap_v1'))"))
+    if dialect == "postgresql":
+        session.execute(pg_insert(LlmRuntimeSetting).values(**values).on_conflict_do_nothing(index_elements=["id"]))
+    elif dialect == "sqlite":
+        session.execute(sqlite_insert(LlmRuntimeSetting).values(**values).on_conflict_do_nothing(index_elements=["id"]))
+    else:
+        if session.get(LlmRuntimeSetting, 1) is None:
+            session.add(LlmRuntimeSetting(**values))
+    session.flush()
+    row = session.execute(
+        select(LlmRuntimeSetting)
+        .where(LlmRuntimeSetting.id == 1)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    return row
+
+
+def _build_candidate(session: Session) -> _BootstrapCandidate | None:
+    """Create the first candidate under the PostgreSQL bootstrap lock."""
+
+    _ensure_runtime_settings(session)
+    # This is deliberately a second query after acquiring the advisory lock.
+    # It is the race guard that makes a pair of bootstrap processes idempotent.
+    model_count = session.execute(select(func.count()).select_from(LlmModelConfig)).scalar_one()
+    if int(model_count) > 0:
+        return None
+    api_key = str(getattr(settings, "DEEPSEEK_API_KEY", "") or "").strip()
+    if not api_key:
+        return None
+
+    provider = Provider.DEEPSEEK
+    model_name = str(getattr(settings, "LLM_MODEL", "deepseek-chat") or "deepseek-chat").strip()
+    base_url = validate_base_url(
+        str(getattr(settings, "LLM_BASE_URL", "https://api.deepseek.com/v1") or "https://api.deepseek.com/v1"),
+        provider,
+        resolve=False,
+    )
+    config = LlmModelConfig(
+        provider=provider.value,
+        display_name="DeepSeek 环境变量迁移",
+        model_name=model_name,
+        base_url=base_url,
+        max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+        lifecycle_status=ModelLifecycle.DRAFT.value,
+    )
+    envelope = encrypt_api_key(
+        api_key,
+        config_id=config.id,
+        provider=provider,
+        keyring=getattr(settings, "LLM_CONFIG_ENCRYPTION_KEYS", {}),
+    )
+    config.encrypted_api_key = envelope.encrypted_api_key
+    config.encryption_key_id = envelope.encryption_key_id
+    config.envelope_version = envelope.envelope_version
+    config.nonce = envelope.nonce
+    config.key_hint = _safe_key_hint(api_key)
+    config.runtime_fingerprint = runtime_fingerprint(
+        provider=provider,
+        model_name=model_name,
+        base_url=base_url,
+        credential_version=config.credential_version,
+        max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+    session.add(config)
+    session.flush()
+    return _BootstrapCandidate(
+        config_id=config.id,
+        runtime=LlmRuntimeConfig(
+            config_id=config.id,
+            provider=provider,
+            display_name=config.display_name,
+            model_name=config.model_name,
+            base_url=config.base_url,
+            api_key=api_key,
+            credential_version=config.credential_version,
+            max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+            input_price_micro_yuan_per_million=config.input_price_micro_yuan_per_million,
+            output_price_micro_yuan_per_million=config.output_price_micro_yuan_per_million,
+            runtime_fingerprint=config.runtime_fingerprint,
+        ),
+    )
+
+
+def _notify_admins(title: str, content: str) -> None:
+    """Reuse the existing in-app admin notification path without secrets."""
+
+    safe_title = _redact_text(title)
+    safe_content = _redact_text(content)
+    try:
+        from app.tasks.scheduler import _notify_admins as notify
+
+        notify(safe_title, safe_content)
+    except Exception:
+        # Bootstrap must remain startable when notification infrastructure is
+        # unavailable; the redacted CLI log remains the operator evidence.
+        return
+
+
+async def _probe_candidate(
+    candidate: _BootstrapCandidate,
+    *,
+    session_factory: Callable[[], Session] | Session,
+    executor: LlmCallExecutor | Any | None,
+    test_type: str,
+) -> CliResult:
+    with _session_scope(session_factory) as session:
+        run = LlmModelTestRun(
+            model_config_id=candidate.config_id,
+            runtime_fingerprint=candidate.runtime.runtime_fingerprint,
+            test_type=test_type,
+            status="started",
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+
+    owned_session: Session | None = None
+    if executor is None:
+        owned_session = session_factory() if not isinstance(session_factory, Session) else session_factory
+        executor = LlmCallExecutor(db=owned_session)
+    result: ProviderResult | None = None
+    capabilities: dict[str, bool] = {}
+    error_code: str | None = None
+    error_message: str | None = None
+    status = "failed"
+    try:
+        result = await executor.call(
+            runtime_config=candidate.runtime,
+            operation_type="bootstrap",
+            step_key=f"bootstrap:{run_id}",
+            messages=_probe_messages(),
+            task_id=None,
+            prompt_version=PROBE_PROMPT_VERSION,
+        )
+        capabilities = _validate_structured_result(result, candidate.runtime, purpose="bootstrap")
+        status = "success"
+    except LlmError as exc:
+        error_code = getattr(exc, "code", "llm_probe_failed")
+        error_message = _redact_text(str(exc), [candidate.runtime.api_key])
+    except Exception:
+        error_code = "llm_probe_failed"
+        error_message = "模型测试失败，请稍后查看管理员通知"
+    finally:
+        if owned_session is not None and owned_session is not session_factory:
+            owned_session.close()
+
+    with _session_scope(session_factory) as session:
+        run = session.get(LlmModelTestRun, run_id)
+        config = session.get(LlmModelConfig, candidate.config_id)
+        setting = session.get(LlmRuntimeSetting, 1)
+        if run is None or config is None or setting is None:
+            raise RuntimeError("模型测试记录保存失败")
+        run.status = status
+        run.capability_json = capabilities or None
+        run.result_json = result.result_json if result is not None else None
+        run.response_model = result.model if result is not None else None
+        run.error_code = error_code
+        run.error_message = error_message
+        run.input_tokens = result.prompt_tokens if result is not None else None
+        run.output_tokens = result.completion_tokens if result is not None else None
+        if status == "success":
+            config.lifecycle_status = ModelLifecycle.ACTIVE.value
+            config.verified_test_id = run.id
+            config.last_probe_status = "success"
+            config.last_probe_at = _now()
+            setting.default_model_config_id = config.id
+        else:
+            config.lifecycle_status = ModelLifecycle.DRAFT.value
+            config.last_probe_status = "failed"
+            config.last_probe_at = _now()
+    if status != "success":
+        _notify_admins("大模型首次引导测试失败", error_message or "模型测试失败")
+        return CliResult(0, "bootstrap_failed", error_message or "模型测试失败").with_rendered(
+            secrets=[candidate.runtime.api_key]
+        )
+    return CliResult(0, "bootstrap_ready", "大模型首次引导完成", candidate.runtime.display_name).with_rendered(
+        secrets=[candidate.runtime.api_key]
+    )
+
+
+async def bootstrap_async(
+    *,
+    session_factory: Callable[[], Session] | Session | None = None,
+    executor: LlmCallExecutor | Any | None = None,
+) -> CliResult:
+    factory = session_factory or SessionLocal
+    try:
+        with _session_scope(factory) as session:
+            candidate = _build_candidate(session)
+    except (LlmError, ValueError) as exc:
+        # Configuration, URL and envelope failures are fatal: the API must
+        # not start while a candidate cannot be represented safely.
+        safe = _redact_text(str(exc), [str(getattr(settings, "DEEPSEEK_API_KEY", "") or "")])
+        return CliResult(1, "bootstrap_fatal", safe or "大模型首次引导配置失败").with_rendered(
+            secrets=[str(getattr(settings, "DEEPSEEK_API_KEY", "") or "")]
+        )
+    except Exception:
+        return CliResult(1, "bootstrap_fatal", "大模型首次引导配置失败").with_rendered()
+    if candidate is None:
+        return CliResult(0, "bootstrap_noop", "大模型配置已存在，跳过首次引导").with_rendered()
+    return await _probe_candidate(candidate, session_factory=factory, executor=executor, test_type="bootstrap")
+
+
+def run_bootstrap(
+    *,
+    session_factory: Callable[[], Session] | Session | None = None,
+    executor: LlmCallExecutor | Any | None = None,
+) -> int:
+    result = asyncio.run(bootstrap_async(session_factory=session_factory, executor=executor))
+    return result.exit_code
+
+
+def _readiness_result(session_factory: Callable[[], Session] | Session) -> CliResult:
+    try:
+        with _session_scope(session_factory) as session:
+            setting = session.execute(select(LlmRuntimeSetting).where(LlmRuntimeSetting.id == 1)).scalar_one_or_none()
+            if setting is None or not setting.default_model_config_id:
+                return CliResult(1, "not_ready", "尚未配置可用的默认模型")
+            config = session.execute(
+                select(LlmModelConfig).where(
+                    LlmModelConfig.id == setting.default_model_config_id,
+                    LlmModelConfig.deleted_at.is_(None),
+                    LlmModelConfig.lifecycle_status == ModelLifecycle.ACTIVE.value,
+                )
+            ).scalar_one_or_none()
+            if config is None or not config.verified_test_id:
+                return CliResult(1, "not_ready", "默认模型尚未完成真实测试")
+            run = session.execute(
+                select(LlmModelTestRun).where(LlmModelTestRun.id == config.verified_test_id)
+            ).scalar_one_or_none()
+            if (
+                run is None
+                or run.model_config_id != config.id
+                or run.status != "success"
+                or run.runtime_fingerprint != config.runtime_fingerprint
+            ):
+                return CliResult(1, "not_ready", "默认模型测试资格已失效")
+            return CliResult(0, "ready", "默认模型已就绪", _redact_text(config.display_name)).with_rendered()
+    except Exception:
+        return CliResult(1, "not_ready", "数据库迁移尚未完成").with_rendered()
+
+
+def run_readiness(*, session_factory: Callable[[], Session] | Session | None = None) -> CliResult:
+    result = _readiness_result(session_factory or SessionLocal)
+    return result if result.rendered else result.with_rendered()
+
+
+def _runtime_from_config(config: LlmModelConfig) -> LlmRuntimeConfig:
+    envelope = CredentialEnvelope(
+        envelope_version=config.envelope_version,
+        encryption_key_id=config.encryption_key_id,
+        nonce=config.nonce,
+        encrypted_api_key=config.encrypted_api_key,
+    )
+    api_key = decrypt_api_key(
+        envelope,
+        config_id=config.id,
+        provider=Provider(config.provider),
+        keyring=getattr(settings, "LLM_CONFIG_ENCRYPTION_KEYS", {}),
+    )
+    return LlmRuntimeConfig(
+        config_id=config.id,
+        provider=Provider(config.provider),
+        display_name=config.display_name,
+        model_name=config.model_name,
+        base_url=config.base_url,
+        api_key=api_key,
+        credential_version=config.credential_version,
+        max_output_tokens=config.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+        input_price_micro_yuan_per_million=config.input_price_micro_yuan_per_million,
+        output_price_micro_yuan_per_million=config.output_price_micro_yuan_per_million,
+        runtime_fingerprint=config.runtime_fingerprint,
+    )
+
+
+async def live_smoke_async(
+    *,
+    provider: Provider | str,
+    model_config_id: str,
+    session_factory: Callable[[], Session] | Session,
+    executor: LlmCallExecutor | Any | None = None,
+) -> CliResult:
+    try:
+        provider_value = _as_provider(provider)
+    except ValueError as exc:
+        return CliResult(2, "live_smoke_invalid", str(exc)).with_rendered()
+    if not isinstance(model_config_id, str) or not model_config_id.strip():
+        return CliResult(2, "live_smoke_invalid", "必须指定模型配置 ID").with_rendered()
+    with _session_scope(session_factory) as session:
+        config = session.execute(
+            select(LlmModelConfig).where(
+                LlmModelConfig.id == model_config_id,
+                LlmModelConfig.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if config is None:
+            return CliResult(1, "live_smoke_failed", "模型配置不存在").with_rendered()
+        try:
+            saved_provider = Provider(config.provider)
+        except (TypeError, ValueError):
+            return CliResult(1, "live_smoke_invalid", "模型配置中的供应商无效").with_rendered()
+        if saved_provider is not provider_value:
+            return CliResult(2, "live_smoke_invalid", "供应商与模型配置不匹配").with_rendered()
+        try:
+            runtime = _runtime_from_config(config)
+        except LlmError:
+            return CliResult(1, "live_smoke_failed", "模型密钥不可用，请管理员检查加密密钥配置").with_rendered()
+    owned_session: Session | None = None
+    if executor is None:
+        owned_session = session_factory() if not isinstance(session_factory, Session) else session_factory
+        executor = LlmCallExecutor(db=owned_session)
+    step_key = f"live-smoke:{model_config_id}:{uuid4()}"
+    try:
+        result = await executor.call(
+            runtime_config=runtime,
+            operation_type="live_smoke",
+            step_key=step_key,
+            messages=_probe_messages(),
+            task_id=None,
+            prompt_version=SMOKE_PROMPT_VERSION,
+        )
+        capabilities = _validate_structured_result(result, runtime, purpose="live_smoke")
+        evidence: dict[str, object] = {
+            "schema": True,
+            "token_upper_bound": True,
+            "provider": provider_value.value,
+            "model_config_id": model_config_id,
+        }
+        if isinstance(executor, LlmCallExecutor):
+            with _session_scope(session_factory) as session:
+                attempt = session.execute(
+                    select(LlmCallAttempt).where(
+                        LlmCallAttempt.model_config_id == model_config_id,
+                        LlmCallAttempt.operation_type == "live_smoke",
+                        LlmCallAttempt.step_key == step_key,
+                        LlmCallAttempt.status == "success",
+                    )
+                ).scalar_one_or_none()
+                usage = session.execute(
+                    select(LlmUsage).where(
+                        LlmUsage.model_config_id == model_config_id,
+                        LlmUsage.module == "live_smoke",
+                        LlmUsage.status == "success",
+                    ).order_by(LlmUsage.created_at.desc())
+                ).scalar_one_or_none()
+                if attempt is None or usage is None or not attempt.reservation_id:
+                    raise LlmError("实时 smoke 缺少调用审计证据", code="llm_smoke_audit_missing")
+                reservation = session.get(LlmTokenReservation, attempt.reservation_id)
+                if reservation is None or reservation.status not in {"settled", "released"}:
+                    raise LlmError("实时 smoke 缺少额度证据", code="llm_smoke_budget_missing")
+                evidence.update({"attempt": True, "usage": True, "budget": True})
+        if owned_session is not None and owned_session is not session_factory:
+            owned_session.close()
+        return CliResult(0, "live_smoke_success", "实时模型 smoke 成功", runtime.display_name, evidence).with_rendered(
+            secrets=[runtime.api_key]
+        )
+    except LlmError as exc:
+        if owned_session is not None and owned_session is not session_factory:
+            owned_session.close()
+        return CliResult(1, "live_smoke_failed", _redact_text(str(exc), [runtime.api_key])).with_rendered(
+            secrets=[runtime.api_key]
+        )
+    except Exception:
+        if owned_session is not None and owned_session is not session_factory:
+            owned_session.close()
+        return CliResult(1, "live_smoke_failed", "实时模型 smoke 失败").with_rendered(
+            secrets=[runtime.api_key]
+        )
+
+
+def run_live_smoke(
+    *,
+    provider: Provider | str,
+    model_config_id: str,
+    session_factory: Callable[[], Session] | Session | None = None,
+    executor: LlmCallExecutor | Any | None = None,
+) -> CliResult:
+    return asyncio.run(
+        live_smoke_async(
+            provider=provider,
+            model_config_id=model_config_id,
+            session_factory=session_factory or SessionLocal,
+            executor=executor,
+        )
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="睿见投研大模型运维命令")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("bootstrap", help="首次迁移旧 DeepSeek 配置并执行真实测试")
+    subparsers.add_parser("readiness", help="只读检查默认模型就绪状态")
+    smoke = subparsers.add_parser("live-smoke", help="显式对指定模型执行一次真实 smoke")
+    smoke.add_argument("--provider", required=True, choices=[item.value for item in Provider])
+    smoke.add_argument("--model-config-id", required=True)
+    return parser
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    args = build_parser().parse_args(list(argv) if argv is not None else None)
+    if args.command == "bootstrap":
+        result = asyncio.run(bootstrap_async())
+    elif args.command == "readiness":
+        result = run_readiness()
+    else:
+        result = run_live_smoke(provider=args.provider, model_config_id=args.model_config_id)
+    print(result.rendered or result.with_rendered().rendered)
+    return result.exit_code
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by the container
+    raise SystemExit(main())
+
+
+__all__ = [
+    "CliResult",
+    "bootstrap_async",
+    "build_parser",
+    "live_smoke_async",
+    "main",
+    "run_bootstrap",
+    "run_live_smoke",
+    "run_readiness",
+]

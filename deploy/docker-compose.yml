@@ -36,6 +36,28 @@ services:
       retries: 5
     networks: [internal]
 
+  migrator:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: aistock-backend:latest
+    container_name: aistock-migrator
+    restart: "no"
+    command: ["./docker-entrypoint.sh"]
+    environment:
+      CONTAINER_ROLE: migrator
+      ENV: prod
+      DEBUG: "false"
+      DATABASE_URL: postgresql+psycopg2://aistock:${POSTGRES_PASSWORD}@postgres:5432/aistock
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?set in deploy/.env}
+      LLM_CONFIG_ENCRYPTION_KEY_ID: ${LLM_CONFIG_ENCRYPTION_KEY_ID:-}
+      LLM_CONFIG_ENCRYPTION_KEYS: ${LLM_CONFIG_ENCRYPTION_KEYS:-}
+      DAILY_TOKEN_LIMIT: ${DAILY_TOKEN_LIMIT:-2000000}
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [internal]
+
   api:
     build:
       context: ..
@@ -47,12 +69,16 @@ services:
       ENV: prod
       DEBUG: "false"
       TASK_INLINE: "false"          # scheduler runs in the worker container
-      LLM_MOCK: ${LLM_MOCK:-true}
       DATABASE_URL: postgresql+psycopg2://aistock:${POSTGRES_PASSWORD}@postgres:5432/aistock
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?set it in deploy/.env}
+      LLM_CONFIG_ENCRYPTION_KEY_ID: ${LLM_CONFIG_ENCRYPTION_KEY_ID:-}
+      LLM_CONFIG_ENCRYPTION_KEYS: ${LLM_CONFIG_ENCRYPTION_KEYS:-}
+      # Deprecated observation-release bootstrap inputs; persisted only once
+      # when the model table is empty and never override admin configuration.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
       DAILY_TOKEN_LIMIT: ${DAILY_TOKEN_LIMIT:-2000000}
       EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -63,6 +89,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+      migrator: {condition: service_completed_successfully}
     networks: [internal]
 
   worker:
@@ -75,12 +102,16 @@ services:
       ENV: prod
       DEBUG: "false"
       TASK_INLINE: "false"
-      LLM_MOCK: ${LLM_MOCK:-true}
       DATABASE_URL: postgresql+psycopg2://aistock:${POSTGRES_PASSWORD}@postgres:5432/aistock
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
+      LLM_CONFIG_ENCRYPTION_KEY_ID: ${LLM_CONFIG_ENCRYPTION_KEY_ID:-}
+      LLM_CONFIG_ENCRYPTION_KEYS: ${LLM_CONFIG_ENCRYPTION_KEYS:-}
+      # Deprecated observation-release bootstrap inputs; worker never runs
+      # bootstrap and only carries them for mixed-version rollback safety.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
       DAILY_TOKEN_LIMIT: ${DAILY_TOKEN_LIMIT:-2000000}
       EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -89,7 +120,8 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
     depends_on:
-      api: {condition: service_started}   # api runs alembic migrations first
+      api: {condition: service_started}
+      migrator: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
     networks: [internal]
 

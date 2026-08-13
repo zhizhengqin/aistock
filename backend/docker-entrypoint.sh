@@ -1,26 +1,27 @@
 #!/bin/sh
-set -e
+set -eu
 
-if [ "$CONTAINER_ROLE" = "worker" ]; then
-  # arq worker + APScheduler (scheduler starts via WorkerSettings.on_startup).
-  # Migrations are owned by the api container — wait until they have run.
-  python - <<'PY'
-import sys, time
-from sqlalchemy import create_engine, inspect
-from app.core.config import settings
-for _ in range(60):
-    try:
-        if "alembic_version" in inspect(create_engine(settings.DATABASE_URL)).get_table_names():
-            sys.exit(0)
-    except Exception:
-        pass
-    time.sleep(2)
-sys.exit("database migrations not ready after 120s")
-PY
-  exec arq app.tasks.queue.WorkerSettings
-fi
+container_role="${CONTAINER_ROLE:-api}"
 
-# Apply DB migrations on every boot — idempotent, keeps schema in sync
-alembic upgrade head
-
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+case "$container_role" in
+  migrator)
+    # Exactly one short-lived Compose service owns schema upgrades.
+    exec python -m app.cli.database migrate
+    ;;
+  worker)
+    # Workers never run bootstrap or migrations.  They only start after every
+    # Alembic head is present, including databases with multiple heads.
+    python -m app.cli.database wait-for-head
+    exec arq app.tasks.queue.WorkerSettings
+    ;;
+  api)
+    # Bootstrap is idempotent and exits zero after an upstream probe failure so
+    # the API can start; programming/encryption failures remain fatal.
+    python -m app.cli.llm_config bootstrap
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ;;
+  *)
+    echo "未知容器角色：$container_role" >&2
+    exit 64
+    ;;
+esac

@@ -1,43 +1,37 @@
-from datetime import datetime, timezone
+"""ARQ adapter for the US overnight research report."""
+
 from app.core.database import SessionLocal
-from app.core.logger import logger
-from app.models.task_record import TaskRecord
+from app.models.us_research_report import UsResearchReport
+from app.services.task_execution import TaskExecutionContext, TaskExecutionRunner, validate_snapshot_args
 
 
 async def us_research_task(ctx, task_id: int, trade_date: str, user_id: int = 0):
-    """Arq task: build and save the US overnight research report."""
-    db = SessionLocal()
-    try:
-        task = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
-        if not task:
-            logger.error(f"Task {task_id} not found")
-            return
-        task.status = "running"
-        task.started_at = datetime.now(timezone.utc)
-        task.progress = 10
-        db.commit()
+    async def execute(execution_ctx: TaskExecutionContext):
+        args = validate_snapshot_args(
+            execution_ctx,
+            {"trade_date": trade_date, "user_id": user_id},
+        )
+        from app.services.us_research_orchestrator import build_report
 
-        from app.services.us_research_orchestrator import build_report, save_report
-        report = await build_report(trade_date, user_id=user_id)
-        task.progress = 80
-        db.commit()
+        return await build_report(
+            str(args.get("trade_date", trade_date)),
+            user_id=args.get("user_id", execution_ctx.user_id),
+        )
 
-        row = save_report(db, report, data_status=report.get("data_status"))
+    def persist_result(db, task, result):
+        selected_trade_date = str(result["trade_date"])
+        report = db.query(UsResearchReport).filter(
+            UsResearchReport.trade_date == selected_trade_date
+        ).first()
+        if report is None:
+            report = UsResearchReport(trade_date=selected_trade_date)
+            db.add(report)
+        report.status = "success"
+        report.content = result
+        report.data_status = result.get("data_status", {})
+        report.error = ""
+        db.flush()
+        task.ref_id = report.id
+        task.result_json = {"report_id": report.id, "trade_date": selected_trade_date}
 
-        task.status = "success"
-        task.progress = 100
-        task.ref_id = row.id
-        task.result_json = {"report_id": row.id, "trade_date": trade_date}
-        task.finished_at = datetime.now(timezone.utc)
-        db.commit()
-        logger.info(f"US research task {task_id} done: report_id={row.id}")
-    except Exception as e:
-        logger.error(f"US research task {task_id} failed: {e}")
-        task = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
-        if task:
-            task.status = "failed"
-            task.error = str(e)
-            task.finished_at = datetime.now(timezone.utc)
-            db.commit()
-    finally:
-        db.close()
+    return await TaskExecutionRunner(SessionLocal).run(task_id, execute, persist_result)

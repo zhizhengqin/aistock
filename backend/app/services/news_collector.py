@@ -202,45 +202,56 @@ def _tag_item(title: str, summary: str) -> dict:
         return {"sentiment": "中性", "industries": [], "category": "综合"}
 
 
-def collect_news(db: Session, sources: list[dict] | None = None,
-                 allow_sample_fallback: bool = True) -> dict:
-    """Collect from all sources, dedupe by url_hash, tag, insert. Returns stats."""
+def fetch_news_candidates(sources: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
+    """Fetch and parse all sources without opening or mutating a database."""
     sources = sources if sources is not None else NEWS_SOURCES
-    stats = {"new": 0, "skipped": 0, "errors": []}
-    seen_hashes: set[str] = set()
-
+    candidates: list[dict] = []
+    errors: list[dict] = []
     for source in sources:
         try:
-            items = fetch_source_items(source)
-        except Exception as e:
-            logger.warning(f"News source {source['name']} failed: {e}")
-            stats["errors"].append({"source": source["name"], "error": str(e)[:200]})
+            candidates.extend(fetch_source_items(source))
+        except Exception as exc:
+            logger.warning(f"News source {source['name']} failed: {exc}")
+            errors.append({"source": source["name"], "error": str(exc)[:200]})
+    return candidates, errors
+
+
+def persist_news(
+    db: Session,
+    candidates: list[dict],
+    errors: list[dict] | None = None,
+    *,
+    allow_sample_fallback: bool = True,
+) -> dict:
+    """Dedupe, tag and persist fetched candidates in caller's transaction."""
+    stats = {"new": 0, "skipped": 0, "errors": []}
+    stats["errors"].extend(errors or [])
+    seen_hashes: set[str] = set()
+
+    for item in candidates:
+        dedupe_key = item["url"] or f"{item['source']}:{item['title']}"
+        h = url_hash(dedupe_key)
+        if h in seen_hashes:
+            stats["skipped"] += 1
             continue
-        for item in items:
-            dedupe_key = item["url"] or f"{item['source']}:{item['title']}"
-            h = url_hash(dedupe_key)
-            if h in seen_hashes:
-                stats["skipped"] += 1
-                continue
-            exists = db.query(NewsItem).filter(NewsItem.url_hash == h).first()
-            if exists:
-                stats["skipped"] += 1
-                continue
-            seen_hashes.add(h)
-            tag = _tag_item(item["title"], item.get("summary", ""))
-            db.add(NewsItem(
-                title=item["title"][:500],
-                url=item.get("url", "")[:1000],
-                url_hash=h,
-                source=item["source"],
-                summary=item.get("summary", ""),
-                published_at=item.get("published_at") or datetime.now(timezone.utc),
-                sentiment=tag["sentiment"],
-                category=tag["category"],
-                industries=",".join(tag["industries"]),
-            ))
-            stats["new"] += 1
-        db.commit()
+        exists = db.query(NewsItem).filter(NewsItem.url_hash == h).first()
+        if exists:
+            stats["skipped"] += 1
+            continue
+        seen_hashes.add(h)
+        tag = _tag_item(item["title"], item.get("summary", ""))
+        db.add(NewsItem(
+            title=item["title"][:500],
+            url=item.get("url", "")[:1000],
+            url_hash=h,
+            source=item["source"],
+            summary=item.get("summary", ""),
+            published_at=item.get("published_at") or datetime.now(timezone.utc),
+            sentiment=tag["sentiment"],
+            category=tag["category"],
+            industries=",".join(tag["industries"]),
+        ))
+        stats["new"] += 1
 
     # Dev convenience: seed samples so the page is demonstrable when all sources fail
     if (allow_sample_fallback and settings.LLM_MOCK and stats["new"] == 0
@@ -255,7 +266,20 @@ def collect_news(db: Session, sources: list[dict] | None = None,
                 industries=",".join(tag["industries"]),
             ))
             stats["new"] += 1
-        db.commit()
         logger.info("Seeded sample news (mock mode, all sources unavailable)")
 
+    return stats
+
+
+def collect_news(db: Session, sources: list[dict] | None = None,
+                 allow_sample_fallback: bool = True) -> dict:
+    """Legacy facade: fetch, persist and commit for non-runner callers."""
+    candidates, errors = fetch_news_candidates(sources)
+    stats = persist_news(
+        db,
+        candidates,
+        errors,
+        allow_sample_fallback=allow_sample_fallback,
+    )
+    db.commit()
     return stats

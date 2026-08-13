@@ -1,55 +1,43 @@
-from datetime import datetime, timezone
+"""ARQ adapter for full stock analysis."""
+
 from app.core.database import SessionLocal
-from app.core.logger import logger
-from app.models.task_record import TaskRecord
 from app.models.analysis_report import AnalysisReport
+from app.services.task_execution import (
+    TaskExecutionContext,
+    TaskExecutionRunner,
+    validate_snapshot_args,
+)
 
 
 async def analyze_stock_task(ctx, task_id: int, stock_code: str, user_id: int):
-    """Arq task: orchestrate full stock analysis."""
-    db = SessionLocal()
-    try:
-        task = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
-        if not task:
-            logger.error(f"Task {task_id} not found")
-            return
-        task.status = "running"
-        task.started_at = datetime.now(timezone.utc)
-        task.progress = 10
-        db.commit()
+    """Run one stock analysis through the durable execution runner."""
 
-        # Import here to avoid circular imports
+    async def execute(execution_ctx: TaskExecutionContext):
+        args = validate_snapshot_args(
+            execution_ctx,
+            {"stock_code": stock_code, "user_id": user_id},
+        )
         from app.services.analysis_orchestrator import run_full_analysis
-        result = await run_full_analysis(stock_code, user_id, task, db)
 
-        # Save report
+        return await run_full_analysis(
+            str(args["stock_code"]),
+            args.get("user_id", execution_ctx.user_id),
+            execution_ctx,
+            None,
+        )
+
+    def persist_result(db, task, result):
         report = AnalysisReport(
-            user_id=user_id,
-            stock_code=stock_code,
+            user_id=task.user_id,
+            stock_code=str(result.get("stock_code", stock_code)),
             stock_name=result.get("stock_name", stock_code),
             rating=result.get("decision", {}).get("rating", ""),
             confidence=result.get("decision", {}).get("confidence", 0),
             report_json=result,
         )
         db.add(report)
-        db.commit()
-        db.refresh(report)
-
-        task.status = "success"
-        task.progress = 100
+        db.flush()
         task.ref_id = report.id
-        task.result_json = {"report_id": report.id, "stock_code": stock_code}
-        task.finished_at = datetime.now(timezone.utc)
-        db.commit()
-        logger.info(f"Task {task_id} completed: report_id={report.id}")
+        task.result_json = {"report_id": report.id, "stock_code": report.stock_code}
 
-    except Exception as e:
-        logger.error(f"Task {task_id} failed: {e}")
-        task = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
-        if task:
-            task.status = "failed"
-            task.error = str(e)
-            task.finished_at = datetime.now(timezone.utc)
-            db.commit()
-    finally:
-        db.close()
+    return await TaskExecutionRunner(SessionLocal).run(task_id, execute, persist_result)

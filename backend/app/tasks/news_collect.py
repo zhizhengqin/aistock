@@ -1,38 +1,23 @@
-from datetime import datetime, timezone
+"""ARQ adapter for the pure-data news collection task."""
+
 from app.core.database import SessionLocal
-from app.core.logger import logger
-from app.models.task_record import TaskRecord
+from app.services.news_collector import fetch_news_candidates, persist_news
+from app.services.task_execution import TaskExecutionContext, TaskExecutionRunner
 
 
 async def news_collect_task(ctx, task_id: int):
-    """Arq task: collect news from all sources, dedupe and tag."""
-    db = SessionLocal()
-    try:
-        task = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
-        if not task:
-            logger.error(f"Task {task_id} not found")
-            return
-        task.status = "running"
-        task.started_at = datetime.now(timezone.utc)
-        task.progress = 10
-        db.commit()
+    async def execute(execution_ctx: TaskExecutionContext):
+        # Fetching, parsing and deterministic tagging occur without a DB
+        # session.  The returned values are held only in this task callback.
+        candidates, errors = fetch_news_candidates()
+        return {"candidates": candidates, "errors": errors}
 
-        from app.services.news_collector import collect_news
-        stats = collect_news(db)
-
-        task.status = "success"
-        task.progress = 100
+    def persist_result(db, task, result):
+        stats = persist_news(
+            db,
+            result.get("candidates", []),
+            result.get("errors", []),
+        )
         task.result_json = stats
-        task.finished_at = datetime.now(timezone.utc)
-        db.commit()
-        logger.info(f"News collect task {task_id} done: {stats}")
-    except Exception as e:
-        logger.error(f"News collect task {task_id} failed: {e}")
-        task = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
-        if task:
-            task.status = "failed"
-            task.error = str(e)
-            task.finished_at = datetime.now(timezone.utc)
-            db.commit()
-    finally:
-        db.close()
+
+    return await TaskExecutionRunner(SessionLocal).run(task_id, execute, persist_result)

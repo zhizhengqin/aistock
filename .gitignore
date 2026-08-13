@@ -29,3 +29,6 @@ deploy/data/
 
 # Test artifacts
 screenshots/m1/04-*mobile.png.bak
+
+# Local git worktrees
+.worktrees/

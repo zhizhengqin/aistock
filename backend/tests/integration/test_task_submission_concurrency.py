@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import os
 import pkgutil
@@ -13,7 +14,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -23,6 +24,11 @@ from app.models.task_outbox import TaskOutbox
 from app.models.task_record import TaskRecord
 from app.models.user import User
 from app.models.usage_log import UsageLog
+from app.core.config import settings
+from app.services.llm.config_service import LlmConfigService
+from app.services.llm.crypto import encrypt_api_key
+from app.services.llm.provider_client import ProviderResult
+from app.services.llm.types import Provider
 from app.services.task_submission import TaskSubmission, TaskSubmissionService
 
 
@@ -146,39 +152,104 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_postgres_activation_and_submission_are_linearized():
+def test_postgres_activation_and_submission_are_linearized(monkeypatch):
     with _temporary_database(os.environ["TEST_DATABASE_URL"]) as engine:
         factory = sessionmaker(bind=engine, expire_on_commit=False)
         user_id, old_id, new_id = _seed(factory, two_models=True)
-        start = threading.Barrier(2)
+        keyring = {"task6-test": base64.b64encode(b"t" * 32).decode("ascii")}
+        monkeypatch.setattr(settings, "LLM_CONFIG_ENCRYPTION_KEY_ID", "task6-test")
+        monkeypatch.setattr(settings, "LLM_CONFIG_ENCRYPTION_KEYS", keyring)
+        with factory() as db:
+            target = db.get(LlmModelConfig, new_id)
+            envelope = encrypt_api_key(
+                "sk-task6-test",
+                config_id=target.id,
+                provider=Provider.DEEPSEEK,
+                keyring=keyring,
+            )
+            target.encrypted_api_key = envelope.encrypted_api_key
+            target.encryption_key_id = envelope.encryption_key_id
+            target.envelope_version = envelope.envelope_version
+            target.nonce = envelope.nonce
+            db.commit()
+
+        class ProbeGateExecutor:
+            def __init__(self):
+                self.probe_started = threading.Event()
+                self.release_probe = threading.Event()
+
+            async def call(self, **kwargs):
+                self.probe_started.set()
+                while not self.release_probe.is_set():
+                    await asyncio.sleep(0.005)
+                return ProviderResult(
+                    result_json={"decision": "hold", "confidence": 0.5, "rationale": "race probe"},
+                    model="deepseek-chat",
+                    prompt_tokens=8,
+                    completion_tokens=4,
+                    usage_source="provider",
+                    response_metadata={"provider_model_present": True},
+                )
+
+        executor = ProbeGateExecutor()
+        final_lock_barrier = threading.Barrier(2)
+        lock_order: list[str] = []
+        order_lock = threading.Lock()
+        submission_ready = threading.Event()
+        original_activation_lock = LlmConfigService._locked_settings
+        original_submission_lock = TaskSubmissionService._locked_settings
+
+        def activation_lock(self, session, *, create=True):
+            final_lock_barrier.wait(timeout=10)
+            setting = original_activation_lock(self, session, create=create)
+            with order_lock:
+                lock_order.append("activation")
+            return setting
+
+        def submission_lock(self):
+            submission_ready.set()
+            final_lock_barrier.wait(timeout=10)
+            setting = original_submission_lock(self)
+            with order_lock:
+                lock_order.append("submission")
+            return setting
+
+        monkeypatch.setattr(LlmConfigService, "_locked_settings", activation_lock)
+        monkeypatch.setattr(TaskSubmissionService, "_locked_settings", submission_lock)
 
         def submit():
             with factory() as db:
-                start.wait(timeout=10)
                 result = TaskSubmissionService(db).submit(_submission(user_id))
                 return result.task_ids[0], result.task.model_config_id
 
         def activate():
             with factory() as db:
-                start.wait(timeout=10)
-                setting = db.execute(
-                    select(LlmRuntimeSetting).where(LlmRuntimeSetting.id == 1).with_for_update()
-                ).scalar_one()
-                setting.default_model_config_id = new_id
-                db.commit()
-                return True
+                return asyncio.run(
+                    LlmConfigService(db, executor=executor).activate(
+                        new_id,
+                        expected_version=1,
+                        idempotency_key=f"task6-race-{uuid.uuid4().hex}",
+                        admin_user_id=1,
+                    )
+                )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            submit_future = pool.submit(submit)
             activate_future = pool.submit(activate)
-            submitted_id, model_id = submit_future.result()
-            assert activate_future.result() is True
+            assert executor.probe_started.wait(timeout=10)
+            submit_future = pool.submit(submit)
+            assert submission_ready.wait(timeout=10)
+            executor.release_probe.set()
+            submitted_id, model_id = submit_future.result(timeout=20)
+            activation_result = activate_future.result(timeout=20)
 
-        assert model_id in {old_id, new_id}
+        assert activation_result["id"] == new_id
+        assert lock_order and lock_order[0] in {"activation", "submission"}
+        expected_model = old_id if lock_order[0] == "submission" else new_id
+        assert model_id == expected_model
         with Session(engine) as db:
             task = db.get(TaskRecord, submitted_id)
             assert task is not None
-            assert task.model_config_id in {old_id, new_id}
+            assert task.model_config_id == expected_model
             assert db.query(TaskOutbox).filter(TaskOutbox.task_id == submitted_id).count() == 1
 
 
@@ -217,13 +288,14 @@ def test_postgres_twenty_submissions_never_overconsume_quota():
 class _CountingSender:
     def __init__(self):
         self.jobs: list[tuple[str, tuple, str]] = []
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
+        self.barrier = threading.Barrier(2)
 
     async def enqueue_job(self, name, *args, _job_id=None, **kwargs):
-        async with self._lock:
+        self.barrier.wait(timeout=10)
+        with self._lock:
             self.jobs.append((name, args, _job_id))
-        await asyncio.sleep(0)
-        return object()
+        return None
 
 
 def test_postgres_two_dispatchers_emit_one_logical_job_each():
@@ -245,16 +317,21 @@ def test_postgres_two_dispatchers_emit_one_logical_job_each():
                 db.add(TaskOutbox(task_id=task.id))
             db.commit()
 
-        async def race():
-            from app.services.outbox_dispatcher import OutboxDispatcher
+        from app.services.outbox_dispatcher import OutboxDispatcher
 
-            sender = _CountingSender()
-            first = OutboxDispatcher(factory, sender=sender, batch_size=10, worker_id="worker-a")
-            second = OutboxDispatcher(factory, sender=sender, batch_size=10, worker_id="worker-b")
-            return sender, await asyncio.gather(first.dispatch_once(), second.dispatch_once())
+        sender = _CountingSender()
+        first = OutboxDispatcher(factory, sender=sender, batch_size=5, worker_id="worker-a")
+        second = OutboxDispatcher(factory, sender=sender, batch_size=5, worker_id="worker-b")
 
-        sender, counts = asyncio.run(race())
-        assert sorted(counts) == [0, 10]
+        def dispatch(dispatcher):
+            return asyncio.run(dispatcher.dispatch_once())
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(dispatch, first)
+            second_future = pool.submit(dispatch, second)
+            counts = [first_future.result(timeout=20), second_future.result(timeout=20)]
+
+        assert sorted(counts) == [5, 5]
         assert len(sender.jobs) == 10
         assert len({job[2] for job in sender.jobs}) == 10
         with Session(engine) as db:

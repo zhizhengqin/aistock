@@ -170,6 +170,7 @@ class TaskSubmissionService:
             expected_fingerprint = None
         if (
             test_run is None
+            or test_run.model_config_id != config.id
             or test_run.status != "success"
             or test_run.runtime_fingerprint != config.runtime_fingerprint
             or expected_fingerprint != config.runtime_fingerprint

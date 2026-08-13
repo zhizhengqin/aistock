@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.task_outbox import TaskOutbox
@@ -34,12 +33,6 @@ class UnknownTaskType(ValueError):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _aware(value: datetime | None) -> datetime | None:
-    if value is None or value.tzinfo is not None:
-        return value
-    return value.replace(tzinfo=timezone.utc)
 
 
 class OutboxDispatcher:

@@ -54,6 +54,25 @@ async def test_dispatch_once_maps_snapshot_and_uses_deterministic_job_id(test_db
 
 
 @pytest.mark.asyncio
+async def test_sender_returning_none_still_marks_outbox_delivered(test_db):
+    from app.services.outbox_dispatcher import OutboxDispatcher
+
+    class NoneSender:
+        async def enqueue_job(self, *args, **kwargs):
+            return None
+
+    _, session_factory = test_db
+    db = session_factory()
+    task = _task(db, stock_code="000858", user_id=1)
+
+    assert await OutboxDispatcher(session_factory, sender=NoneSender()).dispatch_once() == 1
+
+    db.expire_all()
+    assert db.get(TaskOutbox, task.id).status == "delivered"
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_failure_releases_lock_with_redacted_backoff(test_db):
     from app.services.outbox_dispatcher import OutboxDispatcher
 
@@ -97,4 +116,38 @@ async def test_dispatch_recovers_stale_lock(test_db):
 
     assert await OutboxDispatcher(session_factory, sender=sender, lock_timeout_seconds=30).dispatch_once() == 1
     assert sender.jobs[0][2] == f"task:{task.id}"
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_success_ack_failure_is_retried_after_stale_recovery(test_db, monkeypatch):
+    from app.services.outbox_dispatcher import OutboxDispatcher
+
+    _, session_factory = test_db
+    db = session_factory()
+    task = _task(db, stock_code="601318", user_id=1)
+    sender = FakeSender()
+    first = OutboxDispatcher(session_factory, sender=sender, lock_timeout_seconds=1)
+
+    def fail_ack(_outbox_id):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(first, "_mark_success", fail_ack)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await first.dispatch_once()
+
+    db.expire_all()
+    locked = db.get(TaskOutbox, task.id)
+    assert locked.status == "locked"
+    assert sender.jobs == [("analyze_stock_task", (task.id, "601318", 1), f"task:{task.id}")]
+
+    locked.locked_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    db.commit()
+    second = OutboxDispatcher(session_factory, sender=sender, lock_timeout_seconds=1)
+    assert await second.dispatch_once() == 1
+
+    assert len(sender.jobs) == 2
+    assert sender.jobs[0][2] == sender.jobs[1][2] == f"task:{task.id}"
+    db.expire_all()
+    assert db.get(TaskOutbox, task.id).status == "delivered"
     db.close()

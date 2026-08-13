@@ -145,6 +145,50 @@ def test_ai_submission_without_verified_default_writes_nothing(test_db):
     db.close()
 
 
+def test_verified_test_from_another_config_is_rejected_atomically(test_db):
+    from app.services.task_submission import TaskSubmissionError, TaskSubmissionService
+
+    _, session_factory = test_db
+    db = session_factory()
+    user = _user(db)
+    config = _active_default(db)
+    other = LlmModelConfig(
+        provider=config.provider,
+        display_name="另一个配置",
+        model_name=config.model_name,
+        base_url=config.base_url,
+        encrypted_api_key="other-ciphertext",
+        encryption_key_id=config.encryption_key_id,
+        envelope_version=config.envelope_version,
+        nonce="other-nonce",
+        credential_version=config.credential_version,
+        runtime_fingerprint=config.runtime_fingerprint,
+        lifecycle_status="active",
+    )
+    db.add(other)
+    db.flush()
+    foreign_run = LlmModelTestRun(
+        model_config_id=other.id,
+        runtime_fingerprint=config.runtime_fingerprint,
+        status="success",
+        test_type="probe",
+    )
+    db.add(foreign_run)
+    db.flush()
+    config.verified_test_id = foreign_run.id
+    db.commit()
+
+    with pytest.raises(TaskSubmissionError) as exc_info:
+        TaskSubmissionService(db).submit(_submission(user_id=user.id))
+
+    assert exc_info.value.code == "llm_not_configured"
+    db.rollback()
+    assert db.query(TaskRecord).count() == 0
+    assert db.query(UsageLog).count() == 0
+    assert db.query(TaskOutbox).count() == 0
+    db.close()
+
+
 def test_news_submission_does_not_require_default_model(test_db):
     from app.services.task_submission import TaskSubmissionService
 

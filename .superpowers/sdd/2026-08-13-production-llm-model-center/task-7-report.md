@@ -61,6 +61,20 @@
 - 前端八个轮询页面、`frontend/src/utils/taskStatus.ts` 及其 Vitest 测试
 - `frontend/tests/e2e/task-failed-unknown.mjs`（本地 route interception QA）
 
+## Fix Round 2：reclaim settlement 原子性
+
+- 在 `631e7d2d` 先做稳定 RED：PG `GateSession` 在 orphan reservation release 的旧 helper `commit()` 后挂起，放入其余 19 个并发 claimer；旧实现观测到 `execute` 次数为 2，暴露 Task 行锁提前提交窗口。另在已有 unknown usage + 两个 started physical attempts 场景，旧实现最终仅有 1 条 `LlmUsage`，而应为 2 条。
+- `_fence_started_attempts` 现在只在持有 Task 行锁的 claim 事务内 flush，helper 不再 commit；`_claim` 对 recovery terminal 和新 token 均只做一次最终 commit。PG 回归在放行首 claimer后短窗口确认 `calls==1`、无第二 execute，且 20 路仅一个成功结果。
+- reservation 按 `attempt.reservation_id` 分流：有 physical started attempt 的 reservation 结算 reserved 上限并计入 settled；没有对应 attempt 的 orphan reservation 释放，不误收费。混合 unit 覆盖 ledger 精确 settled/reserved。
+- `LlmUsage` 没有 `operation_id`，本轮不改 schema；在 Task 行锁内按该 task 全部 `failed_unknown` physical attempts（含恢复前已是 unknown 但 usage 尚未写入）的总数补齐 usage，复制各 attempt provider/model 快照，保证重入幂等数量。覆盖 prior failed_unknown 无 usage + new started、预置一条 usage 与两 started、双 started 两 reservation。
+
+## Fix Round 2 验证（fresh）
+
+- `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py tests/services/test_outbox_dispatcher.py -q`：31 passed，2 warnings。
+- `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/integration/test_task_execution_concurrency.py tests/integration/test_task_submission_concurrency.py tests/services/test_task_execution.py tests/services/test_outbox_dispatcher.py -q`：38 passed，2 warnings；含 PG 20 路 commit-window、20 路 started reclaim、旧 owner fencing。
+- `cd backend && TEST_DATABASE_URL=postgresql+psycopg2://qinzz@localhost:5432/postgres PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q`：319 passed，21 warnings。
+- `git diff --check`：通过；显式 PostgreSQL 临时数据库测试结束后无残留 `aistock_task_execution_test_*` 数据库。
+
 ## 后续边界
 
 - Task 8 仍需在每个结构化模型步骤前调用 `ctx.ensure_current()`，并在 context 上注入 `LlmExecutionService`；Task 7 已保留兼容 `runtime_config` 扩展字段。

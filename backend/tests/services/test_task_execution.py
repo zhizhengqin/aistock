@@ -322,6 +322,194 @@ async def test_expired_reservation_without_attempt_is_released_before_reclaim(te
 
 
 @pytest.mark.asyncio
+async def test_started_attempts_each_get_unknown_usage_and_settlement(test_db):
+    """Every physical started call has independent unknown audit evidence."""
+    _, session_factory = test_db
+    clock = MutableClock()
+    db = session_factory()
+    task_id = _task(db)
+    task = db.get(TaskRecord, task_id)
+    task.status = "running"
+    task.execution_token = "old-owner"
+    task.lease_expires_at = clock() - timedelta(seconds=1)
+    db.add(LlmDailyBudget(budget_date=clock().date(), reserved_tokens=40, settled_tokens=0))
+    db.flush()
+    reservations = []
+    for step_key in ("analysis", "chief"):
+        reservation = LlmTokenReservation(
+            task_id=task_id,
+            step_key=step_key,
+            budget_date=clock().date(),
+            reserved_tokens=20,
+            status="reserved",
+            lease_expires_at=clock() - timedelta(seconds=1),
+        )
+        db.add(reservation)
+        db.flush()
+        reservations.append(reservation.id)
+        db.add(
+            LlmCallAttempt(
+                task_id=task_id,
+                operation_type="task",
+                step_key=step_key,
+                provider_snapshot="deepseek",
+                model_snapshot="deepseek-chat",
+                runtime_fingerprint="fp",
+                reservation_id=reservation.id,
+                status="started",
+            )
+        )
+    # Simulate the first physical attempt's unknown usage already being
+    # persisted before a second started attempt is recovered.
+    db.add(
+        LlmUsage(
+            user_id=None,
+            module="task",
+            model="deepseek-chat",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost_fen=0,
+            task_id=task_id,
+            provider_snapshot="deepseek",
+            model_snapshot="deepseek-chat",
+            status="failed_unknown",
+            error_code="llm_failed_unknown",
+        )
+    )
+    db.commit()
+    db.close()
+
+    calls = 0
+
+    async def execute(ctx):
+        nonlocal calls
+        calls += 1
+        return {"must_not": "replay"}
+
+    runner = TaskExecutionRunner(session_factory, lease_seconds=5, clock=clock)
+    assert await runner.run(task_id, execute, lambda db, task, result: None) is None
+    check = session_factory()
+    assert calls == 0
+    assert check.query(LlmUsage).filter_by(task_id=task_id).count() == 2
+    assert check.query(LlmCallAttempt).filter_by(task_id=task_id, status="failed_unknown").count() == 2
+    assert check.query(LlmTokenReservation).filter_by(task_id=task_id, status="settled").count() == 2
+    assert check.get(LlmDailyBudget, clock().date()).settled_tokens == 40
+    check.close()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_splits_started_and_orphan_reservations(test_db):
+    """Only reservations tied to physical attempts are charged unknown."""
+    _, session_factory = test_db
+    clock = MutableClock()
+    db = session_factory()
+    task_id = _task(db)
+    task = db.get(TaskRecord, task_id)
+    task.status = "running"
+    task.execution_token = "old-owner"
+    task.lease_expires_at = clock() - timedelta(seconds=1)
+    db.add(LlmDailyBudget(budget_date=clock().date(), reserved_tokens=30, settled_tokens=0))
+    db.flush()
+    started_reservation = LlmTokenReservation(
+        task_id=task_id,
+        step_key="analysis",
+        budget_date=clock().date(),
+        reserved_tokens=10,
+        status="reserved",
+        lease_expires_at=clock() - timedelta(seconds=1),
+    )
+    orphan_reservation = LlmTokenReservation(
+        task_id=task_id,
+        step_key="chief",
+        budget_date=clock().date(),
+        reserved_tokens=20,
+        status="reserved",
+        lease_expires_at=clock() - timedelta(seconds=1),
+    )
+    db.add_all([started_reservation, orphan_reservation])
+    db.flush()
+    db.add(
+        LlmCallAttempt(
+            task_id=task_id,
+            operation_type="task",
+            step_key="analysis",
+            provider_snapshot="deepseek",
+            model_snapshot="deepseek-chat",
+            runtime_fingerprint="fp",
+            reservation_id=started_reservation.id,
+            status="started",
+        )
+    )
+    db.commit()
+    started_id, orphan_id = started_reservation.id, orphan_reservation.id
+    db.close()
+
+    async def execute(_ctx):
+        raise AssertionError("recovery must not execute business work")
+
+    runner = TaskExecutionRunner(session_factory, lease_seconds=5, clock=clock)
+    assert await runner.run(task_id, execute, lambda db, task, result: None) is None
+    check = session_factory()
+    assert check.get(LlmTokenReservation, started_id).status == "settled"
+    assert check.get(LlmTokenReservation, started_id).settled_tokens == 10
+    assert check.get(LlmTokenReservation, orphan_id).status == "released"
+    assert check.get(LlmTokenReservation, orphan_id).settled_tokens == 0
+    ledger = check.get(LlmDailyBudget, clock().date())
+    assert ledger.reserved_tokens == 0
+    assert ledger.settled_tokens == 10
+    assert check.query(LlmUsage).filter_by(task_id=task_id).count() == 1
+    check.close()
+
+
+@pytest.mark.asyncio
+async def test_prior_failed_unknown_attempt_without_usage_is_backfilled(test_db):
+    """Usage cardinality includes unknown attempts from an earlier crash."""
+    _, session_factory = test_db
+    clock = MutableClock()
+    db = session_factory()
+    task_id = _task(db)
+    task = db.get(TaskRecord, task_id)
+    task.status = "running"
+    task.execution_token = "old-owner"
+    task.lease_expires_at = clock() - timedelta(seconds=1)
+    db.add(
+        LlmCallAttempt(
+            task_id=task_id,
+            operation_type="task",
+            step_key="analysis",
+            provider_snapshot="deepseek",
+            model_snapshot="deepseek-chat",
+            runtime_fingerprint="fp",
+            status="failed_unknown",
+            error_code="llm_failed_unknown",
+        )
+    )
+    db.add(
+        LlmCallAttempt(
+            task_id=task_id,
+            operation_type="task",
+            step_key="chief",
+            provider_snapshot="deepseek",
+            model_snapshot="deepseek-chat",
+            runtime_fingerprint="fp",
+            status="started",
+        )
+    )
+    db.commit()
+    db.close()
+
+    async def execute(_ctx):
+        raise AssertionError("recovery must not execute business work")
+
+    runner = TaskExecutionRunner(session_factory, lease_seconds=5, clock=clock)
+    assert await runner.run(task_id, execute, lambda db, task, result: None) is None
+    check = session_factory()
+    assert check.query(LlmUsage).filter_by(task_id=task_id).count() == 2
+    assert check.query(LlmCallAttempt).filter_by(task_id=task_id, status="failed_unknown").count() == 2
+    check.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_unknown_attempt_blocks_reclaim_without_execute(test_db):
     _, session_factory = test_db
     db = session_factory()

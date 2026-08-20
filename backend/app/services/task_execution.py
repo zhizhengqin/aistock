@@ -139,27 +139,40 @@ class TaskExecutionRunner:
             select(LlmCallAttempt)
             .where(
                 LlmCallAttempt.task_id == task.id,
-                LlmCallAttempt.status == "started",
+                LlmCallAttempt.status.in_(("started", "failed_unknown")),
             )
             .with_for_update()
         ).scalars().all()
-        if not attempts and not reservations:
+        started_attempts = [attempt for attempt in attempts if attempt.status == "started"]
+        if not started_attempts and not reservations:
+            self._ensure_unknown_usage(db, task, attempts)
             return False
 
+        attempt_reservation_ids = {
+            attempt.reservation_id
+            for attempt in attempts
+            if attempt.reservation_id is not None
+        }
         # With no provider-attempt row, the budget reaper's invariant applies:
-        # the request was never sent, so releasing (rather than charging as
-        # unknown) is safe and the task may be reclaimed normally.
-        if not attempts:
+        # a reservation with no physical attempt was never sent and is safe
+        # to release.  A prior failed_unknown attempt remains chargeable.
+        if not started_attempts:
             for reservation in reservations:
                 ledger = db.execute(
                     select(LlmDailyBudget)
                     .where(LlmDailyBudget.budget_date == reservation.budget_date)
                     .with_for_update()
                 ).scalar_one()
-                ledger.reserved_tokens = max(0, int(ledger.reserved_tokens) - int(reservation.reserved_tokens))
-                reservation.status = "released"
-                reservation.settled_tokens = 0
-            db.commit()
+                reserved = int(reservation.reserved_tokens)
+                ledger.reserved_tokens = max(0, int(ledger.reserved_tokens) - reserved)
+                if reservation.id in attempt_reservation_ids:
+                    ledger.settled_tokens += reserved
+                    reservation.status = "settled"
+                    reservation.settled_tokens = reserved
+                else:
+                    reservation.status = "released"
+                    reservation.settled_tokens = 0
+            self._ensure_unknown_usage(db, task, attempts)
             return False
 
         for reservation in reservations:
@@ -170,45 +183,20 @@ class TaskExecutionRunner:
             ).scalar_one()
             reserved = int(reservation.reserved_tokens)
             ledger.reserved_tokens = max(0, int(ledger.reserved_tokens) - reserved)
-            ledger.settled_tokens += reserved
-            reservation.status = "settled"
-            reservation.settled_tokens = reserved
+            if reservation.id in attempt_reservation_ids:
+                ledger.settled_tokens += reserved
+                reservation.status = "settled"
+                reservation.settled_tokens = reserved
+            else:
+                reservation.status = "released"
+                reservation.settled_tokens = 0
 
-        for attempt in attempts:
+        for attempt in started_attempts:
             attempt.status = "failed_unknown"
             attempt.error_code = "llm_failed_unknown"
             attempt.error_message = "大模型响应状态未知，请勿自动重试"
             attempt.usage_source = "unknown"
-            usage_exists = db.execute(
-                select(LlmUsage.id)
-                .where(
-                    LlmUsage.task_id == task.id,
-                    LlmUsage.module == attempt.operation_type,
-                    LlmUsage.model_snapshot == attempt.model_snapshot,
-                    LlmUsage.status == "failed_unknown",
-                    LlmUsage.error_code == "llm_failed_unknown",
-                )
-                .limit(1)
-            ).scalar_one_or_none()
-            if usage_exists is None:
-                db.add(
-                    LlmUsage(
-                        user_id=task.user_id,
-                        module=attempt.operation_type,
-                        model=attempt.model_snapshot,
-                        prompt_tokens=0,
-                        completion_tokens=0,
-                        cost_fen=0,
-                        task_id=task.id,
-                        model_config_id=attempt.model_config_id,
-                        provider_snapshot=attempt.provider_snapshot,
-                        model_snapshot=attempt.model_snapshot,
-                        input_price_snapshot=attempt.input_price_snapshot,
-                        output_price_snapshot=attempt.output_price_snapshot,
-                        status="failed_unknown",
-                        error_code="llm_failed_unknown",
-                    )
-                )
+        self._ensure_unknown_usage(db, task, attempts)
 
         task.status = "failed_unknown"
         task.error = "llm_failed_unknown: 模型调用结果未知，任务未自动重试"
@@ -216,8 +204,49 @@ class TaskExecutionRunner:
         task.execution_token = None
         task.heartbeat_at = now
         task.lease_expires_at = None
-        db.commit()
         return True
+
+    @staticmethod
+    def _ensure_unknown_usage(
+        db: Session,
+        task: TaskRecord,
+        attempts: list[LlmCallAttempt],
+    ) -> None:
+        """Backfill one usage row per physical unknown attempt.
+
+        ``LlmUsage`` predates ``operation_id`` and therefore cannot carry a
+        direct attempt foreign key.  Counting durable unknown rows under the
+        task lock gives an idempotent cardinality guarantee without a schema
+        change; new rows still copy each attempt's provider/model snapshot.
+        """
+        existing_usage_count = db.execute(
+            select(LlmUsage.id)
+            .where(
+                LlmUsage.task_id == task.id,
+                LlmUsage.status == "failed_unknown",
+                LlmUsage.error_code == "llm_failed_unknown",
+            )
+        ).scalars().all()
+        missing_usage_count = max(0, len(attempts) - len(existing_usage_count))
+        for attempt in attempts[:missing_usage_count]:
+            db.add(
+                LlmUsage(
+                    user_id=task.user_id,
+                    module=attempt.operation_type,
+                    model=attempt.model_snapshot,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    cost_fen=0,
+                    task_id=task.id,
+                    model_config_id=attempt.model_config_id,
+                    provider_snapshot=attempt.provider_snapshot,
+                    model_snapshot=attempt.model_snapshot,
+                    input_price_snapshot=attempt.input_price_snapshot,
+                    output_price_snapshot=attempt.output_price_snapshot,
+                    status="failed_unknown",
+                    error_code="llm_failed_unknown",
+                )
+            )
 
     def _claim(self, task_id: int, *, fence_event: asyncio.Event | None = None) -> _Claim:
         db, owned = self._session()
@@ -240,6 +269,7 @@ class TaskExecutionRunner:
                 return _Claim(None)
 
             if self._fence_started_attempts(db, task, now):
+                db.commit()
                 return _Claim(None, terminal=True)
 
             # A provider request whose outcome is unknown must never be

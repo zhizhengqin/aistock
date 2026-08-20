@@ -9,6 +9,7 @@ __all__ = [
     "CredentialEnvelope",
     "LlmCredentialError",
     "LlmError",
+    "LlmExecutionService",
     "LlmRuntimeConfig",
     "ModelLifecycle",
     "Provider",
@@ -17,3 +18,13 @@ __all__ = [
     "encrypt_api_key",
     "get_llm_http_client",
 ]
+
+
+def __getattr__(name: str):
+    """Load the task service lazily to keep ORM type imports acyclic."""
+
+    if name == "LlmExecutionService":
+        from app.services.llm.execution_service import LlmExecutionService
+
+        return LlmExecutionService
+    raise AttributeError(name)

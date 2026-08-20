@@ -53,6 +53,10 @@ class TaskExecutionContext:
     input_snapshot: Mapping[str, Any]
     prompt_version: str | None
     runtime_config: Any = None
+    # Task 8 injects one task-scoped structured execution service here.  Pure
+    # data tasks intentionally leave this as ``None`` and never decrypt or
+    # instantiate a model client.
+    llm: Any = None
     _fence_event: asyncio.Event | None = None
     _runner: "TaskExecutionRunner | None" = None
 
@@ -103,6 +107,7 @@ class TaskExecutionRunner:
         lease_seconds: int = 300,
         heartbeat_interval_seconds: float | None = None,
         clock: Callable[[], datetime] | None = None,
+        llm_service_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.session_factory = session_factory or SessionLocal
         self.lease_seconds = max(1, int(lease_seconds))
@@ -112,6 +117,52 @@ class TaskExecutionRunner:
             else max(1.0, self.lease_seconds / 3)
         )
         self.clock = clock or _now
+        self.llm_service_factory = llm_service_factory
+
+    def _build_llm_service(
+        self,
+        db: Session,
+        task: TaskRecord,
+        execution_token: str,
+    ) -> tuple[Any, Any]:
+        """Decrypt one locked task config and build its scoped service.
+
+        The resolver runs during the short claim transaction and returns an
+        immutable runtime snapshot.  The resulting service and executor are
+        retained on ``TaskExecutionContext`` for every business step; no step
+        re-reads the global default or decrypts the key again.
+        """
+
+        if task.model_config_id is None:
+            return None, None
+        if self.llm_service_factory is not None:
+            service = self.llm_service_factory(
+                db=db,
+                task=task,
+                execution_token=execution_token,
+                session_factory=self.session_factory,
+            )
+            runtime = getattr(service, "runtime_config", None)
+            return runtime, service
+
+        from app.models.llm_config import LlmModelConfig
+        from app.services.llm.call_executor import LlmCallExecutor
+        from app.services.llm.config_service import LlmConfigService
+        from app.services.llm.execution_service import LlmExecutionService
+        from app.services.llm.errors import LlmError
+
+        config = db.get(LlmModelConfig, task.model_config_id)
+        if config is None:
+            raise LlmError("任务绑定的大模型配置不存在", code="llm_config_missing")
+        runtime = LlmConfigService(db)._runtime(config)
+        executor = LlmCallExecutor(db=self.session_factory)
+        service = LlmExecutionService(
+            self.session_factory,
+            executor=executor,
+            runtime_config=runtime,
+            execution_token=execution_token,
+        )
+        return runtime, service
 
     def _session(self) -> tuple[Session, bool]:
         if isinstance(self.session_factory, Session):
@@ -297,8 +348,8 @@ class TaskExecutionRunner:
             task.started_at = task.started_at or now
             task.heartbeat_at = now
             task.lease_expires_at = now + timedelta(seconds=self.lease_seconds)
+            runtime_config, llm_service = self._build_llm_service(db, task, token)
             db.commit()
-
             context = TaskExecutionContext(
                 task_id=task.id,
                 execution_token=token,
@@ -307,6 +358,8 @@ class TaskExecutionRunner:
                 model_config_id=task.model_config_id,
                 input_snapshot=dict(task.input_snapshot or {}),
                 prompt_version=task.prompt_version,
+                runtime_config=runtime_config,
+                llm=llm_service,
                 _fence_event=fence_event,
                 _runner=self,
             )

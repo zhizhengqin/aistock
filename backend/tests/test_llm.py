@@ -1,38 +1,26 @@
+"""Compatibility assertions for the post-Task-8 LLM facade."""
+
 import pytest
-from unittest.mock import patch
+
 from app.core import llm as llm_module
-from app.core.config import settings
+from app.services.llm.call_executor import LlmCallExecutor
+from app.services.llm.errors import LlmError
+from app.services.llm.execution_service import LlmExecutionService
+
+
+def test_core_facade_exports_durable_execution_services():
+    assert llm_module.LlmCallExecutor is LlmCallExecutor
+    assert llm_module.LlmExecutionService is LlmExecutionService
+    assert not hasattr(llm_module, "MOCK_RESPONSES")
 
 
 @pytest.mark.asyncio
-async def test_mock_mode_returns_json():
-    messages = [
-        {"role": "system", "content": "{{ANALYST_KEY:technical}}\n你是一位技术面分析师"},
-        {"role": "user", "content": "分析600519"},
-    ]
-    resp = await llm_module.chat(messages, user_id=0, module="test")
-    assert resp.model == "mock"
-    assert resp.prompt_tokens > 0
-    import json
-    data = json.loads(resp.content)
-    assert "trend" in data
-
-
-@pytest.mark.asyncio
-async def test_mock_mode_chief_response():
-    messages = [
-        {"role": "system", "content": "你是一位chief investment analyst，汇总所有分析师的意见"},
-        {"role": "user", "content": "做出最终决策"},
-    ]
-    resp = await llm_module.chat(messages, user_id=0, module="test")
-    import json
-    data = json.loads(resp.content)
-    assert "rating" in data
-    assert "target_price" in data
-
-
-@pytest.mark.asyncio
-async def test_calc_cost_fen():
-    assert llm_module.calc_cost_fen("mock", 1000, 500) == 0
-    cost = llm_module.calc_cost_fen("deepseek-chat", 1_000_000, 1_000_000)
-    assert cost == 50 + 800
+async def test_legacy_chat_entrypoint_is_rejected_without_business_fallback():
+    with pytest.raises(LlmError) as exc_info:
+        await llm_module.chat(
+            [{"role": "user", "content": "return JSON"}],
+            user_id=0,
+            module="test",
+        )
+    assert exc_info.value.code == "llm_legacy_chat_removed"
+    assert "mock" not in str(exc_info.value).lower()

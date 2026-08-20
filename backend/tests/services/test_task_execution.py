@@ -1,12 +1,14 @@
 """Focused behavior tests for the short-transaction execution runner."""
 
 import asyncio
+import base64
 from datetime import date, datetime, timedelta, timezone
 import time
 
 import pytest
 
 from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
+from app.models.llm_config import LlmModelConfig
 from app.models.llm_usage import LlmUsage
 from app.models.analysis_report import AnalysisReport  # noqa: F401
 from app.models.task_outbox import TaskOutbox
@@ -19,6 +21,7 @@ from app.services.task_execution import (
     TaskExecutionContext,
     validate_snapshot_args,
 )
+from app.core.config import settings
 
 
 def _task(db) -> int:
@@ -33,6 +36,113 @@ def _task(db) -> int:
     db.flush()
     db.commit()
     return int(task.id)
+
+
+@pytest.mark.asyncio
+async def test_bound_model_config_missing_fails_task_atomically(test_db):
+    """A missing locked config must not leave a replayable pending task."""
+    _, session_factory = test_db
+    db = session_factory()
+    task_id = _task(db)
+    db.get(TaskRecord, task_id).model_config_id = "missing-model-config"
+    db.commit()
+    db.close()
+
+    executed = 0
+    persisted = 0
+
+    async def execute(_context):
+        nonlocal executed
+        executed += 1
+        return {"must_not": "run"}
+
+    def persist_result(_db, _task, _result):
+        nonlocal persisted
+        persisted += 1
+
+    runner = TaskExecutionRunner(session_factory, heartbeat_interval_seconds=60)
+    assert await runner.run(task_id, execute, persist_result) is None
+
+    check = session_factory()
+    task = check.get(TaskRecord, task_id)
+    assert task.status == "failed"
+    assert task.error == "llm_config_missing: 任务绑定的大模型配置不存在"
+    assert task.finished_at is not None
+    assert task.heartbeat_at is not None
+    assert task.lease_expires_at is None
+    assert task.execution_token is None
+    assert executed == persisted == 0
+    # A duplicate delivery observes the terminal state and never retries the
+    # unusable bound configuration.
+    assert await runner.run(task_id, execute, persist_result) is None
+    assert executed == persisted == 0
+    check.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("keyring", "expected_error"),
+    [
+        (
+            {},
+            "llm_credential_error: 模型密钥不可用，请管理员检查加密密钥配置",
+        ),
+        (
+            {"current": base64.b64encode(b"k" * 32).decode("ascii")},
+            "llm_credential_error: 模型密钥不可用，请管理员检查加密密钥配置",
+        ),
+    ],
+)
+async def test_unusable_bound_model_config_fails_task_without_secret_leak(
+    test_db, monkeypatch, keyring, expected_error
+):
+    """Missing keyrings and invalid envelopes become stable terminal errors."""
+    _, session_factory = test_db
+    db = session_factory()
+    task_id = _task(db)
+    config_id = "unusable-model-config"
+    db.add(
+        LlmModelConfig(
+            id=config_id,
+            provider="deepseek",
+            display_name="Broken model",
+            model_name="deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            encrypted_api_key="not-a-valid-envelope",
+            encryption_key_id="current",
+            envelope_version="v1",
+            nonce="not-a-valid-nonce",
+            runtime_fingerprint="broken-fingerprint",
+        )
+    )
+    db.get(TaskRecord, task_id).model_config_id = config_id
+    db.commit()
+    db.close()
+    monkeypatch.setattr(settings, "LLM_CONFIG_ENCRYPTION_KEY_ID", "current")
+    monkeypatch.setattr(settings, "LLM_CONFIG_ENCRYPTION_KEYS", keyring)
+
+    executed = 0
+
+    async def execute(_context):
+        nonlocal executed
+        executed += 1
+        return {"must_not": "run"}
+
+    runner = TaskExecutionRunner(session_factory, heartbeat_interval_seconds=60)
+    assert await runner.run(task_id, execute, lambda *_args: None) is None
+
+    check = session_factory()
+    task = check.get(TaskRecord, task_id)
+    assert task.status == "failed"
+    assert task.error == expected_error
+    assert "not-a-valid" not in task.error
+    assert "sk-" not in task.error
+    assert task.finished_at is not None
+    assert task.heartbeat_at is not None
+    assert task.lease_expires_at is None
+    assert task.execution_token is None
+    assert executed == 0
+    check.close()
 
 
 class MutableClock:

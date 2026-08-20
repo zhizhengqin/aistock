@@ -43,3 +43,33 @@ cd backend && .venv/bin/pytest tests/services/test_task_execution.py -q
 ```text
 cd backend && .venv/bin/pytest -q
 ```
+
+## Task 8 修复回合：绑定配置不可用终态
+
+### RED
+
+```text
+cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py -q -k 'bound_model_config or unusable_bound'
+```
+
+旧实现结果：`3 failed, 25 deselected`。缺失配置直接裸抛 `LlmError: 任务绑定的大模型配置不存在`；密钥环缺失与信封解密失败直接裸抛 `LlmConfigServiceError`，任务未进入业务 execute。
+
+### GREEN
+
+```text
+cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/test_task_execution.py tests/services/llm/test_execution_service.py -q
+```
+
+结果：`38 passed, 2 warnings`。
+
+### Task 8 targeted 回归
+
+```text
+cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest tests/services/llm/test_execution_service.py tests/services/llm/test_call_executor.py tests/integration/test_llm_budget_concurrency.py tests/test_llm.py tests/services/test_task_execution.py -q
+```
+
+结果：`47 passed, 2 skipped, 2 warnings`。
+
+### 设计边界
+
+`TaskExecutionRunner._claim` 仅捕获配置构建阶段的 `LlmError`，在持有 task 行锁的同一短事务内写入 `failed`、稳定 `code: 中文 message`、finished/heartbeat 时间，并清除 lease/token 后提交；普通编程异常仍原样抛出。重复投递读取 terminal 状态并 no-op。

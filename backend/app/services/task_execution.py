@@ -21,6 +21,7 @@ from app.core.database import SessionLocal
 from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
 from app.models.llm_usage import LlmUsage
 from app.models.task_record import TaskRecord
+from app.services.llm.errors import LlmError
 
 
 TERMINAL_STATUSES = frozenset({"success", "failed", "failed_unknown"})
@@ -163,6 +164,27 @@ class TaskExecutionRunner:
             execution_token=execution_token,
         )
         return runtime, service
+
+    @staticmethod
+    def _mark_config_failure(task: TaskRecord, error: BaseException, now: datetime) -> None:
+        """Make a bound-runtime configuration error a durable terminal state.
+
+        This helper is called while ``_claim`` still owns the locked task row.
+        Only the stable error code and already-redacted user message cross the
+        persistence boundary; provider credentials, ciphertext and exception
+        reprs never enter ``TaskRecord.error``.
+        """
+
+        code = getattr(error, "code", None) or "llm_config_error"
+        message = getattr(error, "user_message", None) or str(error)
+        if not isinstance(message, str) or not message:
+            message = "大模型配置不可用"
+        task.status = "failed"
+        task.error = f"{code}: {message}"[:1000]
+        task.finished_at = now
+        task.heartbeat_at = now
+        task.lease_expires_at = None
+        task.execution_token = None
 
     def _session(self) -> tuple[Session, bool]:
         if isinstance(self.session_factory, Session):
@@ -348,7 +370,16 @@ class TaskExecutionRunner:
             task.started_at = task.started_at or now
             task.heartbeat_at = now
             task.lease_expires_at = now + timedelta(seconds=self.lease_seconds)
-            runtime_config, llm_service = self._build_llm_service(db, task, token)
+            try:
+                runtime_config, llm_service = self._build_llm_service(db, task, token)
+            except LlmError as error:
+                # A task is already bound to this exact model version.  If
+                # that snapshot cannot be loaded/decrypted, retrying the same
+                # task can never repair it; commit a terminal failure while
+                # still holding the claim row lock.
+                self._mark_config_failure(task, error, now)
+                db.commit()
+                return _Claim(None, terminal=True)
             db.commit()
             context = TaskExecutionContext(
                 task_id=task.id,

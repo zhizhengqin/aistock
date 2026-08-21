@@ -12,7 +12,8 @@ import asyncio
 import base64
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -26,6 +27,7 @@ from app.models import task_record as _task_record_models  # noqa: F401
 from app.models import llm_usage as _llm_usage_models  # noqa: F401
 from app.models.llm_usage import LlmUsage
 from app.models.llm_config import LlmActivationRequest, LlmModelConfig, LlmModelTestRun, LlmRuntimeSetting
+from app.models.llm_execution import LlmDailyBudget
 from app.services.llm.provider_client import ProviderResult
 from app.services.llm.provider_client import ProviderClient
 from app.services.llm.call_executor import LlmCallExecutor
@@ -703,4 +705,26 @@ def test_default_cannot_be_disabled_or_deleted_and_unlock_is_audited(test_db, mo
     assert db.query(LlmAdminAuditEvent).filter_by(event_type="budget_unlock").count() == 1
     ledger = db.query(LlmDailyBudget).one()
     assert (ledger.reserved_tokens, ledger.settled_tokens) == (17, 23)
+    db.close()
+
+
+def test_get_settings_reports_beijing_budget_ledger_and_zero_when_missing(test_db):
+    _, Session = test_db
+    db = Session()
+    fixed_now = datetime(2026, 8, 21, 3, 30, tzinfo=timezone.utc)
+    service = LlmConfigService(db, executor=RecordingExecutor(), clock=lambda: fixed_now)
+
+    empty = service.get_settings()
+    assert empty["budget_date"] == "2026-08-21"
+    assert empty["reserved_tokens"] == 0
+    assert empty["settled_tokens"] == 0
+
+    budget_day = fixed_now.astimezone(ZoneInfo("Asia/Shanghai")).date()
+    db.add(LlmDailyBudget(budget_date=budget_day, reserved_tokens=17, settled_tokens=23))
+    db.commit()
+
+    populated = service.get_settings()
+    assert populated["budget_date"] == date(2026, 8, 21).isoformat()
+    assert populated["reserved_tokens"] == 17
+    assert populated["settled_tokens"] == 23
     db.close()

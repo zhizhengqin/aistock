@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
+import LlmModelsView from './admin/LlmModelsView'
 
 type Tab = 'stats' | 'users' | 'llm' | 'datasource' | 'agent'
 
@@ -40,7 +41,7 @@ export default function Admin() {
       </div>
       {tab === 'stats' && <StatsView />}
       {tab === 'users' && <UsersView />}
-      {tab === 'llm' && <LlmConfigView />}
+      {tab === 'llm' && <LlmModelsView />}
       {tab === 'datasource' && <DatasourceView />}
       {tab === 'agent' && <AgentConfigView />}
     </>
@@ -160,113 +161,6 @@ function UsersView() {
         </div>
       </div>
     </section>
-  )
-}
-
-
-function LlmConfigView() {
-  const [config, setConfig] = useState<any>(null)
-  const [usage, setUsage] = useState<any>(null)
-  const [form, setForm] = useState<any>({})
-  const [msg, setMsg] = useState('')
-  const [error, setError] = useState('')
-
-  const load = () => {
-    client.get('/admin/llm-config')
-      .then((r) => { setConfig(r.data.data); setForm({}) })
-      .catch((err) => setError(errMsg(err, '加载大模型配置失败')))
-    client.get('/admin/llm-usage', { params: { days: 7 } })
-      .then((r) => setUsage(r.data.data))
-      .catch(() => {})
-  }
-
-  useEffect(() => { load() }, [])
-
-  const save = () => {
-    setMsg('')
-    const body: any = {}
-    if (form.llm_model) body.llm_model = form.llm_model
-    if (form.llm_base_url) body.llm_base_url = form.llm_base_url
-    if (form.deepseek_api_key) body.deepseek_api_key = form.deepseek_api_key
-    if (form.daily_token_limit) body.daily_token_limit = Number(form.daily_token_limit)
-    if (form.llm_mock !== undefined) body.llm_mock = form.llm_mock
-    client.put('/admin/llm-config', body)
-      .then((r) => { setMsg(r.data.message || '已保存'); load() })
-      .catch((err) => setMsg(errMsg(err, '保存失败')))
-  }
-
-  if (!config) return <div className="empty">{error || '加载中…'}</div>
-
-  return (
-    <div className="panel-stack">
-      <section className="card">
-        <h2 className="card-title">大模型配置</h2>
-        <label className="checkbox-row" style={{ marginBottom: 16 }}>
-          <input type="checkbox"
-            checked={form.llm_mock !== undefined ? form.llm_mock : config.llm_mock}
-            onChange={(e) => setForm({ ...form, llm_mock: e.target.checked })} />
-          <span>Mock 模式(不调用真实大模型，用于本地开发)</span>
-        </label>
-        <div className="form-row">
-          <div className="field">
-            <label>模型名称</label>
-            <input className="input mono" type="text" value={form.llm_model ?? config.llm_model}
-              onChange={(e) => setForm({ ...form, llm_model: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>API Base URL</label>
-            <input className="input mono" type="text" value={form.llm_base_url ?? config.llm_base_url}
-              onChange={(e) => setForm({ ...form, llm_base_url: e.target.value })} />
-          </div>
-        </div>
-        <div className="form-row mt16">
-          <div className="field">
-            <label>API Key</label>
-            <input className="input mono" type="password" placeholder="留空则不修改"
-              value={form.deepseek_api_key ?? ''}
-              onChange={(e) => setForm({ ...form, deepseek_api_key: e.target.value })} />
-            <span className="caption">当前:{config.deepseek_api_key_masked || '未配置'}</span>
-          </div>
-          <div className="field">
-            <label>每日 Token 限额</label>
-            <input className="input mono" type="number" value={form.daily_token_limit ?? config.daily_token_limit}
-              onChange={(e) => setForm({ ...form, daily_token_limit: e.target.value })} />
-          </div>
-        </div>
-        <div className="flex mt16 wrap">
-          <button className="btn btn-primary" onClick={save}>保存配置</button>
-          {msg && <span className="test-result" style={{ color: 'var(--accent)' }}>{msg}</span>}
-          <span className="caption">注意:此处修改仅对当前进程生效，重启后恢复 .env 中的值。</span>
-        </div>
-      </section>
-
-      <section className="card">
-        <h2 className="card-title">近 {usage?.days ?? 7} 天用量(总成本 ¥{usage?.total_cost_yuan?.toFixed(2) ?? '0.00'})</h2>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>模块</th>
-              <th className="num">调用次数</th>
-              <th className="num">Prompt Tokens</th>
-              <th className="num">Completion Tokens</th>
-              <th className="num">成本(元)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(usage?.modules ?? []).map((m: any) => (
-              <tr key={m.module}>
-                <td>{m.module}</td>
-                <td className="num mono">{Number(m.calls).toLocaleString()}</td>
-                <td className="num mono">{Number(m.prompt_tokens).toLocaleString()}</td>
-                <td className="num mono">{Number(m.completion_tokens).toLocaleString()}</td>
-                <td className="num mono">{m.cost_yuan.toFixed(4)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {(usage?.modules ?? []).length === 0 && <div className="empty">暂无用量记录</div>}
-      </section>
-    </div>
   )
 }
 

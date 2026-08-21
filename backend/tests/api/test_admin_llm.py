@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 # Ensure Task 2 model tables are part of the shared test metadata.
 from app.models import llm_config as _llm_config_models  # noqa: F401
@@ -253,6 +255,30 @@ def test_settings_usage_unlock_and_stale_version(client, test_db, monkeypatch):
     usage = client.get("/api/admin/llm-usage?days=7")
     assert usage.status_code == 200
     assert usage.json()["data"]["items"] == []
+
+
+def test_settings_endpoint_exposes_current_beijing_budget_totals(client, test_db):
+    _, Session = test_db
+    db = Session()
+    admin_id = _make_admin(db, username="llm-admin-budget-totals")
+    from app.api import admin_llm
+    from app.services.llm.config_service import LlmConfigService
+
+    fixed_now = datetime(2026, 8, 21, 3, 30, tzinfo=timezone.utc)
+    service = LlmConfigService(db, clock=lambda: fixed_now)
+    client.app.dependency_overrides[admin_llm.get_llm_config_service] = lambda: service
+    _auth(client, admin_id)
+    try:
+        response = client.get("/api/admin/llm-settings")
+    finally:
+        client.app.dependency_overrides.clear()
+        db.close()
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["budget_date"] == fixed_now.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    assert data["reserved_tokens"] == 0
+    assert data["settled_tokens"] == 0
 
 
 def test_state_machine_and_idempotency_routes_use_stable_conflicts(client, test_db):

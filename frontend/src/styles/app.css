@@ -425,4 +425,36 @@ details .full-report { font-size: 14px; color: var(--fg-secondary); margin: 0; w
 .dl-row .dl-k { color: #36342e; }
 .dl-row .dl-v { font-weight: 600; text-align: right; }
 .test-result { font-size: 14px; }
+.llm-center { min-width: 0; }
+.llm-center-heading { align-items: flex-start; }
+.llm-model-list { display: grid; gap: 12px; }
+.llm-model-card { border: 1px solid var(--border); border-radius: var(--r-card); padding: 16px; background: var(--surface-alt); min-width: 0; }
+.llm-model-main { min-width: 0; }
+.llm-model-title-row { align-items: flex-start; }
+.llm-model-title-row h4 { display: inline-block; margin: 0 10px 8px 0; font: 600 17px/1.3 var(--font-body); }
+.llm-model-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.llm-model-meta, .llm-model-prices { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; color: var(--fg-secondary); font-size: 13px; }
+.llm-model-prices { color: var(--muted); }
+.llm-breakable { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
+.llm-wrap-input { overflow-wrap: anywhere; }
+.llm-settings-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.llm-settings-form label { font-size: 13px; color: var(--fg-secondary); }
+.llm-settings-form .input { width: 160px; }
+.llm-budget-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-color: var(--hold); background: var(--hold-bg); color: var(--fg); }
+.llm-budget-banner p { margin: 4px 0 0; }
+.table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 @media (max-width: 600px) { .dl-row { flex-direction: column; gap: 4px; } .dl-row .dl-v { text-align: left; } }
+@media (max-width: 600px) {
+  .llm-center-heading .btn { width: 100%; }
+  .llm-model-card { padding: 14px 12px; }
+  .llm-model-title-row { display: block; }
+  .llm-model-actions { justify-content: flex-start; margin-top: 8px; }
+  .llm-model-actions .btn-text { padding: 8px 6px; }
+  .llm-model-meta, .llm-model-prices { display: block; }
+  .llm-model-meta > span, .llm-model-prices > span { display: block; margin-top: 5px; }
+  .llm-budget-banner { display: block; }
+  .llm-budget-banner .btn { width: 100%; margin-top: 12px; }
+  .llm-settings-form { align-items: stretch; width: 100%; }
+  .llm-settings-form .input { width: 100%; min-width: 0; }
+  .llm-settings-form .btn { width: 100%; }
+}

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -23,6 +24,7 @@ from app.models.llm_config import (
     LlmModelTestRun,
     LlmRuntimeSetting,
 )
+from app.models.llm_execution import LlmDailyBudget
 from app.models.llm_usage import LlmUsage
 from app.schemas.llm import LlmModelResponse
 from app.services.llm.call_executor import LlmCallExecutor
@@ -38,6 +40,7 @@ PROBE_PROMPT_VERSION = "admin-probe-v1"
 DEFAULT_PROBE_DEADLINE_SECONDS = 195.0
 DEFAULT_ACTIVATION_COMPLETION_GRACE_SECONDS = 15.0
 DEFAULT_ACTIVATION_POLL_INTERVAL_SECONDS = 0.02
+BUDGET_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 class LlmConfigServiceError(LlmError):
@@ -430,10 +433,18 @@ class LlmConfigService:
     def get_settings(self) -> dict[str, Any]:
         with self._session() as session:
             setting = self._settings(session)
+            now = self.clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            budget_date = now.astimezone(BUDGET_TIMEZONE).date()
+            budget = session.get(LlmDailyBudget, budget_date)
             return {
                 "id": 1,
                 "daily_token_limit": int(setting.daily_token_limit),
                 "budget_locked": bool(setting.budget_locked),
+                "budget_date": budget_date.isoformat(),
+                "reserved_tokens": int(budget.reserved_tokens) if budget else 0,
+                "settled_tokens": int(budget.settled_tokens) if budget else 0,
                 "default_model_config_id": setting.default_model_config_id,
                 "version": int(setting.version),
                 "switched_by": setting.switched_by,

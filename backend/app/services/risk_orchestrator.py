@@ -1,12 +1,10 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.core.llm import chat
-from app.core.logger import logger
 from app.datasource.akshare_client import get_stock_info, get_stock_kline
 from app.datasource.indicators import compute_all
 from app.services.risk_engine import analyze_stock_risk, compute_portfolio_risk
-from app.models.task_record import TaskRecord
+from app.schemas.llm_outputs import RiskAnalysisOutput
 
 
 def _build_risk_prompt(warnings: list[dict], stock_code: str, stock_name: str, days: int) -> list[dict]:
@@ -18,41 +16,51 @@ def _build_risk_prompt(warnings: list[dict], stock_code: str, stock_name: str, d
 风险检测结果：
 {warnings_text}
 
-输出 JSON：risk_level(信息/警告/危险/严重), risk_score(0-100), analysis(深度分析文字), advice(应对建议)"""
+只返回 JSON 对象，且只能包含字段：risk_level(信息/警告/危险/严重), risk_score(0-100),
+analysis(深度分析文字), advice(应对建议)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON风险报告"}]
 
 
-async def _safe_chat(messages: list[dict], user_id: int, module: str) -> dict:
-    try:
-        resp = await chat(messages, user_id=user_id, module=module)
-        return json.loads(resp.content)
-    except Exception as e:
-        logger.warning(f"Risk analysis failed: {e}")
-        return {"error": str(e), "risk_level": "未知", "risk_score": 0, "analysis": "AI分析失败", "advice": ""}
+async def _set_progress(context, value: int) -> None:
+    await context.set_progress(value)
 
 
-async def run_stock_risk_analysis(stock_code: str, days: int, user_id: int, task: TaskRecord, db) -> dict:
-    from app.services.progress import maybe_set_progress
-    maybe_set_progress(task, db, 20)
+async def _execute_step(context, step_key: str, messages: list[dict], output_type):
+    await context.ensure_current()
+    return await context.llm.execute_json(
+        task_id=context.task_id,
+        step_key=step_key,
+        messages=messages,
+        output_type=output_type,
+        prompt_version=step_key,
+    )
+
+
+async def run_stock_risk_analysis(stock_code: str, days: int, user_id: int, task, db) -> dict:
+    context = task
+    await _set_progress(context, 20)
 
     info = get_stock_info(stock_code)
     stock_name = info.get("name", stock_code)
     kline_df = get_stock_kline(stock_code, min(days * 2, 250))
-    maybe_set_progress(task, db, 40)
+    await _set_progress(context, 40)
 
     indicators = compute_all(kline_df) if not kline_df.empty else {"rsi": {}}
     rsi = indicators.get("rsi", {}).get("RSI")
 
     # Run rule-based checks
     warnings = analyze_stock_risk(kline_df, rsi)
-    maybe_set_progress(task, db, 65)
+    await _set_progress(context, 65)
 
     # AI deep analysis
-    ai_analysis = await _safe_chat(
+    ai_analysis_result = await _execute_step(
+        context,
+        "risk.analysis.v1",
         _build_risk_prompt(warnings, stock_code, stock_name, days),
-        user_id, "risk:analysis"
+        RiskAnalysisOutput,
     )
-    maybe_set_progress(task, db, 90)
+    ai_analysis = ai_analysis_result.model_dump(mode="json")
+    await _set_progress(context, 90)
 
     report = {
         "stock_code": stock_code,
@@ -68,9 +76,9 @@ async def run_stock_risk_analysis(stock_code: str, days: int, user_id: int, task
 Portfolio risk: scan all user holdings and aggregate.
 """
 
-async def run_portfolio_risk_scan(holdings: list[dict], user_id: int, task: TaskRecord, db) -> dict:
-    from app.services.progress import maybe_set_progress
-    maybe_set_progress(task, db, 10)
+async def run_portfolio_risk_scan(holdings: list[dict], user_id: int, task, db) -> dict:
+    context = task
+    await _set_progress(context, 10)
 
     enriched = []
     for h in holdings:
@@ -84,10 +92,10 @@ async def run_portfolio_risk_scan(holdings: list[dict], user_id: int, task: Task
             "warnings": warnings,
             "rsi": rsi,
         })
-    maybe_set_progress(task, db, 60)
+    await _set_progress(context, 60)
 
     portfolio = compute_portfolio_risk(enriched)
-    maybe_set_progress(task, db, 90)
+    await _set_progress(context, 90)
 
     report = {
         "holdings": enriched,

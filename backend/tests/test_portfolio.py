@@ -3,6 +3,7 @@ import pandas as pd
 from unittest.mock import patch
 from app.services.portfolio_orchestrator import run_portfolio_diagnosis
 from app.services.risk_orchestrator import run_stock_risk_analysis, run_portfolio_risk_scan
+from tests.services.test_remaining_llm_contracts import _Context, _TypedLlm
 
 
 @pytest.mark.asyncio
@@ -14,7 +15,7 @@ async def test_portfolio_diagnosis_structure():
     mock_kline = pd.DataFrame({"close": [1650 + i for i in range(60)] * 2, "open": 1650, "high": 1700, "low": 1640, "volume": 10000})
     with patch("app.services.portfolio_orchestrator.get_stock_info", return_value=mock_info), \
          patch("app.services.portfolio_orchestrator.get_stock_kline", return_value=mock_kline):
-        report = await run_portfolio_diagnosis(holdings, 1, None, None)
+        report = await run_portfolio_diagnosis(holdings, 1, _Context(_TypedLlm()), None)
 
     assert "health_score" in report
     assert "risk_assessment" in report
@@ -36,7 +37,7 @@ async def test_stock_risk_analysis_structure():
 
     with patch("app.services.risk_orchestrator.get_stock_info", return_value=mock_info), \
          patch("app.services.risk_orchestrator.get_stock_kline", return_value=mock_kline):
-        report = await run_stock_risk_analysis("600519", 30, 1, None, None)
+        report = await run_stock_risk_analysis("600519", 30, 1, _Context(_TypedLlm()), None)
 
     assert "stock_code" in report
     assert "warnings" in report
@@ -56,7 +57,7 @@ async def test_portfolio_risk_scan_structure():
     mock_kline = pd.DataFrame({"close": closes, "high": [c * 1.02 for c in closes], "low": [c * 0.98 for c in closes], "open": closes, "volume": [10000] * 60})
 
     with patch("app.services.risk_orchestrator.get_stock_kline", return_value=mock_kline):
-        report = await run_portfolio_risk_scan(holdings, 1, None, None)
+        report = await run_portfolio_risk_scan(holdings, 1, _Context(_TypedLlm()), None)
 
     assert "holdings" in report
     assert "portfolio" in report

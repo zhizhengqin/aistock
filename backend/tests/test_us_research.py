@@ -1,9 +1,18 @@
 import pytest
 from unittest.mock import patch
 from app.services.us_research_orchestrator import (
-    build_report, CORE_US_STOCKS, SAMPLE_INDICES, SAMPLE_BOND_YIELDS,
+    build_report, CORE_US_STOCKS,
 )
 from app.models.us_research_report import UsResearchReport
+from tests.services.test_remaining_llm_contracts import _Context, _TypedLlm
+
+
+INDEX_FIXTURES = [
+    {"name": "道琼斯工业平均", "ticker": "^DJI", "close": 44193.12, "change_pct": 0.47},
+    {"name": "纳斯达克100", "ticker": "^NDX", "close": 21057.96, "change_pct": 1.12},
+    {"name": "标普500", "ticker": "^SPX", "close": 6335.08, "change_pct": 0.78},
+]
+BOND_FIXTURE = {"y2": 3.85, "y10": 4.22, "y30": 4.81, "y2_chg": -0.02, "y10_chg": 0.01, "y30_chg": 0.02}
 
 
 def test_core_stocks_mapping():
@@ -16,13 +25,13 @@ def test_core_stocks_mapping():
 
 @pytest.mark.asyncio
 async def test_build_report_structure():
-    with patch("app.services.us_research_orchestrator.fetch_us_indices", return_value=SAMPLE_INDICES), \
+    with patch("app.services.us_research_orchestrator.fetch_us_indices", return_value=INDEX_FIXTURES), \
          patch("app.services.us_research_orchestrator.fetch_us_core_stocks", return_value=[{**s, "change_pct": 1.5, "close": 100.0} for s in CORE_US_STOCKS]), \
-         patch("app.services.us_research_orchestrator.fetch_us_bond_yields", return_value=SAMPLE_BOND_YIELDS), \
+         patch("app.services.us_research_orchestrator.fetch_us_bond_yields", return_value=BOND_FIXTURE), \
          patch("app.services.us_research_orchestrator.fetch_us_sector_samples", return_value=[{"name": "半导体", "change_pct": 2.1}]), \
          patch("app.services.us_research_orchestrator.fetch_english_news", return_value=[{"title": "Fed holds rates", "source": "CNBC", "url": "https://x.com"}]), \
          patch("app.services.us_research_orchestrator.fetch_us_movers", return_value={"gainers": [{"ticker": "XYZ", "change_pct": 9.9}], "losers": [{"ticker": "ABC", "change_pct": -8.8}]}):
-        report = await build_report("2026-08-07", user_id=1)
+        report = await build_report("2026-08-07", user_id=1, execution_ctx=_Context(_TypedLlm()))
 
     # 四个判断卡片
     cards = report["cards"]
@@ -57,16 +66,19 @@ async def test_build_report_structure():
 
 
 @pytest.mark.asyncio
-async def test_build_report_fallback_on_source_failure():
+async def test_build_report_records_real_source_failures_without_samples():
     with patch("app.services.us_research_orchestrator.fetch_us_indices", side_effect=Exception("akshare down")), \
          patch("app.services.us_research_orchestrator.fetch_us_core_stocks", side_effect=Exception("down")), \
          patch("app.services.us_research_orchestrator.fetch_us_bond_yields", side_effect=Exception("down")), \
          patch("app.services.us_research_orchestrator.fetch_us_sector_samples", side_effect=Exception("down")), \
          patch("app.services.us_research_orchestrator.fetch_english_news", side_effect=Exception("down")), \
          patch("app.services.us_research_orchestrator.fetch_us_movers", side_effect=Exception("down")):
-        report = await build_report("2026-08-07", user_id=1, allow_fallback=True)
-    assert report["indices"]
-    assert report["data_status"]["indices"] == "fallback"
+        report = await build_report("2026-08-07", user_id=1, execution_ctx=_Context(_TypedLlm()))
+    assert report["indices"] == []
+    assert report["core_stocks"] == []
+    assert report["important_news"] == []
+    assert report["data_status"]["indices"] == "failed"
+    assert report["data_status"]["news"] == "failed"
 
 
 def test_save_and_latest_report(test_db):

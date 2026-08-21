@@ -16,6 +16,7 @@ async def us_research_task(ctx, task_id: int, trade_date: str, user_id: int = 0)
         return await build_report(
             str(args["trade_date"]),
             user_id=args["user_id"],
+            execution_ctx=execution_ctx,
         )
 
     def persist_result(db, task, result):

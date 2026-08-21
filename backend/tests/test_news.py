@@ -109,7 +109,7 @@ def test_collect_news_fetch_error_continues(test_db):
     engine, TestingSession = test_db
     db = TestingSession()
     with patch("app.services.news_collector.fetch_source_items", side_effect=Exception("network down")):
-        result = collect_news(db, sources=[{"name": "坏源", "url": "x"}], allow_sample_fallback=False)
+        result = collect_news(db, sources=[{"name": "坏源", "url": "x"}])
     assert result["new"] == 0
     assert len(result["errors"]) == 1
     db.close()

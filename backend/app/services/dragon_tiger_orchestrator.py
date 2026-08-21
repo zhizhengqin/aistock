@@ -1,13 +1,11 @@
 import json
 from datetime import datetime, timezone
-from app.core.llm import chat
-from app.core.logger import logger
 from app.datasource.akshare_client import (
     get_dragon_tiger_list,
     get_dragon_tiger_institution,
 )
 from app.services.dragon_tiger_scorer import rank_top_stocks, compute_stats, rank_institutions
-from app.models.task_record import TaskRecord
+from app.schemas.llm_outputs import DragonTigerAnalysisOutput
 
 
 def _build_analyst_prompt(stats: dict, top_stocks: list[dict]) -> list[dict]:
@@ -18,43 +16,54 @@ def _build_analyst_prompt(stats: dict, top_stocks: list[dict]) -> list[dict]:
 统计摘要：{stats_text}
 TOP10股票：{stocks_text}
 
-输出 JSON：summary(文字摘要), confidence_score(0-100), active_institutions(数组含name/success_rate/appearances/style), strategy_advice(策略建议文字), risk_level(风险等级)"""
+只返回 JSON 对象，且只能包含字段：summary(文字摘要)、confidence_score(0-100)、
+active_institutions(数组，元素含name/success_rate(0-100)/appearances/style)、
+strategy_advice(策略建议文字)、risk_level(低风险/中等风险/高风险)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
-async def _safe_chat(messages: list[dict], user_id: int, module: str) -> dict:
-    try:
-        resp = await chat(messages, user_id=user_id, module=module)
-        return json.loads(resp.content)
-    except Exception as e:
-        logger.warning(f"Dragon tiger analyst failed: {e}")
-        return {"error": str(e)}
+async def _set_progress(context, value: int) -> None:
+    await context.set_progress(value)
 
 
-async def run_dragon_tiger_analysis(period_days: int, user_id: int, task: TaskRecord, db) -> dict:
-    from app.services.progress import maybe_set_progress
-    maybe_set_progress(task, db, 15)
+async def _execute_step(context, step_key: str, messages: list[dict], output_type):
+    await context.ensure_current()
+    return await context.llm.execute_json(
+        task_id=context.task_id,
+        step_key=step_key,
+        messages=messages,
+        output_type=output_type,
+        prompt_version=step_key,
+    )
+
+
+async def run_dragon_tiger_analysis(period_days: int, user_id: int, task, db) -> dict:
+    context = task
+    await _set_progress(context, 15)
 
     # 1. Collect dragon-tiger records
     records = get_dragon_tiger_list(days=period_days)
-    maybe_set_progress(task, db, 35)
+    await _set_progress(context, 35)
 
     # 2. Score and rank
     stats = compute_stats(records)
     top_stocks = rank_top_stocks(records, top_n=10)
-    maybe_set_progress(task, db, 55)
+    await _set_progress(context, 55)
 
     # 3. Collect institution data
     institutions = get_dragon_tiger_institution()
     ranked_institutions = rank_institutions(institutions, top_n=10)
-    maybe_set_progress(task, db, 70)
+    await _set_progress(context, 70)
 
     # 4. AI analysis
-    analysis = await _safe_chat(
+    analysis_result = await _execute_step(
+        context,
+        "dragon_tiger.analysis.v1",
         _build_analyst_prompt(stats, top_stocks),
-        user_id, "dragon_tiger:analyst"
+        DragonTigerAnalysisOutput,
     )
-    maybe_set_progress(task, db, 90)
+    analysis = analysis_result.model_dump(mode="json")
+    await _set_progress(context, 90)
 
     # 5. Assemble report
     report = {

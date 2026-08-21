@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         hide_input_in_errors=True,
+        extra="ignore",
     )
 
     # General
@@ -44,7 +45,6 @@ class Settings(BaseSettings):
 
     # LLM
     DEEPSEEK_API_KEY: str = ""
-    LLM_MOCK: bool = True
     LLM_MODEL: str = "deepseek-chat"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     TASK_INLINE: bool = True

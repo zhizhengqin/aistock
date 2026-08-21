@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch
 from app.services.dragon_tiger_scorer import score_stock, rank_top_stocks, compute_stats, rank_institutions
 from app.services.dragon_tiger_orchestrator import run_dragon_tiger_analysis
+from tests.services.test_remaining_llm_contracts import _Context, _TypedLlm
 
 
 # --- Scoring engine tests (pure functions) ---
@@ -94,7 +95,7 @@ async def test_dragon_tiger_orchestrator_structure():
     ]
     with patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_list", return_value=mock_records), \
          patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_institution", return_value=mock_institutions):
-        report = await run_dragon_tiger_analysis(5, 1, None, None)
+        report = await run_dragon_tiger_analysis(5, 1, _Context(_TypedLlm()), None)
 
     assert "period_days" in report
     assert "stats" in report

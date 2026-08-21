@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 NonBlankText = Annotated[str, Field(min_length=1)]
@@ -181,6 +181,71 @@ class SectorChiefOutput(_StrictOutput):
     key_indicators: list[NonBlankText]
 
 
+class DragonTigerInstitution(_StrictOutput):
+    name: NonBlankText
+    appearances: Annotated[int, Field(ge=0)]
+    success_rate: Score100
+    style: NonBlankText
+
+
+class DragonTigerAnalysisOutput(_StrictOutput):
+    summary: NonBlankText
+    confidence_score: Score100
+    active_institutions: list[DragonTigerInstitution]
+    strategy_advice: NonBlankText
+    risk_level: Literal["低风险", "中等风险", "高风险", "信息", "警告", "危险", "严重"]
+
+
+class PortfolioDiagnosisOutput(_StrictOutput):
+    health_score: Score100
+    risk_assessment: NonBlankText
+    asset_allocation: NonBlankText
+    risk_exposure: NonBlankText
+    strategy_consistency: NonBlankText
+    suggestions: list[NonBlankText]
+    summary: NonBlankText
+
+
+class RiskAnalysisOutput(_StrictOutput):
+    risk_level: Literal["低风险", "中等风险", "高风险", "信息", "警告", "危险", "严重"]
+    risk_score: Score100
+    analysis: NonBlankText
+    advice: NonBlankText
+
+
+class UsResearchCards(_StrictOutput):
+    us_sentiment: NonBlankText
+    a_share_impact: NonBlankText
+    risk_level: NonBlankText
+    focus_directions: list[NonBlankText]
+
+
+_US_RESEARCH_SECTION_KEYS = frozenset(
+    {
+        "核心结论",
+        "隔夜美股表现",
+        "核心个股解读",
+        "板块与主题",
+        "美债与宏观",
+        "重要新闻摘要",
+        "对A股的启示",
+        "风险提示",
+    }
+)
+
+
+class UsResearchOutput(_StrictOutput):
+    cards: UsResearchCards
+    sections: dict[str, NonBlankText]
+
+    @field_validator("sections")
+    @classmethod
+    def validate_sections(cls, value: dict[str, str]) -> dict[str, str]:
+        if set(value) != _US_RESEARCH_SECTION_KEYS:
+            raise ValueError("美股研报章节字段不完整或包含未知字段")
+        return value
+
+
 # Explicit aliases preserve the naming convention used by older callers while
 # the concise names above match the prompt and task plan.
 MainForceCapitalAnalysisOutput = MainForceCapitalOutput
@@ -199,6 +264,8 @@ SectorChiefAnalysisOutput = SectorChiefOutput
 __all__ = [
     "CapitalAnalysisOutput",
     "ChiefDecisionOutput",
+    "DragonTigerAnalysisOutput",
+    "DragonTigerInstitution",
     "ExcludedCompany",
     "FundamentalAnalysisOutput",
     "MainForceCapitalAnalysisOutput",
@@ -214,7 +281,9 @@ __all__ = [
     "MainForceTechnicalAnalysisOutput",
     "MainForceTechnicalOutput",
     "NewsAnalysisOutput",
+    "PortfolioDiagnosisOutput",
     "RecommendedCompany",
+    "RiskAnalysisOutput",
     "SectorCapitalAnalysisOutput",
     "SectorCapitalOutput",
     "SectorChiefAnalysisOutput",
@@ -229,4 +298,6 @@ __all__ = [
     "SentimentAnalysisOutput",
     "SupportResistance",
     "TechnicalAnalysisOutput",
+    "UsResearchCards",
+    "UsResearchOutput",
 ]

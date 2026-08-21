@@ -1,8 +1,8 @@
-"""Multi-source financial news collector with dedupe and sentiment tagging.
+"""Multi-source financial news collector with dedupe and deterministic tags.
 
 Sources: akshare telegraph APIs (财联社/新浪/同花顺) + RSS feeds.
 Dedupe is by url_hash (sha1 of url, or of title when url is missing).
-Tagging: LLM in production, keyword rules when LLM_MOCK is on.
+Tagging is ordinary keyword classification and never consumes model budget.
 """
 import hashlib
 import re
@@ -12,7 +12,6 @@ from email.utils import parsedate_to_datetime
 
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.logger import logger
 from app.models.news_item import NewsItem
 
@@ -126,7 +125,7 @@ def parse_rss(xml_text: str, source_name: str) -> list[dict]:
 
 
 def rule_based_tag(title: str, summary: str = "") -> dict:
-    """Keyword-based sentiment/industry/category tagging (used when LLM_MOCK)."""
+    """Keyword-based sentiment, industry and category classification."""
     text = f"{title} {summary}"
     pos = sum(1 for w in POSITIVE_KEYWORDS if w in text)
     neg = sum(1 for w in NEGATIVE_KEYWORDS if w in text)
@@ -183,23 +182,8 @@ def fetch_source_items(source: dict, limit: int = 30) -> list[dict]:
     return parse_rss(resp.text, source["name"])[:limit]
 
 
-SAMPLE_NEWS = [
-    {"title": "央行开展中期借贷便利操作 维护流动性合理充裕", "source": "示例", "summary": "央行今日开展MLF操作，中标利率持平。", "url": "sample://1"},
-    {"title": "多家券商上调A股年度目标点位 看好科技成长主线", "source": "示例", "summary": "研报认为盈利改善与估值修复共振。", "url": "sample://2"},
-    {"title": "某白酒龙头披露中报 净利润同比增长18%超预期", "source": "示例", "summary": "高端白酒需求回暖，渠道库存良性。", "url": "sample://3"},
-    {"title": "监管部门立案调查某上市公司财务造假 或面临退市风险", "source": "示例", "summary": "涉嫌虚增收入利润，投资者索赔启动。", "url": "sample://4"},
-    {"title": "隔夜美股三大指数收涨 英伟达创新高带动算力产业链", "source": "示例", "summary": "纳指涨1.2%，费城半导体指数涨2.3%。", "url": "sample://5"},
-]
-
-
 def _tag_item(title: str, summary: str) -> dict:
-    if settings.LLM_MOCK:
-        return rule_based_tag(title, summary)
-    # production: LLM tagging could go here; fall back to rules on any error
-    try:
-        return rule_based_tag(title, summary)
-    except Exception:
-        return {"sentiment": "中性", "industries": [], "category": "综合"}
+    return rule_based_tag(title, summary)
 
 
 def fetch_news_candidates(sources: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
@@ -220,8 +204,6 @@ def persist_news(
     db: Session,
     candidates: list[dict],
     errors: list[dict] | None = None,
-    *,
-    allow_sample_fallback: bool = True,
 ) -> dict:
     """Dedupe, tag and persist fetched candidates in caller's transaction."""
     stats = {"new": 0, "skipped": 0, "errors": []}
@@ -253,33 +235,12 @@ def persist_news(
         ))
         stats["new"] += 1
 
-    # Dev convenience: seed samples so the page is demonstrable when all sources fail
-    if (allow_sample_fallback and settings.LLM_MOCK and stats["new"] == 0
-            and db.query(NewsItem).count() == 0):
-        for s in SAMPLE_NEWS:
-            tag = _tag_item(s["title"], s["summary"])
-            db.add(NewsItem(
-                title=s["title"], url=s["url"], url_hash=url_hash(s["url"]),
-                source=s["source"], summary=s["summary"],
-                published_at=datetime.now(timezone.utc),
-                sentiment=tag["sentiment"], category=tag["category"],
-                industries=",".join(tag["industries"]),
-            ))
-            stats["new"] += 1
-        logger.info("Seeded sample news (mock mode, all sources unavailable)")
-
     return stats
 
 
-def collect_news(db: Session, sources: list[dict] | None = None,
-                 allow_sample_fallback: bool = True) -> dict:
+def collect_news(db: Session, sources: list[dict] | None = None) -> dict:
     """Legacy facade: fetch, persist and commit for non-runner callers."""
     candidates, errors = fetch_news_candidates(sources)
-    stats = persist_news(
-        db,
-        candidates,
-        errors,
-        allow_sample_fallback=allow_sample_fallback,
-    )
+    stats = persist_news(db, candidates, errors)
     db.commit()
     return stats

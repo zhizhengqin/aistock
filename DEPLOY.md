@@ -126,22 +126,30 @@ nano deploy/.env
 
 1. `POSTGRES_PASSWORD=` 后面填刚才生成的**第二行**（16 位那个）
 2. `JWT_SECRET=` 后面填刚才生成的**第一行**（32 位那个）
-3. `DEEPSEEK_API_KEY=` 后面填你的 DeepSeek 密钥（`sk-` 开头）。**暂时没有就把 `LLM_MOCK=false` 改成 `LLM_MOCK=true`**，系统用假模型跑通，之后拿到 key 再改回来重启即可
-4. 邮件（注册验证码）：不配的话验证码会写在 api 容器日志里（自己用够了）。要真发邮件就填 SMTP 那几行（QQ 邮箱：`SMTP_HOST=smtp.qq.com`，密码填邮箱设置里开的「授权码」），并把 `EMAIL_ENABLED=false` 改成 `true`
+3. `LLM_CONFIG_ENCRYPTION_KEY_ID=` 和 `LLM_CONFIG_ENCRYPTION_KEYS=` 必须填写生产密钥环：先生成 32 字节随机值，转成标准 Base64，JSON 的 key 是密钥 ID。密钥环支持双读单写轮换，旧 ID 在确认迁移完成前必须保留。
+4. `DEEPSEEK_API_KEY=`、`LLM_MODEL=`、`LLM_BASE_URL=` 是观察发布期 bootstrap 输入。它们只在模型中心为空时使用一次，管理员配置完成后不会覆盖数据库；观察期后另开任务删除这三个变量。没有真实供应商密钥时 readiness 会失败，不能用伪造结果绕过。
+5. 邮件（注册验证码）：不配的话验证码会写在 api 容器日志里（自己用够了）。要真发邮件就填 SMTP 那几行（QQ 邮箱：`SMTP_HOST=smtp.qq.com`，密码填邮箱设置里开的「授权码」），并把 `EMAIL_ENABLED=false` 改成 `true`
 
 > nano 里粘贴：Mac 终端直接 `Cmd+V`。
 > 保存退出：按 `Ctrl+O` → 回车 → `Ctrl+X`。
 
 ---
 
-## 第 6 步：构建启动（首次约 10~20 分钟）
+## 第 6 步：构建、bootstrap 与 fail-closed 启动（首次约 10~20 分钟）
 
 ```bash
 cd /opt/aistock
-docker compose -f deploy/docker-compose.yml up -d --build
+docker compose -f deploy/docker-compose.yml build migrator api worker nginx
+docker compose -f deploy/docker-compose.yml up -d postgres redis
+docker compose -f deploy/docker-compose.yml run --rm migrator
+docker compose -f deploy/docker-compose.yml up -d --no-deps api
+docker compose -f deploy/docker-compose.yml exec api python -m app.cli.llm_config readiness
+docker compose -f deploy/docker-compose.yml exec api python -m app.cli.llm_config live-smoke --provider deepseek
+docker compose -f deploy/docker-compose.yml up -d --no-deps worker nginx
 ```
 
-首次构建要下载基础镜像、装依赖，比较慢，去喝杯水。看到最后一行类似 `✔ Container aistock-nginx Started` 就好了。
+首次构建要下载基础镜像、装依赖，比较慢，去喝杯水。migrator 只运行一次；readiness 或真实
+DeepSeek smoke 失败时保持流量关闭，不要启动 Worker/Nginx 伪装成功。
 
 **验证（逐条执行）**：
 
@@ -155,7 +163,8 @@ docker compose -f deploy/docker-compose.yml ps
 curl http://localhost:8080/api/health
 ```
 
-看到 `{"code":0,"data":{"status":"healthy"}}` 就成功了。
+看到健康响应还不代表可接流量；必须同时通过 readiness 和真实 DeepSeek smoke。之后再确认
+5 个容器全部 Up，才算完成本次启动。
 
 **最后顺手确认 GS-Tracker 没受影响**（应该还是原来那 3 个容器在跑）：
 
@@ -191,6 +200,7 @@ docker exec -it aistock-pg psql -U aistock -c "UPDATE users SET role='admin', ti
 ## 第 8 步：配 GitHub 自动部署（push 即上线）
 
 仓库已带 GitHub Actions：本地 push 到 main → 自动跑全部测试 → 全绿后 SSH 上服务器更新。**测试不过不会部署**，这是硬性关卡。
+生产发布仍需负责人先完成维护窗口审批；没有明确授权时不要 push 到触发部署的分支。
 
 在你自己的 Mac 上操作：
 
@@ -291,6 +301,18 @@ crontab -e
 
 每天凌晨 3:30 自动备份，保留 14 天，备份文件在 `/data/aistock/backups/`。第一周记得瞄一眼有没有新文件。
 
+恢复或升级前的维护窗口必须由负责人明确授权：先暂停新的 AI 任务，记录并处理 pending/running
+任务；备份 PostgreSQL 和 `deploy/.env`；停止旧 API、Worker、Nginx；执行一次 migrator 并
+核对完整 Alembic heads；再按健康 → readiness → DeepSeek 真实 smoke → Worker → Nginx 的
+顺序启动。任何一步失败都保持 fail-closed，不让旧 Nginx 继续导流。恢复数据库备份后只能使用
+与该 schema 匹配的上一版本镜像，并重新执行 readiness，不能把新版本任务重放到旧表结构。
+
+Worker 每日北京时间 01:00 执行 90 天内部 payload 清理：仅清空已终态、无 pending/locked
+outbox、无 reserved reservation、无 live lease 的调用响应正文；保留 hash、schema、token、
+费用、错误、最终报告、审计和模型配置。清理后原任务不再重放，人工恢复只能新建 task ID。
+Redis 只负责队列/缓存，Token reservation 与 settled 用量以 PostgreSQL 为准，Redis 重启不会
+重置额度。
+
 ---
 
 ## 故障排查
@@ -337,7 +359,7 @@ docker ps --format '{{.Names}}\t{{.Status}}' | grep gs-tracker
 | curl :8080 拒绝连接 | aistock-nginx 没起来 | `docker logs aistock-nginx --tail=30` 看原因 |
 | 提示端口被占用 | 别的程序抢了 8080/8443 | `ss -tlnp \| grep 8080` 看是谁，发给我 |
 | 注册收不到验证码 | 没配 SMTP | 验证码在日志里：`docker logs aistock-api --tail=100 \| grep "EMAIL-DEV"`（日志里是中文「验证码」，grep code 搜不到） |
-| AI 报告一直失败 | DeepSeek key 无效或余额不足 | 先把 deploy/.env 里 LLM_MOCK 改 true 跑通流程 |
+| AI 报告一直失败 | DeepSeek key 无效、余额不足或模型未验证 | 查看任务错误码，检查模型中心的测试/启用/默认状态和 readiness；不要绕过真实 smoke |
 | 首页行情不更新 | 数据源接口变了 | `docker logs aistock-worker --tail=100` 找红色报错 |
 | GS-Tracker 挂了 | 正常来说不会被影响 | `cd ~/gs-tracker && bash deploy/update.sh` 重启它 |
 
@@ -373,7 +395,7 @@ docker image prune -f
 - [ ] http://111.228.23.109:8080 能打开登录页
 - [ ] 注册、登录正常，管理员账号侧边栏能看到「系统配置」
 - [ ] 首页行情刷新正常
-- [ ] AI 分析能出报告（mock 或真实模型都行）
+- [ ] AI 分析能出报告（必须通过真实模型 smoke，结果仅供参考）
 - [ ] http://111.228.23.109（GS-Tracker）**依然正常**
 - [ ] GitHub push 后 Actions 全绿、服务器自动更新
 - [ ] `/data/aistock/backups/` 第二天有备份文件

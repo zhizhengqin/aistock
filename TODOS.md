@@ -17,8 +17,19 @@
 | M5 | 实时新闻 + 美股研报 + 定时任务 | 1 周 | `[x] 已完成` |
 | M6 | 会员体系 + 配额 + 充值页 | 1 周 | `[x]` |
 | M7 | 京东云部署 + 域名 + HTTPS + 备份 | 1 周 | `[x]` 文档与配置就绪，待用户上机执行 |
- 
- ---
+
+---
+
+## 生产大模型中心四个里程碑
+
+| 里程碑 | 范围 | 状态 |
+|---|---|---|
+| LLM-1 基础与账本 | 配置模型、供应商协议、PostgreSQL Token 预算与加密密钥环（Tasks 1–5） | `[x]` 已完成 |
+| LLM-2 任务可靠性 | 统一提交、outbox、执行栅栏、任务级幂等与结构化调用（Tasks 6–8） | `[x]` 已完成 |
+| LLM-3 业务迁移 | 股票、主力、板块、龙虎榜、持仓、风控、美股研报和新闻语义迁移（Tasks 9–10） | `[x]` 已完成 |
+| LLM-4 管理与交付 | 管理员模型中心、真实基础设施验证、90 天清理与文档收口（Tasks 11–14） | `[x]` 本地完成；生产部署待授权 |
+
+P3 的模块路由、故障转移、统一网关和评测平台不在本阶段范围内。
  
  ## M0 — 开发环境搭建 ✅
  
@@ -85,7 +96,7 @@
 ## M2 — 股票分析（核心 AI 流程）
 
 - `[x]` 技术指标计算模块（MA/MACD/RSI/KDJ/BOLL）+ 11 项测试 ✅
-- `[x]` LLM 客户端封装（DeepSeek + Mock 模式）+ llm_usage 记账 + 3 项测试 ✅
+- `[x]` LLM 统一调用与用量记账 + 3 项测试 ✅
 - `[x]` 异步任务框架（arq 配置 + TASK_INLINE 内联模式）+ 投递/执行/轮询/台账
 - `[x]` 6 分析师提示词 + 并行编排 + 投研会议汇总 + 2 项测试 ✅
 - `[x]` 股票分析接口 + 配额检查（submit/poll/history/snapshot/detail）
@@ -106,7 +117,7 @@
 - `[x]` M3-6: APScheduler 定时任务框架（板块分析每日 09:30 自动执行）✅
 - `[x]` M3-7: 前端三页面（MainForce 漏斗+分析师+研究员/Sector 4 智能体+多空/DragonTiger TOP10+游资画像）+ 路由替换 ✅
 - `[x]` M3-8: Playwright E2E 全验证通过（0 console errors）+ 52 pytest 全绿 ✅
-- `[x]` LLM Mock 正则修复（{{ANALYST_KEY:x}} f-string 转义后 → 单花括号匹配）✅
+- `[x]` 提示词占位符转义修复（{{ANALYST_KEY:x}} f-string 转义后 → 单花括号匹配）✅
 
 ### M3 新增文件
 - backend: main_force_orchestrator.py / sector_orchestrator.py / dragon_tiger_scorer.py / dragon_tiger_orchestrator.py / scheduler.py / tasks/main_force.py / tasks/sector_analysis.py / tasks/dragon_tiger.py / api/m3.py / models (3) / tests (3)
@@ -125,7 +136,7 @@
  
  ## M5 — 实时新闻 + 美股研报 + 定时任务
  
- - `[x]` 新闻 RSS 采集 + 去重 + AI 标注
+ - `[x]` 新闻 RSS 采集 + 去重 + 规则分类
  - `[x]` 新闻页（时间/来源筛选）
  - `[x]` 美股隔夜研报（八段式 + 映射 A 股方向）
  - `[x]` 定时任务全套上线 + 失败告警

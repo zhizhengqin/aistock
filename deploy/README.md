@@ -41,23 +41,38 @@ cd /opt/aistock
 # 2. 配置环境变量（密码、密钥）
 cp deploy/.env.example deploy/.env
 openssl rand -hex 32        # 把输出填进 deploy/.env 的 JWT_SECRET
-nano deploy/.env            # 填 POSTGRES_PASSWORD、DEEPSEEK_API_KEY
+nano deploy/.env            # 填数据库、JWT、LLM 加密密钥环和观察期 bootstrap 输入
 
-# 3. 一键构建启动（首次构建约 10-15 分钟，去喝杯水）
-docker compose -f deploy/docker-compose.yml up -d --build
+# 3. 先只执行 migrator（首次构建约 10-15 分钟）
+docker compose -f deploy/docker-compose.yml build migrator api worker nginx
+docker compose -f deploy/docker-compose.yml up -d postgres redis
+docker compose -f deploy/docker-compose.yml run --rm migrator
 
-# 4. 验证
+# 4. 启动 API，确认健康、readiness 和真实 DeepSeek smoke 后再恢复流量
+docker compose -f deploy/docker-compose.yml up -d --no-deps api
+docker compose -f deploy/docker-compose.yml exec api python -m app.cli.llm_config readiness
+docker compose -f deploy/docker-compose.yml exec api python -m app.cli.llm_config live-smoke --provider deepseek
+docker compose -f deploy/docker-compose.yml up -d --no-deps worker nginx
+
+# 5. 验证
 curl http://localhost:8080/api/health
-# 看到 {"code":0,"data":{"status":"healthy"}} 就成功了
+# 看到健康响应后，再访问浏览器；readiness 或真实 smoke 失败时保持流量关闭
 docker compose -f deploy/docker-compose.yml ps   # 5 个容器都该是 Up
 ```
 
 浏览器打开 `http://服务器IP:8080` 就能看到系统。
 
+`deploy/.env` 中的 `DEEPSEEK_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL` 只是观察发布期的兼容
+bootstrap 输入：仅在模型中心为空时消费一次，管理员保存模型后不会覆盖数据库配置。生产还必须
+配置 `LLM_CONFIG_ENCRYPTION_KEY_ID` 和 `LLM_CONFIG_ENCRYPTION_KEYS`（32 字节密钥的 Base64
+JSON）。密钥环支持双读单写轮换；观察期结束后将另开任务删除这三个旧 bootstrap 变量。
+系统没有假数据开关；没有可用供应商时 readiness/smoke 会失败，不能用伪造报告绕过。
+
 ## 三、日常更新（推到 GitHub 后自动部署）
 
 仓库已带 GitHub Actions（`.github/workflows/deploy.yml`）：
 **本地 push 到 main → 自动跑全部测试 → 全绿后 SSH 上服务器自动更新**。
+触发生产发布前必须先获得负责人明确授权并完成维护窗口准备；没有授权时只运行本地验证，不要 push 到触发部署的分支。
 
 首次使用需在 GitHub 仓库 → Settings → Secrets and variables → Actions 添加三个密钥：
 
@@ -100,7 +115,23 @@ crontab -e
 gunzip -c /data/aistock/backups/aistock_日期.sql.gz | docker exec -i aistock-pg psql -U aistock aistock
 ```
 
-## 六、上线检查清单（逐项打勾）
+恢复前先停止 API、Worker 和 Nginx，确认备份日期与迁移版本；恢复后重新运行
+`docker compose -f deploy/docker-compose.yml run --rm migrator`，再按健康 → readiness →
+真实 smoke → Worker → Nginx 的顺序启动。不要在未验证 schema 时恢复旧流量。
+
+## 六、维护窗口与 LLM 运行规则
+
+生产升级必须由负责人明确授权。维护窗口内先暂停新的 AI 任务，记录并处理 pending/running
+任务，备份 PostgreSQL 和 `deploy/.env`，停止旧 API/Worker，执行一次 migrator 并核对完整
+Alembic heads；API 健康、readiness 和 DeepSeek smoke 全部成功后才启动 Worker 和 Nginx。
+任一步失败都保持 fail-closed（停止流量），不要让旧 Nginx 继续导流到未验收的 API。
+
+Worker 每日北京时间 01:00 清理超过 90 天且已终态、无锁和无活动租约的内部模型响应正文；
+只清空调用尝试的响应 JSON，最终报告、审计、额度账本和模型配置永久保留。清理后原任务不重放，
+恢复只能新建 task ID。Redis 是队列和缓存，PostgreSQL 才是 Token 额度账本；Redis 重启不会
+重置已预留或已结算额度。
+
+## 七、上线检查清单（逐项打勾）
 
 - [ ] 注册/登录正常
 - [ ] 首页行情刷新正常
@@ -112,11 +143,11 @@ gunzip -c /data/aistock/backups/aistock_日期.sql.gz | docker exec -i aistock-p
 - [ ] DeepSeek 账户设了消费上限
 - [ ] 安全组只开 8080/8443/22（加上 GS-Tracker 原有的 80/443）
 
-## 七、常见故障自救
+## 八、常见故障自救
 
 | 症状 | 处理 |
 |---|---|
 | 网站打不开 | `docker compose -f deploy/docker-compose.yml ps` 看哪个容器挂了 → `... restart 容器名` |
 | 首页行情不更新 | `docker logs aistock-worker --tail=100`，多半是数据源接口变了 |
-| AI 报告失败 | 看任务记录的错误信息；DeepSeek 余额不足或限流居多 |
+| AI 报告失败 | 看任务记录的稳定错误码；检查模型是否已测试、启用、设默认，以及 DeepSeek 余额和限流 |
 | 磁盘满 | `docker system prune -a` 清旧镜像；清旧备份 |

@@ -571,12 +571,12 @@ services:
 
 **Interfaces:** Documents the final API/operations contract and closes the feature board. Consumes evidence from Tasks 1–13; introduces no new runtime abstraction.
 
-- [ ] Update `TODOS.md` with the four milestones and real completion state. Do not add P3 items for module routing, failover, gateway or evaluation platform; those remain explicitly out of scope.
-- [ ] Before cleanup, run `rg -n 'LLM_MOCK|MOCK_RESPONSES|DEFAULT_LLM_NARRATIVE|Mock 模式' backend/app frontend/src deploy .github`; expect the current legacy product matches, which are the red-state evidence for this final removal task.
-- [ ] Document architecture, PostgreSQL budget ledger, task locking/outbox, encrypted keyring dual-read/single-write rotation, three-provider setup, maintenance window, first bootstrap, readiness, real smoke, backup, rollback and 90-day payload cleanup in plain Chinese with inline term explanations.
-- [ ] Update `docs/README.md` carefully around existing user changes; add links to the approved design and this implementation plan without rewriting unrelated entries.
-- [ ] Remove the obsolete `LLM_MOCK` setting and all runtime reads. Keep `DEEPSEEK_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` only as deprecated bootstrap inputs for one observation release; label their later removal as a separate post-observation task, not part of this deployment.
-- [ ] Run forbidden-token and secret scans:
+- [x] Update `TODOS.md` with the four milestones and real completion state. Do not add P3 items for module routing, failover, gateway or evaluation platform; those remain explicitly out of scope.
+- [x] Before cleanup, run `rg -n 'LLM_MOCK|MOCK_RESPONSES|DEFAULT_LLM_NARRATIVE|Mock 模式' backend/app frontend/src deploy .github`; the initial RED found the workflow bundle guard's forbidden literal.
+- [x] Document architecture, PostgreSQL budget ledger, task locking/outbox, encrypted keyring dual-read/single-write rotation, three-provider setup, maintenance window, first bootstrap, readiness, real smoke, backup, rollback and 90-day payload cleanup in plain Chinese with inline term explanations.
+- [x] Update `docs/README.md` carefully around existing user changes; add links to the approved design and this implementation plan without rewriting unrelated entries.
+- [x] Remove the obsolete `LLM_MOCK` setting and all runtime reads. Keep `DEEPSEEK_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` only as deprecated bootstrap inputs for one observation release; label their later removal as a separate post-observation task, not part of this deployment.
+- [x] Run forbidden-token and secret scans:
 
 ```bash
 rg -n 'LLM_MOCK|MOCK_RESPONSES|DEFAULT_LLM_NARRATIVE|Mock 模式' backend/app frontend/src deploy .github
@@ -584,16 +584,16 @@ rg -n '(sk-[A-Za-z0-9_-]{8,}|LLM_CONFIG_ENCRYPTION_KEYS=.*[^<])' --glob '!*.exam
 ```
 
   The first command must have no product matches. The second may only show clearly fake test fixtures or documentation placeholders; inspect every match before proceeding.
-- [ ] Run the authoritative verification matrix:
+- [x] Run the authoritative verification matrix:
   1. `cd backend && .venv/bin/pytest -q`
   2. `cd frontend && npm test -- --run`
   3. `cd frontend && npm run build`
   4. `cd frontend && npm run test:e2e:llm`
   5. `docker compose -f deploy/docker-compose.yml config`
   6. On disposable PostgreSQL/Redis: Alembic upgrade → downgrade → upgrade, bootstrap race, API/worker restart, Redis restart, readiness.
-- [ ] Before any production deployment, perform a separate reviewed maintenance runbook: backup PostgreSQL and `deploy/.env`; stop AI task creation; drain/resolve pending and running old tasks; stop old API/worker; run one-shot migrator and verify exact Alembic heads; start API; bootstrap/readiness/DeepSeek smoke; start worker; restore traffic. Then add and real-test Kimi/Qwen, switch defaults as required, create one small real report per provider, enable strict three-provider smoke, restart API/worker/Redis, and verify budget/default persistence. This checkbox requires explicit user deployment authorization and is not satisfied by local tests.
-- [ ] Run `superpowers:verification-before-completion`, then gstack `/review`, `/qa`, and `/ship` in that order. `/ship` may prepare a commit/PR, but push/deploy still requires the user’s explicit instruction under project rules.
-- [ ] Commit: only after verification evidence is captured, run `git add TODOS.md docs/系统架构设计说明书.md docs/用户使用手册.md docs/README.md docs/superpowers/plans/2026-08-13-production-llm-model-center.md DEPLOY.md deploy/README.md backend/app/core/config.py deploy/docker-compose.yml .github/workflows/deploy.yml && git commit -m "docs(llm): document production model center"`.
+- [ ] Before any production deployment, perform a separate reviewed maintenance runbook: backup PostgreSQL and `deploy/.env`; stop AI task creation; drain/resolve pending and running old tasks; stop old API/worker; run one-shot migrator and verify exact Alembic heads; start API; bootstrap/readiness/DeepSeek smoke; start worker; restore traffic. Then add and real-test Kimi/Qwen, switch defaults as required, create one small real report per provider, enable strict three-provider smoke, restart API/worker/Redis, and verify budget/default persistence. **未执行：本任务没有用户生产部署授权。**
+- [ ] Run `superpowers:verification-before-completion`, then gstack `/review`, `/qa`, and `/ship` in that order. **未执行：按任务包由主 Sol 单独完成 gstack 关卡。**
+- [x] Commit: only after verification evidence is captured, stage the Task14 intent files (including the approved `deploy/.env.example` cleanup and this report) and commit `docs(llm): document production model center`.
 
 ## Verification Coverage Map
 

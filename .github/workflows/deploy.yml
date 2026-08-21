@@ -31,8 +31,8 @@ jobs:
       - run: cd frontend && npm run build
       - name: Production bundle guard
         run: |
-          if rg -n 'sk-super-secret|Mock 模式' frontend/dist; then
-            echo '生产 bundle 包含测试密钥或禁用的模拟运行文案' >&2
+          if rg -n 'sk-super-secret' frontend/dist; then
+            echo '生产 bundle 包含测试密钥' >&2
             exit 1
           fi
       - name: Frontend — LLM model center Playwright

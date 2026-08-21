@@ -74,8 +74,10 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set it in deploy/.env}
       LLM_CONFIG_ENCRYPTION_KEY_ID: ${LLM_CONFIG_ENCRYPTION_KEY_ID:-}
       LLM_CONFIG_ENCRYPTION_KEYS: ${LLM_CONFIG_ENCRYPTION_KEYS:-}
-      # Deprecated observation-release bootstrap inputs; persisted only once
-      # when the model table is empty and never override admin configuration.
+      # Deprecated observation-release bootstrap inputs.  Bootstrap consumes
+      # them only once when the model table is empty and never overrides
+      # administrator-managed configuration.  Remove them in a separate
+      # post-observation release after the migration window is closed.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}

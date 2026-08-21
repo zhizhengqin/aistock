@@ -43,14 +43,18 @@ class Settings(BaseSettings):
     VERIFY_CODE_TTL_SECONDS: int = 300
     VERIFY_CODE_LENGTH: int = 6
 
-    # LLM
+    # LLM bootstrap compatibility inputs.  During the first observation
+    # release these may seed an empty model center once; administrators then
+    # manage the persisted DeepSeek/Kimi/Qwen records.  A later cleanup task
+    # will remove these legacy environment variables after observation.
     DEEPSEEK_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-chat"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     TASK_INLINE: bool = True
     # LLM API keys are encrypted before persistence.  Values in this keyring
     # are standard Base64-encoded 256-bit AES keys.  An empty keyring remains
-    # valid for local mock mode; production validation below requires the
+    # An empty keyring is accepted only for a local environment with no
+    # configured model records; production validation below requires the
     # active write key and validates every configured historical key.
     LLM_CONFIG_ENCRYPTION_KEY_ID: str = ""
     LLM_CONFIG_ENCRYPTION_KEYS: dict[str, str] = {}

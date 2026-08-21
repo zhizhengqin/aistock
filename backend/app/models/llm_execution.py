@@ -68,6 +68,11 @@ class LlmTokenReservation(Base, TimestampMixin):
             "settled_tokens >= 0", name="ck_llm_token_reservations_settled_nonnegative"
         ),
         Index("ix_llm_token_reservations_budget_status", "budget_date", "status"),
+        Index(
+            "ix_llm_token_reservations_task_reserved",
+            "task_id",
+            postgresql_where=text("status = 'reserved'"),
+        ),
     )
 
     def __init__(self, **kwargs):

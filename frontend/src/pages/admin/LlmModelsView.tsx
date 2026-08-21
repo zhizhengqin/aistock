@@ -317,7 +317,10 @@ export default function LlmModelsView() {
   }
 
   const items = modelList?.items ?? []
-  const totalCost = usage?.total_cost_micro_yuan ?? 0
+  const totalCost = usage?.total_cost_micro_yuan
+  const totalCostLabel = totalCost === null || totalCost === undefined
+    ? '价格未知（部分费用未配置）'
+    : `¥${(totalCost / 1_000_000).toFixed(2)}`
   const dailyLimit = settings?.daily_token_limit ?? modelList?.daily_token_limit ?? 0
   const selectedModel = useMemo(() => editingId ? items.find((model) => model.id === editingId) : null, [editingId, items])
 
@@ -469,12 +472,12 @@ export default function LlmModelsView() {
             <button className="btn btn-ghost" onClick={updateSettings} disabled={pending === 'settings'}>{pending === 'settings' ? '保存中…' : '保存限额'}</button>
           </div>
         </div>
-        <p className="small">累计调用 {formatNumber(usage?.total_calls ?? 0)} 次，成本 {totalCost ? `¥${(totalCost / 1_000_000).toFixed(2)}` : '¥0.00'}。</p>
+        <p className="small">累计调用 {formatNumber(usage?.total_calls ?? 0)} 次，成本 {totalCostLabel}。</p>
         {usage?.items.length ? (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>模块</th><th>供应商 / 模型</th><th className="num">调用</th><th className="num">输入 Token</th><th className="num">输出 Token</th><th className="num">成本</th></tr></thead>
-                      <tbody>{usage.items.map((item) => <tr key={`${item.module}-${item.provider}-${item.model}`}><td>{item.module}</td><td className="mono llm-breakable">{item.provider} / {item.model}</td><td className="num mono">{formatNumber(item.calls)}</td><td className="num mono">{formatNumber(item.input_tokens)}</td><td className="num mono">{formatNumber(item.output_tokens)}</td><td className="num mono">{item.cost_micro_yuan === null ? '价格未知' : `¥${(item.cost_micro_yuan / 1_000_000).toFixed(4)}`}</td></tr>)}</tbody>
+              <thead><tr><th>日期</th><th>模块</th><th>供应商 / 模型</th><th className="num">调用</th><th className="num">输入 Token</th><th className="num">输出 Token</th><th className="num">成本</th></tr></thead>
+                      <tbody>{usage.items.map((item) => <tr key={`${item.date}-${item.module}-${item.provider}-${item.model}-${item.model_config_id}`}><td className="mono">{item.date}</td><td>{item.module}</td><td className="mono llm-breakable">{item.provider ? PROVIDER_LABELS[item.provider] : '未知供应商'} / {item.model}</td><td className="num mono">{formatNumber(item.calls)}</td><td className="num mono">{formatNumber(item.input_tokens)}</td><td className="num mono">{formatNumber(item.output_tokens)}</td><td className="num mono">{item.cost_micro_yuan === null ? '价格未知' : `¥${(item.cost_micro_yuan / 1_000_000).toFixed(4)}`}</td></tr>)}</tbody>
             </table>
           </div>
         ) : <div className="empty">暂无用量记录</div>}

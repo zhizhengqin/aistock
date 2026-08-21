@@ -6,6 +6,7 @@ Full job set per architecture doc section 9.1:
 - sector analysis: Mon-Fri 09:30
 - dragon-tiger list: Mon-Fri 17:05 (after exchange T+1 publish)
 - monitor polling: every 5 min (trading-hours check inside the engine)
+- LLM internal audit payload cleanup: daily 01:00 (Beijing time)
 
 Every job runs through _guarded, which logs failures and creates an in-app
 notification for admin users so job failures are visible without email infra.
@@ -147,6 +148,32 @@ async def _run_membership_expire_scheduled():
         logger.info(f"Membership expire job: downgraded {n} user(s) to free")
 
 
+async def _run_llm_retention_scheduled():
+    """Run payload retention once per Beijing calendar day in a short worker thread."""
+    import asyncio
+
+    async def _cleanup():
+        from app.core.database import SessionLocal
+        from app.services.llm.retention import cleanup_llm_audit_payloads
+
+        def _run():
+            db = SessionLocal()
+            try:
+                return cleanup_llm_audit_payloads(db)
+            finally:
+                db.close()
+
+        result = await asyncio.to_thread(_run)
+        logger.info(
+            "大模型审计内容清理完成：影响行数=%s，批次数=%s，截止时间=%s",
+            result["affected_rows"],
+            result["batches"],
+            result["cutoff"].isoformat(),
+        )
+
+    await _guarded("llm_audit_retention", _cleanup())
+
+
 def start_scheduler(app=None, force: bool = False):
     """Register timed jobs and start the scheduler.
 
@@ -186,10 +213,15 @@ def start_scheduler(app=None, force: bool = False):
         CronTrigger(hour=0, minute=30),
         id="membership_expire_daily", replace_existing=True,
     )
+    sched.add_job(
+        _run_llm_retention_scheduled,
+        CronTrigger(hour=1, minute=0, timezone="Asia/Shanghai"),
+        id="llm_audit_retention_daily", replace_existing=True,
+    )
     if settings.TASK_INLINE or force:
         if not sched.running:
             sched.start()
-        logger.info("APScheduler started: 6 jobs registered")
+        logger.info("APScheduler started: 7 jobs registered")
     else:
         logger.info("APScheduler jobs registered (will run in arq worker)")
 

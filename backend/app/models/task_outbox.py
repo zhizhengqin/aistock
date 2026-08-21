@@ -21,6 +21,12 @@ class TaskOutbox(Base, TimestampMixin):
             "id",
             postgresql_where=text("status = 'pending'"),
         ),
+        Index(
+            "ix_task_outbox_locked_at",
+            "locked_at",
+            "id",
+            postgresql_where=text("status = 'locked' AND locked_at IS NOT NULL"),
+        ),
     )
 
     def __init__(self, **kwargs):

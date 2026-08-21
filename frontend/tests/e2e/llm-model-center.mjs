@@ -91,7 +91,7 @@ function responseFor(url, state) {
     return envelope({ items: state.models, total: state.models.length, page: 1, page_size: 100, default_model_config_id: state.defaultId, daily_token_limit: state.settings.daily_token_limit, budget_locked: state.settings.budget_locked, settings_version: state.settings.version })
   }
   if (path === '/api/admin/llm-settings') return envelope(state.settings)
-  if (path === '/api/admin/llm-usage') return envelope({ days: 7, items: [{ module: 'stock.analysis', provider: 'deepseek', model: 'deepseek-chat', input_tokens: 12, output_tokens: 8, cost_micro_yuan: null, calls: 1 }], total_calls: 1, total_cost_micro_yuan: 0 })
+  if (path === '/api/admin/llm-usage') return envelope({ days: 7, items: [{ date: '2026-08-20', module: 'stock.analysis', provider: 'deepseek', model: 'deepseek-chat', model_config_id: 'cfg-deepseek', input_tokens: 12, output_tokens: 8, cost_micro_yuan: null, calls: 1 }], total_calls: 1, total_cost_micro_yuan: null })
   return envelope([])
 }
 

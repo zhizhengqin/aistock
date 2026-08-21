@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import Date, case, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1183,34 +1183,74 @@ class LlmConfigService:
             raise _service_error("llm_usage_range_invalid", "用量查询天数必须在 1 到 90 之间", status_code=422)
         since = self.clock() - timedelta(days=days)
         with self._session() as session:
+            # Usage dates are calendar dates in Beijing, while timestamps are
+            # persisted in UTC.  SQLite has no timezone() function, so the
+            # hermetic unit path uses its equivalent +8 hour date modifier.
+            if session.bind is not None and session.bind.dialect.name == "postgresql":
+                usage_date = cast(func.timezone("Asia/Shanghai", LlmUsage.created_at), Date)
+            else:
+                usage_date = func.date(LlmUsage.created_at, "+8 hours")
+            model_value = func.coalesce(LlmUsage.model_snapshot, LlmUsage.model)
+            unknown_cost = case(
+                (
+                    or_(
+                        LlmUsage.input_price_snapshot.is_(None),
+                        LlmUsage.output_price_snapshot.is_(None),
+                        LlmUsage.cost_micro_yuan.is_(None),
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
             query = select(
+                usage_date.label("usage_date"),
                 LlmUsage.module,
                 LlmUsage.provider_snapshot,
-                LlmUsage.model_snapshot,
+                model_value.label("model"),
+                LlmUsage.model_config_id,
                 func.sum(LlmUsage.input_tokens).label("input_tokens"),
                 func.sum(LlmUsage.output_tokens).label("output_tokens"),
                 func.sum(LlmUsage.cost_micro_yuan).label("cost_micro_yuan"),
+                func.max(unknown_cost).label("unknown_cost"),
                 func.count(LlmUsage.id).label("calls"),
-            ).where(LlmUsage.created_at >= since).group_by(LlmUsage.module, LlmUsage.provider_snapshot, LlmUsage.model_snapshot)
+            ).where(LlmUsage.created_at >= since).group_by(
+                usage_date,
+                LlmUsage.module,
+                LlmUsage.provider_snapshot,
+                model_value,
+                LlmUsage.model_config_id,
+            ).order_by(usage_date, LlmUsage.module, LlmUsage.provider_snapshot, model_value)
             if provider is not None:
                 value = provider.value if isinstance(provider, Provider) else Provider(provider).value
                 query = query.where(LlmUsage.provider_snapshot == value)
             if model:
-                query = query.where(LlmUsage.model_snapshot == model.strip())
+                query = query.where(model_value == model.strip())
             rows = session.execute(query).all()
             items = [
                 {
+                    "date": row.usage_date.isoformat() if hasattr(row.usage_date, "isoformat") else str(row.usage_date),
                     "module": row.module,
                     "provider": row.provider_snapshot,
-                    "model": row.model_snapshot,
+                    "model": row.model,
+                    "model_config_id": row.model_config_id,
                     "input_tokens": int(row.input_tokens or 0),
                     "output_tokens": int(row.output_tokens or 0),
-                    "cost_micro_yuan": int(row.cost_micro_yuan or 0),
+                    "cost_micro_yuan": None if row.unknown_cost else int(row.cost_micro_yuan or 0),
                     "calls": int(row.calls or 0),
                 }
                 for row in rows
             ]
-            return {"days": days, "items": items, "total_calls": sum(item["calls"] for item in items), "total_cost_micro_yuan": sum(item["cost_micro_yuan"] for item in items)}
+            total_cost = (
+                None
+                if any(item["cost_micro_yuan"] is None for item in items)
+                else sum(item["cost_micro_yuan"] for item in items)
+            )
+            return {
+                "days": days,
+                "items": items,
+                "total_calls": sum(item["calls"] for item in items),
+                "total_cost_micro_yuan": total_cost,
+            }
 
 
 __all__ = ["LlmConfigService", "LlmConfigServiceError", "runtime_fingerprint"]

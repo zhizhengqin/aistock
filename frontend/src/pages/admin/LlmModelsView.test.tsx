@@ -239,11 +239,14 @@ describe('LlmModelsView', () => {
     mockLoaded()
     api.getLlmUsage.mockResolvedValue({
       ...baseUsage,
-      items: [{ module: 'stock.analysis', provider: 'deepseek', model: 'deepseek-chat', input_tokens: 12, output_tokens: 8, cost_micro_yuan: null, calls: 1 }],
+      total_cost_micro_yuan: null,
+      items: [{ date: '2026-08-20', module: 'stock.analysis', provider: 'deepseek', model: 'deepseek-chat', model_config_id: 'cfg-deepseek', input_tokens: 12, output_tokens: 8, cost_micro_yuan: null, calls: 1 }],
     })
     render(<LlmModelsView />)
     await screen.findByText('DeepSeek 主模型')
     expect((await screen.findAllByText(/价格未知/)).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText(/部分费用未配置/)).toBeInTheDocument()
+    expect(screen.getByText('2026-08-20')).toBeInTheDocument()
     expect(screen.queryByText(/¥0\.0000/)).not.toBeInTheDocument()
   })
 

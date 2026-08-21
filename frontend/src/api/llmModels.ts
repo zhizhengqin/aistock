@@ -64,9 +64,11 @@ export interface LlmSettings {
 }
 
 export interface LlmUsageItem {
+  date: string
   module: string
-  provider: LlmProvider
+  provider: LlmProvider | null
   model: string
+  model_config_id: string | null
   input_tokens: number
   output_tokens: number
   cost_micro_yuan: number | null
@@ -77,7 +79,7 @@ export interface LlmUsage {
   days: number
   items: LlmUsageItem[]
   total_calls: number
-  total_cost_micro_yuan: number
+  total_cost_micro_yuan: number | null
 }
 
 export interface LlmModelCandidate {

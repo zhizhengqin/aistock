@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest"
+    "test": "vitest",
+    "test:e2e:llm": "node tests/e2e/llm-model-center.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.7",

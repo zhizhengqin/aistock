@@ -29,9 +29,65 @@ jobs:
       - run: cd frontend && npm ci
       - run: cd frontend && npm test -- --run
       - run: cd frontend && npm run build
+      - name: Production bundle guard
+        run: |
+          if rg -n 'sk-super-secret|Mock 模式' frontend/dist; then
+            echo '生产 bundle 包含测试密钥或禁用的模拟运行文案' >&2
+            exit 1
+          fi
+      - name: Frontend — LLM model center Playwright
+        run: |
+          cd frontend
+          npx playwright install --with-deps chromium
+          npm run test:e2e:llm
+
+  integration:
+    name: PostgreSQL 16 + Redis 7 integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aistock_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d aistock_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/aistock_test
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Backend — Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements.txt
+      - name: Install isolated Redis restart binary
+        run: |
+          if ! command -v redis-server >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y redis-server
+          fi
+          redis-server --version
+      - name: Backend — real infrastructure integration
+        run: cd backend && PYTHONDONTWRITEBYTECODE=1 pytest tests/integration -q
 
   deploy:
-    needs: test                     # 测试全绿才允许部署（硬性关卡）
+    needs: [test, integration]      # 测试全绿才允许部署（硬性关卡）
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -47,7 +103,43 @@ jobs:
             set -e
             cd /opt/aistock
             git pull origin main
-            docker compose -f deploy/docker-compose.yml up -d --build
+            compose='docker compose -f deploy/docker-compose.yml'
+            # 先停止旧流量与 worker；任一迁移或 smoke 失败都保持 fail-closed。
+            $compose stop nginx worker api || true
+            # 第一阶段：构建并只执行一次 migrator。
+            $compose build migrator api worker nginx
+            $compose up -d postgres redis
+            $compose run --rm migrator
+            # 第二阶段：API bootstrap/readiness/DeepSeek smoke 通过后再恢复 worker/流量。
+            $compose up -d --no-deps api
+            ready=false
+            for attempt in $(seq 1 30); do
+              if $compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)" >/dev/null 2>&1; then ready=true; break; fi
+              sleep 2
+            done
+            test "${ready}" = true
+            $compose exec -T api python -m app.cli.llm_config readiness
+            deepseek_id="$($compose exec -T postgres psql -U aistock -d aistock -Atc "select id from llm_model_configs where provider = 'deepseek' and deleted_at is null and lifecycle_status = 'active' and verified_test_id is not null order by updated_at desc limit 1")"
+            test -n "${deepseek_id}"
+            $compose exec -T api python -m app.cli.llm_config live-smoke --provider deepseek --model-config-id "${deepseek_id}"
+            strict_three_provider="${{ vars.LLM_STRICT_THREE_PROVIDER_SMOKE || 'false' }}"
+            if [ "${strict_three_provider}" = "true" ]; then
+              for provider in kimi qwen; do
+                provider_id="$($compose exec -T postgres psql -U aistock -d aistock -Atc "select id from llm_model_configs where provider = '${provider}' and deleted_at is null and lifecycle_status = 'active' and verified_test_id is not null order by updated_at desc limit 1")"
+                test -n "${provider_id}"
+                $compose exec -T api python -m app.cli.llm_config live-smoke --provider "${provider}" --model-config-id "${provider_id}"
+              done
+            else
+              echo 'Kimi/Qwen 尚未完成接入；当前发布仅执行 DeepSeek smoke。'
+            fi
+            $compose up -d --no-deps worker nginx
+            traffic_ready=false
+            for attempt in $(seq 1 30); do
+              if curl -fsS http://localhost:8080/api/health >/dev/null 2>&1; then traffic_ready=true; break; fi
+              sleep 2
+            done
+            test "${traffic_ready}" = true
+            curl -fsS http://localhost:8080/api/health
             docker image prune -f
 
       - name: Smoke check /api/health

@@ -226,12 +226,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   if (overflow !== 0) failures.push(`${viewport.width}px admin page horizontal overflow ${overflow}px`)
-  await page.reload({ waitUntil: 'networkidle' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: '大模型配置' }).click()
   if (await page.getByTestId('daily-token-limit').inputValue() !== '7654321') failures.push(`${viewport.width}px reload lost settings state`)
   await page.getByText('价格未知').first().waitFor()
   state.settings = { ...state.settings, budget_locked: true, reserved_tokens: 170, settled_tokens: 230, version: 4 }
-  await page.reload({ waitUntil: 'networkidle' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: '大模型配置' }).click()
   await page.getByText('额度已锁停').waitFor()
   await page.getByText('预留 170').waitFor()

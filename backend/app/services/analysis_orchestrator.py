@@ -1,15 +1,19 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.core.llm import chat
-from app.core.logger import logger
 from app.datasource.akshare_client import (
     get_stock_info, get_stock_kline, get_stock_financial_summary,
     get_stock_capital_flow, get_stock_news_titles,
 )
 from app.datasource.indicators import compute_all
-from app.datasource.cache import make_key, cache_get, cache_set
-from app.models.task_record import TaskRecord
+from app.schemas.llm_outputs import (
+    CapitalAnalysisOutput,
+    ChiefDecisionOutput,
+    FundamentalAnalysisOutput,
+    NewsAnalysisOutput,
+    SentimentAnalysisOutput,
+    TechnicalAnalysisOutput,
+)
 
 
 def _build_technical_prompt(data: dict) -> list[dict]:
@@ -30,9 +34,9 @@ BOLL: 上轨={indicators['boll'].get('UP','N/A')} 中轨={indicators['boll'].get
 近5日收盘价：{kline['recent_closes']}
 近5日成交量：{kline['recent_volumes']}
 
-输出 JSON 格式：trend(趋势判断), score(0-100技术评分), short_trend, mid_trend, long_trend,
-support_resistance(数组[{{type:支撑/阻力, price, strength}}]), breakout_prob(向上突破概率%),
-indicator_readings(各指标解读文字), pattern(价格形态识别)"""
+只返回一个 JSON 对象，且只能包含字段：trend(趋势判断), score(0-100技术评分), short_trend, mid_trend, long_trend,
+support_resistance(数组，元素字段为type(支撑或阻力)、price、strength), breakout_prob(0-100),
+indicator_readings(各指标解读文字), pattern(价格形态识别)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON分析报告"}]
 
 
@@ -49,7 +53,7 @@ def _build_fundamental_prompt(data: dict) -> list[dict]:
 PE(TTM)={fin['pe_ttm']} PB={fin['pb']} 总市值={fin['market_cap']:.2f}亿
 行业：{info.get('industry','')}
 
-输出 JSON：financial_health, profitability, valuation, score(0-10), detail(分析文字)"""
+只返回一个 JSON 对象，且只能包含字段：financial_health, profitability, valuation, score(0-10), detail(分析文字)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON分析报告"}]
 
 
@@ -64,7 +68,7 @@ def _build_capital_prompt(data: dict) -> list[dict]:
 超大单净流入：{flow['net_super_large']/1e8:.2f}亿 大单：{flow['net_large']/1e8:.2f}亿
 中单：{flow['net_medium']/1e8:.2f}亿 小单：{flow['net_small']/1e8:.2f}亿
 
-输出 JSON：main_flow(净流入描述), flow_trend(趋势), score(0-10), detail(分析文字)"""
+只返回一个 JSON 对象，且只能包含字段：main_flow(净流入描述), flow_trend(趋势), score(0-10), detail(分析文字)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON分析报告"}]
 
 
@@ -77,7 +81,8 @@ def _build_news_prompt(data: dict) -> list[dict]:
 近期新闻：
 {news_text}
 
-输出 JSON：sentiment_rating(利好/利空/中性偏利好/中性偏利空/中性), key_news(数组), impact(影响分析)"""
+只返回一个 JSON 对象，且只能包含字段：sentiment_rating(利好/利空/中性偏利好/中性偏利空/中性),
+key_news(字符串数组), impact(影响分析)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON分析报告"}]
 
 
@@ -91,7 +96,7 @@ KDJ: K={indicators['kdj'].get('K','N/A')} D={indicators['kdj'].get('D','N/A')}
 近5日换手率(量比)：{kline['recent_volumes']}
 涨跌家数比由大盘决定，暂以RSI和KDJ推断情绪。
 
-输出 JSON：sentiment_score(0-100), indicators(指标描述), assessment(情绪评估)"""
+只返回一个 JSON 对象，且只能包含字段：sentiment_score(0-100), indicators(指标描述), assessment(情绪评估)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON分析报告"}]
 
 
@@ -104,24 +109,34 @@ def _build_chief_prompt(reports: list[dict]) -> list[dict]:
 以下是6位分析师的报告：
 {reports_text}
 
-输出 JSON：rating(买入/持有/卖出), target_price, stop_loss, confidence(0-100),
+只返回一个 JSON 对象，且只能包含字段：rating(买入/持有/卖出), target_price(可选正数), stop_loss(可选正数), confidence(0-100),
 entry_range(入场区间), take_profit(止盈目标), holding_period(持有期限), position_size(仓位建议),
-risk_warning(风险提示), key_watchpoints(数组), meeting_summary(会议总结)"""
+risk_warning(风险提示), key_watchpoints(字符串数组), meeting_summary(会议总结)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请做出最终投资决策"}]
 
 
-async def _safe_chat(messages: list[dict], user_id: int, module: str, key: str) -> dict:
-    try:
-        resp = await chat(messages, user_id=user_id, module=module)
-        return json.loads(resp.content)
-    except Exception as e:
-        logger.warning(f"Analyst {key} failed: {e}")
-        return {"error": str(e), "analyst": key}
+async def _set_progress(context, value: int) -> None:
+    await context.set_progress(value)
 
 
-async def run_full_analysis(stock_code: str, user_id: int, task: TaskRecord, db) -> dict:
-    from app.services.progress import maybe_set_progress
-    maybe_set_progress(task, db, 20)
+async def _execute_step(context, step_key: str, messages: list[dict], output_type):
+    """Execute one typed step through the task-scoped model service."""
+
+    await context.ensure_current()
+    return await context.llm.execute_json(
+        task_id=context.task_id,
+        step_key=step_key,
+        messages=messages,
+        output_type=output_type,
+        prompt_version=step_key,
+    )
+
+
+async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
+    """Run a stock report with the task's locked structured model service."""
+
+    context = task
+    await _set_progress(context, 20)
 
     # 1. Collect data
     info = get_stock_info(stock_code)
@@ -130,7 +145,7 @@ async def run_full_analysis(stock_code: str, user_id: int, task: TaskRecord, db)
     capital_flow = get_stock_capital_flow(stock_code, 20)
     news = get_stock_news_titles(stock_code, 10)
 
-    maybe_set_progress(task, db, 40)
+    await _set_progress(context, 40)
 
     # 2. Compute indicators
     indicators = compute_all(kline_df) if not kline_df.empty else {"ma": {}, "macd": {}, "rsi": {}, "kdj": {}, "boll": {}}
@@ -149,26 +164,27 @@ async def run_full_analysis(stock_code: str, user_id: int, task: TaskRecord, db)
         "news": news,
     }
 
-    maybe_set_progress(task, db, 50)
+    await _set_progress(context, 50)
 
     # 3. Run 5 analysts in parallel
     analyst_tasks = [
-        ("technical", "technical", _build_technical_prompt(data)),
-        ("fundamental", "fundamental", _build_fundamental_prompt(data)),
-        ("capital", "capital", _build_capital_prompt(data)),
-        ("news", "news", _build_news_prompt(data)),
-        ("sentiment", "sentiment", _build_sentiment_prompt(data)),
+        ("technical", _build_technical_prompt(data), TechnicalAnalysisOutput),
+        ("fundamental", _build_fundamental_prompt(data), FundamentalAnalysisOutput),
+        ("capital", _build_capital_prompt(data), CapitalAnalysisOutput),
+        ("news", _build_news_prompt(data), NewsAnalysisOutput),
+        ("sentiment", _build_sentiment_prompt(data), SentimentAnalysisOutput),
     ]
 
     results = await asyncio.gather(*[
-        _safe_chat(msgs, user_id, f"analysis:{key}", key) for key, _, msgs in analyst_tasks
+        _execute_step(context, f"stock.{key}.v1", msgs, output_type)
+        for key, msgs, output_type in analyst_tasks
     ])
 
     analyst_reports = {}
     for (key, _, _), result in zip(analyst_tasks, results):
-        analyst_reports[key] = result
+        analyst_reports[key] = result.model_dump(mode="json")
 
-    maybe_set_progress(task, db, 80)
+    await _set_progress(context, 80)
 
     # 4. Chief analyst: summarize all
     chief_input = [
@@ -178,9 +194,15 @@ async def run_full_analysis(stock_code: str, user_id: int, task: TaskRecord, db)
         {"analyst": "news", "report": analyst_reports.get("news", {})},
         {"analyst": "sentiment", "report": analyst_reports.get("sentiment", {})},
     ]
-    decision = await _safe_chat(_build_chief_prompt(chief_input), user_id, "analysis:chief", "chief")
+    decision_result = await _execute_step(
+        context,
+        "stock.chief.v1",
+        _build_chief_prompt(chief_input),
+        ChiefDecisionOutput,
+    )
+    decision = decision_result.model_dump(mode="json")
 
-    maybe_set_progress(task, db, 90)
+    await _set_progress(context, 90)
 
     # 5. Assemble final report
     report = {

@@ -1,6 +1,49 @@
 import pytest
 from unittest.mock import patch
+from app.schemas.llm_outputs import (
+    MainForceCapitalOutput,
+    MainForceFundamentalOutput,
+    MainForceIndustryOutput,
+    MainForceQuantOutput,
+    MainForceResearcherOutput,
+    MainForceTechnicalOutput,
+)
 from app.services.main_force_orchestrator import run_main_force_selection, _strategy_filter
+
+
+class _Context:
+    task_id = 202
+
+    def __init__(self):
+        self.llm = _Llm()
+
+    async def ensure_current(self):
+        return None
+
+    async def set_progress(self, _value):
+        return None
+
+
+class _Llm:
+    async def execute_json(self, **kwargs):
+        output_type = kwargs["output_type"]
+        if output_type is MainForceCapitalOutput:
+            extra = {"flow_concentration": "大单集中"}
+        elif output_type is MainForceIndustryOutput:
+            extra = {"sector_trend": "景气向上"}
+        elif output_type is MainForceFundamentalOutput:
+            extra = {"health_rating": "健康"}
+        elif output_type is MainForceTechnicalOutput:
+            extra = {"pattern": "突破形态"}
+        elif output_type is MainForceQuantOutput:
+            extra = {"quant_signals": ["量价齐升"]}
+        else:
+            return output_type.model_validate({
+                "companies": [{"code": "600519", "name": "贵州茅台", "buy_range": "98-102", "sell_range": "108-112", "confidence": 80, "position": "20%", "logic": "资金与基本面共振"}],
+                "excluded": [],
+                "meeting_summary": "研究员综合意见",
+            })
+        return output_type.model_validate({"focus_stocks": ["600519"], "analysis": "候选信号一致", "score": 8, **extra})
 
 
 def test_strategy_filter_excludes_low_market_cap():
@@ -61,7 +104,7 @@ async def test_main_force_full_report_structure():
          patch("app.services.main_force_orchestrator.get_stock_capital_flow", return_value={
              "net_main_flow": 2.3,
          }):
-        report = await run_main_force_selection(1, None, None)
+        report = await run_main_force_selection(1, _Context(), None)
 
     assert "skim_count" in report
     assert "filtered_count" in report

@@ -1,7 +1,6 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.core.llm import chat
 from app.core.logger import logger
 from app.datasource.akshare_client import (
     get_market_capital_flow_rank,
@@ -12,7 +11,14 @@ from app.datasource.akshare_client import (
     get_stock_capital_flow,
 )
 from app.datasource.indicators import compute_all
-from app.models.task_record import TaskRecord
+from app.schemas.llm_outputs import (
+    MainForceCapitalOutput,
+    MainForceFundamentalOutput,
+    MainForceIndustryOutput,
+    MainForceQuantOutput,
+    MainForceResearcherOutput,
+    MainForceTechnicalOutput,
+)
 
 
 STRATEGY_FILTERS = {
@@ -82,7 +88,8 @@ def _build_capital_prompt(data: dict) -> list[dict]:
 候选股：
 {candidates_text}
 
-输出 JSON：focus_stocks(数组), analysis(文字), score(0-10), flow_concentration(资金集中度描述)"""
+只返回 JSON 对象，且只能包含字段：focus_stocks(字符串数组), analysis(文字), score(0-10),
+flow_concentration(资金集中度描述)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -93,7 +100,7 @@ def _build_industry_prompt(data: dict) -> list[dict]:
 候选股：
 {candidates_text}
 
-输出 JSON：focus_stocks(数组), analysis(文字), score(0-10), sector_trend(板块趋势)"""
+只返回 JSON 对象，且只能包含字段：focus_stocks(字符串数组), analysis(文字), score(0-10), sector_trend(板块趋势)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -104,7 +111,7 @@ def _build_fundamental_prompt(data: dict) -> list[dict]:
 候选股：
 {candidates_text}
 
-输出 JSON：focus_stocks(数组), analysis(文字), score(0-10), health_rating(健康评级)"""
+只返回 JSON 对象，且只能包含字段：focus_stocks(字符串数组), analysis(文字), score(0-10), health_rating(健康评级)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -115,7 +122,7 @@ def _build_technical_prompt(data: dict) -> list[dict]:
 候选股：
 {candidates_text}
 
-输出 JSON：focus_stocks(数组), analysis(文字), score(0-10), pattern(价格形态)"""
+只返回 JSON 对象，且只能包含字段：focus_stocks(字符串数组), analysis(文字), score(0-10), pattern(价格形态)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -126,7 +133,7 @@ def _build_quant_prompt(data: dict) -> list[dict]:
 候选股：
 {candidates_text}
 
-输出 JSON：focus_stocks(数组), analysis(文字), score(0-10), quant_signals(量化信号数组)"""
+只返回 JSON 对象，且只能包含字段：focus_stocks(字符串数组), analysis(文字), score(0-10), quant_signals(字符串数组)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -141,26 +148,33 @@ def _build_researcher_prompt(results: list[dict], candidates: list[dict]) -> lis
 候选股：
 {candidates_text}
 
-输出 JSON：companies(数组，含code/name/buy_range/sell_range/confidence/position/logic), excluded(数组含code/name/reason), meeting_summary"""
+只返回 JSON 对象，且只能包含字段：companies(数组，元素含code/name/buy_range/sell_range/confidence(0-100)/position/logic),
+excluded(数组，元素含code/name/reason), meeting_summary。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请精选推荐"}]
 
 
-async def _safe_chat(messages: list[dict], user_id: int, module: str, key: str) -> dict:
-    try:
-        resp = await chat(messages, user_id=user_id, module=module)
-        return json.loads(resp.content)
-    except Exception as e:
-        logger.warning(f"Main force analyst {key} failed: {e}")
-        return {"error": str(e), "analyst": key}
+async def _set_progress(context, value: int) -> None:
+    await context.set_progress(value)
 
 
-async def run_main_force_selection(user_id: int, task: TaskRecord, db) -> dict:
-    from app.services.progress import maybe_set_progress
-    maybe_set_progress(task, db, 10)
+async def _execute_step(context, step_key: str, messages: list[dict], output_type):
+    await context.ensure_current()
+    return await context.llm.execute_json(
+        task_id=context.task_id,
+        step_key=step_key,
+        messages=messages,
+        output_type=output_type,
+        prompt_version=step_key,
+    )
+
+
+async def run_main_force_selection(user_id: int, task, db) -> dict:
+    context = task
+    await _set_progress(context, 10)
 
     # 1. Get top-N from full market capital flow ranking
     raw_candidates = get_market_capital_flow_rank(limit=40)
-    maybe_set_progress(task, db, 25)
+    await _set_progress(context, 25)
 
     # 2. Enrich candidates with strategy-relevant data + filter
     candidates = []
@@ -170,35 +184,42 @@ async def run_main_force_selection(user_id: int, task: TaskRecord, db) -> dict:
         except Exception as e:
             logger.warning(f"Enrich failed for {c.get('code')}: {e}")
             candidates.append(c)
-    maybe_set_progress(task, db, 40)
+    await _set_progress(context, 40)
 
     passed, excluded = _strategy_filter(candidates)
-    maybe_set_progress(task, db, 50)
+    await _set_progress(context, 50)
 
     # 3. Run 5 analysts in parallel
     data = {"candidates": passed[:20] if passed else candidates[:20]}
     analyst_tasks = [
-        ("capital", _build_capital_prompt(data)),
-        ("industry", _build_industry_prompt(data)),
-        ("fundamental", _build_fundamental_prompt(data)),
-        ("technical", _build_technical_prompt(data)),
-        ("quant", _build_quant_prompt(data)),
+        ("capital", _build_capital_prompt(data), MainForceCapitalOutput),
+        ("industry", _build_industry_prompt(data), MainForceIndustryOutput),
+        ("fundamental", _build_fundamental_prompt(data), MainForceFundamentalOutput),
+        ("technical", _build_technical_prompt(data), MainForceTechnicalOutput),
+        ("quant", _build_quant_prompt(data), MainForceQuantOutput),
     ]
     results = await asyncio.gather(*[
-        _safe_chat(msgs, user_id, f"main_force:{key}", key) for key, msgs in analyst_tasks
+        _execute_step(context, f"main_force.{key}.v1", msgs, output_type)
+        for key, msgs, output_type in analyst_tasks
     ])
-    analyst_reports = {key: result for (key, _), result in zip(analyst_tasks, results)}
-    maybe_set_progress(task, db, 75)
+    analyst_reports = {
+        key: result.model_dump(mode="json")
+        for (key, _, _), result in zip(analyst_tasks, results)
+    }
+    await _set_progress(context, 75)
 
     # 4. Senior researcher: synthesize into final recommendation
     researcher_input = [
         {"analyst": k, "report": v} for k, v in analyst_reports.items()
     ]
-    recommendation = await _safe_chat(
+    recommendation_result = await _execute_step(
+        context,
+        "main_force.researcher.v1",
         _build_researcher_prompt(researcher_input, data["candidates"]),
-        user_id, "main_force:researcher", "researcher"
+        MainForceResearcherOutput,
     )
-    maybe_set_progress(task, db, 90)
+    recommendation = recommendation_result.model_dump(mode="json")
+    await _set_progress(context, 90)
 
     # 5. Assemble final report
     report = {

@@ -1,14 +1,18 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.core.llm import chat
-from app.core.logger import logger
 from app.datasource.akshare_client import (
     get_market_indices,
     get_sw_sector_list,
     get_sector_capital_flow,
 )
-from app.models.task_record import TaskRecord
+from app.schemas.llm_outputs import (
+    SectorCapitalOutput,
+    SectorChiefOutput,
+    SectorDiagnosisOutput,
+    SectorMacroOutput,
+    SectorSentimentOutput,
+)
 
 
 def _build_macro_prompt(data: dict) -> list[dict]:
@@ -17,7 +21,7 @@ def _build_macro_prompt(data: dict) -> list[dict]:
 你是一位宏观策略师（sector_macro）。基于市场指数与宏观环境给出策略分析报告。
 大盘指数：{indices_text}
 
-输出 JSON：report(文字报告), score(0-10)"""
+只返回 JSON 对象，且只能包含字段：report(文字报告), score(0-10)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -28,7 +32,7 @@ def _build_diagnosis_prompt(data: dict) -> list[dict]:
 板块行情：
 {sectors_text}
 
-输出 JSON：sectors(数组含name/health/trend), score(0-10)"""
+只返回 JSON 对象，且只能包含字段：sectors(数组，元素字段为name/health/trend), score(0-10)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -42,7 +46,7 @@ def _build_capital_prompt(data: dict) -> list[dict]:
 板块资金流：
 {flow_text}
 
-输出 JSON：inflow_sectors(数组), outflow_sectors(数组), report(文字), score(0-10)"""
+只返回 JSON 对象，且只能包含字段：inflow_sectors(字符串数组), outflow_sectors(字符串数组), report(文字), score(0-10)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -52,7 +56,7 @@ def _build_sentiment_prompt(data: dict) -> list[dict]:
 你是一位市场情绪解码员（sector_sentiment）。基于大盘行情和板块表现分析投资者情绪。
 大盘：{indices_text}
 
-输出 JSON：sentiment_score(0-100), width(市场宽度描述), assessment(情绪评估)"""
+只返回 JSON 对象，且只能包含字段：sentiment_score(0-100), width(市场宽度描述), assessment(情绪评估)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
@@ -63,30 +67,37 @@ def _build_chief_prompt(reports: list[dict], data: dict) -> list[dict]:
 4位智能体报告：
 {reports_text}
 
-输出 JSON：bull_sectors(数组含name/confidence/1-10/logic/risk), bear_sectors(同构), neutral_sectors(同构), operation_advice(操作节奏建议), risk_triggers(风险触发条件), key_indicators(核心跟踪指标数组)"""
+只返回 JSON 对象，且只能包含字段：bull_sectors、bear_sectors、neutral_sectors（数组，元素字段为name、confidence(0-10)、logic、risk），
+operation_advice(操作节奏建议), risk_triggers(风险触发条件), key_indicators(核心跟踪指标字符串数组)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
 
 
-async def _safe_chat(messages: list[dict], user_id: int, module: str, key: str) -> dict:
-    try:
-        resp = await chat(messages, user_id=user_id, module=module)
-        return json.loads(resp.content)
-    except Exception as e:
-        logger.warning(f"Sector agent {key} failed: {e}")
-        return {"error": str(e), "agent": key}
+async def _set_progress(context, value: int) -> None:
+    await context.set_progress(value)
 
 
-async def run_sector_analysis(user_id: int, task: TaskRecord, db) -> dict:
-    from app.services.progress import maybe_set_progress
-    maybe_set_progress(task, db, 10)
+async def _execute_step(context, step_key: str, messages: list[dict], output_type):
+    await context.ensure_current()
+    return await context.llm.execute_json(
+        task_id=context.task_id,
+        step_key=step_key,
+        messages=messages,
+        output_type=output_type,
+        prompt_version=step_key,
+    )
+
+
+async def run_sector_analysis(user_id: int, task, db) -> dict:
+    context = task
+    await _set_progress(context, 10)
 
     # 1. Collect market data
     indices = get_market_indices()
-    maybe_set_progress(task, db, 25)
+    await _set_progress(context, 25)
     sw_sectors = get_sw_sector_list()
-    maybe_set_progress(task, db, 40)
+    await _set_progress(context, 40)
     sector_flow = get_sector_capital_flow()
-    maybe_set_progress(task, db, 50)
+    await _set_progress(context, 50)
 
     data = {
         "indices": indices,
@@ -96,21 +107,31 @@ async def run_sector_analysis(user_id: int, task: TaskRecord, db) -> dict:
 
     # 2. Run 4 agents in parallel
     agent_tasks = [
-        ("macro", _build_macro_prompt(data)),
-        ("diagnosis", _build_diagnosis_prompt(data)),
-        ("capital", _build_capital_prompt(data)),
-        ("sentiment", _build_sentiment_prompt(data)),
+        ("macro", _build_macro_prompt(data), SectorMacroOutput),
+        ("diagnosis", _build_diagnosis_prompt(data), SectorDiagnosisOutput),
+        ("capital", _build_capital_prompt(data), SectorCapitalOutput),
+        ("sentiment", _build_sentiment_prompt(data), SectorSentimentOutput),
     ]
     results = await asyncio.gather(*[
-        _safe_chat(msgs, user_id, f"sector:{key}", key) for key, msgs in agent_tasks
+        _execute_step(context, f"sector.{key}.v1", msgs, output_type)
+        for key, msgs, output_type in agent_tasks
     ])
-    agent_reports = {key: result for (key, _), result in zip(agent_tasks, results)}
-    maybe_set_progress(task, db, 75)
+    agent_reports = {
+        key: result.model_dump(mode="json")
+        for (key, _, _), result in zip(agent_tasks, results)
+    }
+    await _set_progress(context, 75)
 
     # 3. Chief synthesis: multi-direction prediction
     chief_input = [{"agent": k, "report": v} for k, v in agent_reports.items()]
-    decision = await _safe_chat(_build_chief_prompt(chief_input, data), user_id, "sector:chief", "chief")
-    maybe_set_progress(task, db, 90)
+    decision_result = await _execute_step(
+        context,
+        "sector.chief.v1",
+        _build_chief_prompt(chief_input, data),
+        SectorChiefOutput,
+    )
+    decision = decision_result.model_dump(mode="json")
+    await _set_progress(context, 90)
 
     # 4. Assemble final report
     report = {

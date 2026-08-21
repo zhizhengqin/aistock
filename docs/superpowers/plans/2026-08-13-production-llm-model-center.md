@@ -592,7 +592,7 @@ rg -n '(sk-[A-Za-z0-9_-]{8,}|LLM_CONFIG_ENCRYPTION_KEYS=.*[^<])' --glob '!*.exam
   5. `docker compose -f deploy/docker-compose.yml config`
   6. On disposable PostgreSQL/Redis: Alembic upgrade → downgrade → upgrade, bootstrap race, API/worker restart, Redis restart, readiness.
 - [ ] Before any production deployment, perform a separate reviewed maintenance runbook: backup PostgreSQL and `deploy/.env`; stop AI task creation; drain/resolve pending and running old tasks; stop old API/worker; run one-shot migrator and verify exact Alembic heads; start API; bootstrap/readiness/DeepSeek smoke; start worker; restore traffic. Then add and real-test Kimi/Qwen, switch defaults as required, create one small real report per provider, enable strict three-provider smoke, restart API/worker/Redis, and verify budget/default persistence. **未执行：本任务没有用户生产部署授权。**
-- [ ] Run `superpowers:verification-before-completion`, then gstack `/review`, `/qa`, and `/ship` in that order. **未执行：按任务包由主 Sol 单独完成 gstack 关卡。**
+- [x] Run `superpowers:verification-before-completion`, then gstack `/review`, `/qa`, and `/ship` in that order. **主 Sol 已完成：`/review` CLEAN、`/qa` 双视口通过、`/ship` 本地就绪；按项目规则未 push、未建 PR、未部署。**
 - [x] Commit: only after verification evidence is captured, stage the Task14 intent files (including the approved `deploy/.env.example` cleanup and this report) and commit `docs(llm): document production model center`.
 
 ## Verification Coverage Map
@@ -611,15 +611,15 @@ The detailed QA artifact is `/Users/qinzz/.gstack/projects/zhizhengqin-aistock/q
 
 ## Self-Review Checklist
 
-- [ ] Every design acceptance criterion maps to at least one task and one verification command.
-- [ ] Every created/modified file is named; no step says “其他文件”“类似处理” or leaves an unresolved placeholder.
-- [ ] `Provider`, lifecycle states, error codes, UUID format, fingerprint rules, budget status and task status are consistent across models, services, API and UI.
-- [ ] PostgreSQL—not Redis—is the sole budget ledger; Redis restart cannot reset reservations or settlements.
-- [ ] Runtime config is selected once at submission and decrypted once per task, not re-read per model step.
-- [ ] Network I/O is outside DB transactions; task success and final report are one atomic commit.
-- [ ] Tests do not rely on product Mock and production contains no fixed AI fallback.
-- [ ] Migration is additive and old image compatibility is retained for the observation release.
-- [ ] No implementation, push or production deployment occurs merely because this plan was approved.
+- [x] Every design acceptance criterion maps to at least one task and one verification command.
+- [x] Every created/modified file is named; no step says “其他文件”“类似处理” or leaves an unresolved placeholder.
+- [x] `Provider`, lifecycle states, error codes, UUID format, fingerprint rules, budget status and task status are consistent across models, services, API and UI.
+- [x] PostgreSQL—not Redis—is the sole budget ledger; Redis restart cannot reset reservations or settlements.
+- [x] Runtime config is selected once at submission and decrypted once per task, not re-read per model step.
+- [x] Network I/O is outside DB transactions; task success and final report are one atomic commit.
+- [x] Tests do not rely on product Mock and production contains no fixed AI fallback.
+- [x] Migration is additive and old image compatibility is retained for the observation release.
+- [x] No implementation, push or production deployment occurs merely because this plan was approved.
 
 ## Engineering Review Completion Summary
 

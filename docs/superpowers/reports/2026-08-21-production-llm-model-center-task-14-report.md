@@ -86,4 +86,5 @@ rg -n '(sk-[A-Za-z0-9_-]{8,}|LLM_CONFIG_ENCRYPTION_KEYS=.*[^<])' --glob '!*.exam
 未获得生产部署授权，因此未备份线上 PostgreSQL/`deploy/.env`，未停止线上任务或流量，未运行
 线上 migrator/readiness/DeepSeek live-smoke，未接入并真实调用 Kimi/Qwen，未启用严格三供应商
 smoke，也未执行线上 API/Worker/Redis 重启和回滚。计划中对应复选框保持未勾选；主 Sol 的
-gstack `/review`、`/qa`、`/ship` 也保持未勾选。
+gstack `/review`、`/qa`、`/ship` 已在 Task 14 提交后完成本地关卡：审查 CLEAN、双视口
+`failures: []`、本地 ship readiness 通过；未 push、未建 PR、未部署。

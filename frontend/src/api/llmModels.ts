@@ -61,7 +61,6 @@ export interface LlmSettings {
   version: number
   switched_by: number | null
   switched_at: string | null
-  audit_event_id?: string
 }
 
 export interface LlmUsageItem {
@@ -110,7 +109,6 @@ export interface LlmSettingsMutationResult {
   budget_locked: boolean
   default_model_config_id: string | null
   version: number
-  audit_event_id?: string
 }
 
 function unwrap<T>(response: { data: { data: T } }): T {

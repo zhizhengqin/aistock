@@ -120,6 +120,7 @@ export default function LlmModelsView() {
   const [modelList, setModelList] = useState<LlmModelList | null>(null)
   const [settings, setSettings] = useState<LlmSettings | null>(null)
   const [usage, setUsage] = useState<LlmUsage | null>(null)
+  const [dailyTokenLimit, setDailyTokenLimit] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -143,7 +144,10 @@ export default function LlmModelsView() {
     const nextErrors: string[] = []
     if (modelsResult.status === 'fulfilled') setModelList(modelsResult.value)
     else nextErrors.push(errorMessage(modelsResult.reason, '加载模型配置失败'))
-    if (settingsResult.status === 'fulfilled') setSettings(settingsResult.value)
+    if (settingsResult.status === 'fulfilled') {
+      setSettings(settingsResult.value)
+      setDailyTokenLimit(settingsResult.value.daily_token_limit)
+    }
     else nextErrors.push(errorMessage(settingsResult.reason, '加载额度设置失败'))
     if (usageResult.status === 'fulfilled') setUsage(usageResult.value)
     setError(nextErrors[0] || '')
@@ -279,8 +283,7 @@ export default function LlmModelsView() {
     setPending('settings')
     setError('')
     setNotice('')
-    const input = document.querySelector<HTMLInputElement>('[data-testid="daily-token-limit"]')
-    const limit = Number(input?.value || settings.daily_token_limit)
+    const limit = Number(dailyTokenLimit ?? settings.daily_token_limit)
     try {
       await patchLlmSettings(settings.version, limit)
       await refresh()
@@ -299,11 +302,11 @@ export default function LlmModelsView() {
     setPending('unlock')
     setError('')
     try {
-      const result = await unlockLlmSettings(settings.version, unlockReason.trim())
+      await unlockLlmSettings(settings.version, unlockReason.trim())
       await refresh()
       setUnlockOpen(false)
       setUnlockReason('')
-      setNotice(result.audit_event_id ? `解锁审计已记录：${result.audit_event_id}` : '解锁审计已记录')
+      setNotice('解锁审计已记录')
     } catch (cause) {
       const message = errorMessage(cause, '解锁额度失败')
       if ((cause as any)?.response?.status === 409) await refresh()
@@ -462,7 +465,7 @@ export default function LlmModelsView() {
           </div>
           <div className="llm-settings-form">
             <label htmlFor="daily-token-limit">每日 Token 限额</label>
-            <input id="daily-token-limit" data-testid="daily-token-limit" className="input mono" type="number" min="1" defaultValue={dailyLimit} />
+            <input id="daily-token-limit" data-testid="daily-token-limit" className="input mono" type="number" min="1" value={dailyTokenLimit ?? dailyLimit} onChange={(event) => setDailyTokenLimit(Number(event.target.value))} />
             <button className="btn btn-ghost" onClick={updateSettings} disabled={pending === 'settings'}>{pending === 'settings' ? '保存中…' : '保存限额'}</button>
           </div>
         </div>

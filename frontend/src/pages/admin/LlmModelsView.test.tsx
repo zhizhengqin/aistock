@@ -307,7 +307,7 @@ describe('LlmModelsView', () => {
   it('renders the successful unlock audit result only after the API confirms it', async () => {
     const locked = { ...baseSettings, budget_locked: true, reserved_tokens: 1, settled_tokens: 2, version: 4 }
     mockLoaded({}, locked)
-    api.unlockLlmSettings.mockResolvedValueOnce({ ...locked, budget_locked: false, version: 5, audit_event_id: 'audit-1' })
+    api.unlockLlmSettings.mockResolvedValueOnce({ ...locked, budget_locked: false, version: 5 })
     render(<LlmModelsView />)
     await screen.findByText(/额度已锁停/)
     api.getLlmSettings.mockResolvedValueOnce({ ...locked, budget_locked: false, version: 5 })
@@ -316,6 +316,25 @@ describe('LlmModelsView', () => {
     await userEvent.click(screen.getByRole('button', { name: '确认解锁' }))
     expect(await screen.findByText(/解锁审计已记录/)).toBeInTheDocument()
     expect(screen.queryByText(/额度已锁停/)).not.toBeInTheDocument()
+  })
+
+  it('refetches and synchronizes the daily limit input after a settings conflict', async () => {
+    const latest = { ...baseSettings, daily_token_limit: 7654321, version: 2 }
+    api.listLlmModels.mockResolvedValue(baseList)
+    api.getLlmSettings
+      .mockResolvedValueOnce(baseSettings)
+      .mockResolvedValueOnce(latest)
+    api.getLlmUsage.mockResolvedValue(baseUsage)
+    api.patchLlmSettings.mockRejectedValueOnce(apiError(409, '额度设置版本已变化', 'llm_settings_conflict'))
+    render(<LlmModelsView />)
+    const input = await screen.findByTestId('daily-token-limit')
+    expect(input).toHaveValue(2000000)
+    await userEvent.clear(input)
+    await userEvent.type(input, '123')
+    await userEvent.click(screen.getByRole('button', { name: '保存限额' }))
+    await waitFor(() => expect(api.patchLlmSettings).toHaveBeenCalledWith(1, 123))
+    await waitFor(() => expect(input).toHaveValue(7654321))
+    expect(await screen.findByText('配置已被其他管理员修改，请刷新后重试')).toBeInTheDocument()
   })
 })
 

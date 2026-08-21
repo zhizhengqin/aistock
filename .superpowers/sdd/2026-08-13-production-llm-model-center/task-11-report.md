@@ -89,3 +89,23 @@ Task 11 原批准文件：
 - `backend/tests/api/test_admin_llm.py`
 
 未修改数据库模型/迁移、后端 API 路由契约、TaskRunner 或 Task 12+ 文件；构建生成物未纳入提交。剩余风险是真实浏览器 390px 端到端交互留给后续 Task 12 验收，本轮以 CSS 约束与 Testing Library 契约覆盖。
+
+## Task 11 复核修复：settings DTO 与冲突后额度同步
+
+### RED
+
+```text
+cd frontend && npm test -- --run src/pages/admin/LlmModelsView.test.tsx
+```
+
+结果：15 tests 中 14 passed、1 failed。新增 settings 409 场景中，PATCH 冲突后的 GET 已返回服务端新限额 `7654321`，但旧的非受控输入仍保留用户输入 `123`；同时解锁成功测试已先按后端真实 mutation response shape（无 `audit_event_id`）修正。
+
+### GREEN
+
+修复内容：删除 `LlmSettings` 与 `LlmSettingsMutationResult` 虚构的 `audit_event_id` 字段；解锁成功后固定显示“解锁审计已记录”；每日 Token 限额改为受控 state，每次 settings refresh 同步服务端值，409 refetch 后输入框随最新版本更新。
+
+```text
+cd frontend && npm test -- --run src/pages/admin/LlmModelsView.test.tsx
+```
+
+结果：15 passed。

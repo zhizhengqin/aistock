@@ -103,11 +103,22 @@ jobs:
             set -e
             cd /opt/aistock
             git pull origin main
-            compose='docker compose -f deploy/docker-compose.yml'
-            # 先停止旧流量与 worker；任一迁移或 smoke 失败都保持 fail-closed。
-            $compose stop nginx worker api || true
-            # 第一阶段：构建并只执行一次 migrator。
+            compose='docker compose --env-file deploy/.env -f deploy/docker-compose.yml'
+            # 先构建新镜像；旧流量保持运行，直到配置预检全部通过。
             $compose build migrator api worker nginx
+            host_uid="$(id -u)"
+            host_gid="$(id -g)"
+            # 只挂载 deploy 目录，用 SSH 用户身份生成或校验密钥环；脚本绝不输出密钥。
+            $compose run --rm --no-deps --user "${host_uid}:${host_gid}" \
+              -v "$PWD/deploy:/runtime/deploy:rw" \
+              migrator python /runtime/deploy/ensure_llm_keyring.py /runtime/deploy/.env
+            # 使用新镜像导入 Settings，确认 JSON/Base64/长度和生产写入 ID 均可解析。
+            $compose run --rm --no-deps \
+              -v "$PWD/deploy:/runtime/deploy:ro" \
+              migrator python -c "from app.core.config import Settings; Settings()"
+            # 配置预检通过后才停止旧流量与 worker；后续任一迁移或 smoke 失败都保持 fail-closed。
+            $compose stop nginx worker api || true
+            # 第一阶段：启动依赖并只执行一次 migrator。
             $compose up -d postgres redis
             $compose run --rm migrator
             # 第二阶段：API bootstrap/readiness/DeepSeek smoke 通过后再恢复 worker/流量。

@@ -8,6 +8,8 @@ import re
 from typing import Any
 
 from app.datahub.contracts import (
+    BoardConstituent,
+    BoardQuote,
     Capability,
     DataResult,
     DragonTigerItem,
@@ -17,7 +19,6 @@ from app.datahub.contracts import (
     KlineBar,
     NewsItem,
     SectorFlow,
-    SectorOverview,
     SectorQuote,
     ShareholderSummary,
 )
@@ -32,7 +33,8 @@ class EastmoneyProvider(ProviderAdapter):
     BASE_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 
     _SUPPORTED = {
-        Capability.MARKET_SECTOR_OVERVIEW,
+        Capability.MARKET_BOARD_QUOTES,
+        Capability.MARKET_BOARD_CONSTITUENTS,
         Capability.STOCK_FUND_FLOW,
         Capability.MARKET_FUND_FLOW_RANK,
         Capability.STOCK_SHAREHOLDERS,
@@ -150,8 +152,49 @@ def _typed_rows(capability: Capability, rows: list[dict[str, Any]], params: dict
         change = _num(row.get("change_pct", row.get("f3", row.get("PCT_CHANGE", 0))))
         flow = _num(row.get("net_main_flow", row.get("f62", row.get("MAIN_NET_INFLOW", 0))))
         row_time = _row_time(row)
-        if capability is Capability.MARKET_SECTOR_OVERVIEW:
-            output.append(SectorOverview(name=name, change_pct=change, price=_num(row.get("price", row.get("f2", 0))), representative_stocks=_representative_stocks(row), data_at=row_time))
+        if capability is Capability.MARKET_BOARD_QUOTES:
+            kind = _validated_kind(params.get("kind"))
+            data_at = row_time
+            if data_at is None:
+                continue
+            output.append(
+                BoardQuote(
+                    board_code=str(row.get("board_code") or row.get("f12") or "").strip(),
+                    board_name=str(row.get("board_name") or row.get("f14") or "").strip(),
+                    kind=kind,
+                    change_pct=_optional_num(row.get("change_pct", row.get("f3"))),
+                    turnover=_optional_num(row.get("turnover", row.get("f6"))),
+                    market_cap=_optional_num(row.get("market_cap", row.get("f20"))),
+                    rise_count=_optional_int(row.get("rise_count", row.get("f104"))),
+                    fall_count=_optional_int(row.get("fall_count", row.get("f105"))),
+                    flat_count=_optional_int(row.get("flat_count", row.get("f106"))),
+                    leader_code=_optional_board_leader_code(row.get("leader_code", row.get("f140"))),
+                    leader_name=_optional_text(row.get("leader_name", row.get("f128"))),
+                    leader_change_pct=_optional_num(row.get("leader_change_pct", row.get("f136"))),
+                    data_at=data_at,
+                )
+            )
+        elif capability is Capability.MARKET_BOARD_CONSTITUENTS:
+            kind = _validated_kind(params.get("kind"))
+            data_at = row_time
+            if data_at is None:
+                continue
+            raw_code = row.get("code") or row.get("f12") or ""
+            try:
+                normalised_code = normalise_ticker(str(raw_code))
+            except DataHubError:
+                continue
+            output.append(
+                BoardConstituent(
+                    code=normalised_code,
+                    name=str(row.get("name") or row.get("f14") or normalised_code),
+                    price=_optional_num(row.get("price", row.get("f2"))),
+                    change_pct=_optional_num(row.get("change_pct", row.get("f3"))),
+                    turnover=_optional_num(row.get("turnover", row.get("f6"))),
+                    market_cap=_optional_num(row.get("market_cap", row.get("f20"))),
+                    data_at=data_at,
+                )
+            )
         elif capability is Capability.SECTOR_REALTIME:
             output.append(SectorQuote(code=code, name=name, change_pct=change, price=_num(row.get("f2", row.get("price", 0))), turnover=_num(row.get("f6", row.get("turnover", 0))), data_at=row_time))
         elif capability is Capability.SECTOR_FUND_FLOW:
@@ -265,6 +308,34 @@ def _endpoint(capability: Capability, params: dict[str, Any]) -> tuple[str, dict
             filter_text += f"(TRADE_DATE='{trade_date}')"
         return "https://datacenter-web.eastmoney.com/api/data/v1/get", {"reportName": report, "columns": "ALL", "filter": filter_text, "pageNumber": "1", "pageSize": str(params.get("limit", 50)), "sortColumns": "TRADE_DATE", "sortTypes": "-1", "source": "WEB", "client": "WEB"}
     fields = "f2,f3,f6,f12,f14,f62,f66,f72,f78,f84,f184,f124,f128,f136,f138,f139,f140,f141"
+    if capability is Capability.MARKET_BOARD_QUOTES:
+        kind = _validated_kind(params.get("kind"))
+        return "https://push2.eastmoney.com/api/qt/clist/get", {
+            "pn": "1",
+            "pz": "5000",
+            "po": "1",
+            "np": "1",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f3",
+            "fs": "m:90+t:2" if kind == "industry" else "m:90+t:3",
+            "fields": "f12,f14,f3,f6,f20,f104,f105,f106,f128,f136,f140,f124",
+        }
+    if capability is Capability.MARKET_BOARD_CONSTITUENTS:
+        kind = _validated_kind(params.get("kind"))
+        board_code = _validated_board_code(params.get("board_code"))
+        limit = max(1, min(int(params.get("limit", 20)), 20))
+        return "https://push2.eastmoney.com/api/qt/clist/get", {
+            "pn": "1",
+            "pz": str(limit),
+            "po": "1",
+            "np": "1",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f3",
+            "fs": f"b:{board_code}",
+            "fields": "f2,f3,f6,f12,f14,f20,f124",
+        }
     if capability is Capability.MARKET_FUND_FLOW_RANK:
         # Explicitly cover Shanghai main/STAR, Shenzhen, and Beijing.  The
         # separate BJ ``s:2048`` selector avoids silently dropping the new
@@ -300,54 +371,6 @@ def _row_time(row: dict[str, Any]) -> datetime | None:
     return None
 
 
-def _representative_stocks(row: dict[str, Any]) -> list[dict[str, Any]]:
-    """Map Eastmoney's real sector leader fields when the endpoint supplies them.
-
-    The board list does not always include a leader; in that case an empty
-    list is honest and the API/UI can explain that no representative stock was
-    returned.  We never invent a constituent from the board code itself.
-    """
-
-    direct = row.get("representative_stocks")
-    if isinstance(direct, list):
-        values: list[dict[str, Any]] = []
-        for item in direct:
-            if not isinstance(item, dict) or not item.get("code") or not item.get("name"):
-                continue
-            try:
-                code = normalise_ticker(str(item["code"]))
-            except DataHubError:
-                continue
-            values.append({
-                "code": code,
-                "name": str(item["name"]),
-                "price": item.get("price"),
-                "change_pct": _num(item.get("change_pct", 0)),
-            })
-        if values:
-            return values
-    name = row.get("leader_name") or row.get("leading_name") or row.get("f140") or row.get("f128")
-    code = row.get("leader_code") or row.get("leading_code") or row.get("f141") or row.get("f139")
-    if not name or not code:
-        return []
-    try:
-        normalized = normalise_ticker(str(code))
-    except DataHubError:
-        return []
-    raw_price = row.get("leader_price")
-    if raw_price is None:
-        raw_price = row.get("f138")
-    raw_change = row.get("leader_change_pct")
-    if raw_change is None:
-        raw_change = row.get("f136")
-    return [{
-        "code": normalized,
-        "name": str(name),
-        "price": _num(raw_price) if raw_price not in (None, "") else None,
-        "change_pct": _num(raw_change),
-    }]
-
-
 def _parse_time(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -381,6 +404,50 @@ def _int(value: Any) -> int | None:
         return int(float(value)) if value not in (None, "", "-") else None
     except (TypeError, ValueError):
         return None
+
+
+def _optional_num(value: Any) -> float | None:
+    if value in (None, "", "-", "--"):
+        return None
+    try:
+        number = float(str(value).replace(",", ""))
+        return number if number == number and number not in (float("inf"), float("-inf")) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    number = _optional_num(value)
+    return int(number) if number is not None else None
+
+
+def _optional_text(value: Any) -> str | None:
+    if value in (None, "", "-", "--"):
+        return None
+    return str(value)
+
+
+def _optional_board_leader_code(value: Any) -> str | None:
+    if value in (None, "", "-", "--"):
+        return None
+    raw = str(value).strip()
+    try:
+        return normalise_ticker(raw).split(".", 1)[0]
+    except DataHubError:
+        return raw
+
+
+def _validated_kind(value: Any) -> str:
+    if value not in {"industry", "theme"}:
+        raise DataHubError(DataHubErrorCode.VALIDATION, "板块类型必须是 industry 或 theme", provider="eastmoney")
+    return str(value)
+
+
+def _validated_board_code(value: Any) -> str:
+    raw = str(value or "").upper()
+    if not re.fullmatch(r"BK\d{3,6}", raw):
+        raise DataHubError(DataHubErrorCode.VALIDATION, "板块代码格式无效", provider="eastmoney")
+    return raw
 
 
 __all__ = ["EastmoneyProvider"]

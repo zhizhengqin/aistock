@@ -24,6 +24,7 @@ _TASK_FUNCTIONS = {
     "portfolio_risk": "portfolio_risk_task",
     "news_collect": "news_collect_task",
     "us_research": "us_research_task",
+    "market_hotspot_snapshot": "market_hotspot_snapshot_task",
 }
 
 
@@ -144,6 +145,8 @@ class OutboxDispatcher:
             return function, (task.id,)
         if task_type == "us_research":
             return function, (task.id, str(args["trade_date"]), user_id)
+        if task_type == "market_hotspot_snapshot":
+            return function, (task.id,)
         raise UnknownTaskType(task_type)
 
     @staticmethod

@@ -22,7 +22,6 @@ from app.datahub.contracts import (
     FundFlow,
     FundFlowRankItem,
     KlineBar,
-    SectorOverview,
     MarketIndex,
     NewsItem,
     SectorFlow,
@@ -151,9 +150,6 @@ class AkshareProvider(ProviderAdapter):
         if capability is Capability.SECTOR_FUND_FLOW:
             frame = await self.limiter.run_sync(self.name, lambda: self.ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流"))
             return _frame_records(frame, {"名称": "name", "今日涨跌幅": "change_pct", "今日主力净流入-净额": "net_main_flow", "今日主力净流入-净占比": "net_main_pct"})
-        if capability is Capability.MARKET_SECTOR_OVERVIEW:
-            frame = await self.limiter.run_sync(self.name, self.ak.stock_board_industry_name_em)
-            return _frame_records(frame, {"板块名称": "name", "涨跌幅": "change_pct", "最新价": "price"})
         if capability is Capability.DRAGON_TIGER_LIST:
             frame = await self.limiter.run_sync(self.name, lambda: self.ak.stock_lhb_detail_em(start_date=params.get("start_date", ""), end_date=params.get("end_date", "")))
             return _frame_records(frame, {"代码": "code", "名称": "name", "上榜日": "date", "解读": "reason", "收价": "close", "涨跌幅": "change_pct", "买入额": "buy_amount", "卖出额": "sell_amount", "净额": "net_amount"})
@@ -167,7 +163,6 @@ class AkshareProvider(ProviderAdapter):
     def _model_for(capability: Capability):
         return {
             Capability.MARKET_INDICES: MarketIndex,
-            Capability.MARKET_SECTOR_OVERVIEW: SectorOverview,
             Capability.STOCK_SNAPSHOT: StockSnapshot,
             Capability.STOCK_KLINE_DAILY: KlineBar,
             Capability.SECTOR_KLINE: KlineBar,

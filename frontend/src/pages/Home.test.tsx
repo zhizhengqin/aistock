@@ -1,61 +1,52 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import Home from './Home'
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('../api/client', () => ({ default: { get } }))
 
-describe('Home DataHub 状态', () => {
-  it('完全失败时显示可重试提示而不填充 0.00 行情', async () => {
-    const error = Object.assign(new Error('unavailable'), { response: { status: 503 } })
-    get.mockRejectedValue(error)
-    render(<Home />)
-    expect(await screen.findByText('行情数据暂不可用，请稍后重试')).toBeInTheDocument()
-    expect(screen.queryByText('0.00')).not.toBeInTheDocument()
+const meta = { provider: '东方财富', freshness: 'fresh', data_at: '2026-08-22T07:30:00Z', fetched_at: '2026-08-22T07:30:01Z', trade_date: '2026-08-22' }
+const item = (kind: 'industry' | 'theme', code: string) => ({ board_code: code, board_name: code === 'BK0001' ? '银行' : '新能源', kind, change_pct: 1.2, hot_score: 80, rank: 1, trend_status: 'steady', streak_days: 1, data_at: meta.data_at, trade_date: meta.trade_date })
+
+describe('Home market hotspot center', () => {
+  beforeEach(() => {
+    get.mockReset()
+    get.mockImplementation((path: string, config?: { params?: { kind?: string; board_code?: string } }) => {
+      if (path.includes('market-indices')) return Promise.resolve({ data: { data: [{ code: '000001.SS', name: '上证指数', price: 3000, change_pct: 1.1 }], meta } })
+      if (path.includes('market-hotspots')) return Promise.resolve({ data: { data: { kind: config?.params?.kind, items: [item(config?.params?.kind as 'industry' | 'theme', config?.params?.kind === 'theme' ? 'BK0002' : 'BK0001')], meta }, meta } })
+      if (path.includes('market-cloud')) return Promise.resolve({ data: { data: { kind: config?.params?.kind, nodes: [], meta }, meta } })
+      return Promise.resolve({ data: { data: { kind: config?.params?.kind || 'industry', board_code: config?.params?.board_code, items: [{ code: '600000.SS', name: '浦发银行', price: 10, change_pct: 1, rank: 1 }], meta }, meta } })
+    })
   })
 
-  it('最近有效数据显示来源和数据时间', async () => {
-    get.mockImplementation((path: string) => path.includes('market-indices')
-      ? Promise.resolve({ data: { data: [{ code: '000001', name: '上证指数', price: 3000, change_pct: 1 }], meta: { freshness: 'stale', provider: '腾讯财经', data_at: '2026-08-22T07:30:00Z' } } })
-      : Promise.resolve({ data: { data: { category: '银行金融', period: '1月', sectors: [], stocks: [] }, meta: {} } }))
+  it('shows industry and theme panels with signed hotspot values and no fixed periods', async () => {
     render(<Home />)
-    expect(await screen.findByText(/最近有效行情：腾讯财经/)).toBeInTheDocument()
-    expect(screen.getByText(/数据更新于/)).not.toHaveTextContent('加载中')
+    expect(await screen.findByRole('region', { name: '热门板块' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '热门题材' })).toBeInTheDocument()
+    expect(screen.getAllByText('+1.20%').length).toBe(2)
+    expect(screen.queryByText('1月')).not.toBeInTheDocument()
+    expect(screen.queryByText('5年')).not.toBeInTheDocument()
   })
 
-  it('指数成功后即使板块失败也显示最近一次行情更新时间', async () => {
-    const error = Object.assign(new Error('unavailable'), { response: { status: 503 } })
-    get.mockImplementation((path: string) => path.includes('market-indices')
-      ? Promise.resolve({ data: { data: [{ code: '000001', name: '上证指数', price: 3000, change_pct: 1 }], meta: { freshness: 'fresh', data_at: '2026-08-22T07:30:00Z' } } })
-      : Promise.reject(error))
+  it('clicking a theme updates selected representative stock area', async () => {
     render(<Home />)
-    expect(await screen.findByText(/数据更新于/)).not.toHaveTextContent('加载中')
+    const button = await screen.findByRole('button', { name: /新能源/ })
+    await userEvent.click(button)
+    await waitFor(() => expect(screen.getByText('浦发银行')).toBeInTheDocument())
+    expect(button).toHaveAttribute('aria-pressed', 'true')
   })
 
-  it('指数和板块 DataHub 错误使用独立错误样式', async () => {
-    const error = Object.assign(new Error('unavailable'), { response: { status: 503 } })
-    get.mockRejectedValue(error)
+  it('keeps one panel usable when the other returns 503', async () => {
+    const error = Object.assign(new Error('down'), { response: { status: 503 } })
+    get.mockImplementation((path: string, config?: { params?: { kind?: string } }) => {
+      if (path.includes('market-hotspots') && config?.params?.kind === 'industry') return Promise.reject(error)
+      if (path.includes('market-hotspots')) return Promise.resolve({ data: { data: { kind: 'theme', items: [item('theme', 'BK0002')], meta }, meta } })
+      if (path.includes('market-indices')) return Promise.resolve({ data: { data: [], meta } })
+      return Promise.resolve({ data: { data: { kind: 'industry', nodes: [], meta }, meta } })
+    })
     render(<Home />)
-    expect(await screen.findByText('行情数据暂不可用，请稍后重试')).toHaveClass('datahub-error')
-    expect(await screen.findByText('板块数据暂不可用，请稍后重试')).toHaveClass('datahub-error')
-  })
-
-  it('首次挂载只请求一次板块数据，指数失败时热力图显示不可用状态', async () => {
-    get.mockClear()
-    const error = Object.assign(new Error('unavailable'), { response: { status: 503 } })
-    get.mockImplementation((path: string) => path.includes('market-indices')
-      ? Promise.reject(error)
-      : Promise.resolve({ data: { data: { category: '银行金融', period: '1月', sectors: [], stocks: [] }, meta: {} } }))
-    render(<Home />)
-    await waitFor(() => expect(get.mock.calls.filter(([path]) => path.includes('sectors/overview'))).toHaveLength(1))
-    expect(await screen.findAllByText('指数行情暂不可用，请重试')).toHaveLength(1)
-  })
-
-  it('板块返回最近有效数据时显示来源和数据时间', async () => {
-    get.mockImplementation((path: string) => path.includes('market-indices')
-      ? Promise.resolve({ data: { data: [{ code: '000001', name: '上证指数', price: 3000, change_pct: 1 }], meta: { freshness: 'fresh' } } })
-      : Promise.resolve({ data: { data: { category: '银行金融', period: '1月', sectors: [], stocks: [] }, meta: { freshness: 'stale', provider: '东方财富', data_at: '2026-08-22T07:30:00Z' } } }))
-    render(<Home />)
-    expect(await screen.findByText(/最近有效板块数据：东方财富/)).toBeInTheDocument()
+    expect(await screen.findByText('热门板块数据暂不可用，请稍后重试')).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '热门题材' })).toBeInTheDocument()
   })
 })

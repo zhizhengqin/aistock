@@ -497,6 +497,24 @@ def test_database_route_override_keeps_capability_ttls_and_default_fingerprints(
     assert routes[Capability.MARKET_INDICES].provider_fingerprint
 
 
+def test_deleted_capability_route_rows_are_ignored_without_dropping_defaults():
+    from types import SimpleNamespace
+    from app.datahub.platform import _merge_database_routes, default_routes
+
+    base = default_routes()
+    rows = [SimpleNamespace(
+        capability="market.sector_overview",
+        mode="fixed",
+        provider_order_json=["eastmoney"],
+        contract_version="1.0",
+        version=9,
+    )]
+    routes = _merge_database_routes(base, rows, {})
+    assert set(routes) == set(base)
+    assert Capability.MARKET_BOARD_QUOTES in routes
+    assert Capability.MARKET_BOARD_CONSTITUENTS in routes
+
+
 def test_capability_probe_params_are_safe_and_shape_complete():
     from app.datahub.providers.base import capability_probe_params
 

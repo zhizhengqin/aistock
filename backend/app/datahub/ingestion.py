@@ -73,6 +73,62 @@ class SnapshotStore:
         self.db.refresh(row)
         return row
 
+    def latest(
+        self,
+        dataset: str,
+        scope_key: str,
+        *,
+        schema_version: str = "1.0",
+        source: str = "datahub",
+    ) -> DataSnapshot | None:
+        """Return the newest snapshot for one complete identity."""
+
+        return self.db.execute(
+            select(DataSnapshot)
+            .where(
+                DataSnapshot.dataset == dataset,
+                DataSnapshot.scope_key == scope_key,
+                DataSnapshot.schema_version == schema_version,
+                DataSnapshot.source == source,
+            )
+            .order_by(DataSnapshot.trade_date.desc(), DataSnapshot.fetched_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    def history(
+        self,
+        dataset: str,
+        scope_key: str,
+        *,
+        limit: int = 6,
+        schema_version: str = "1.0",
+        source: str = "datahub",
+    ) -> list[DataSnapshot]:
+        """Return at most ``limit`` newest distinct trade dates."""
+
+        bounded = max(1, min(int(limit), 3650))
+        rows = self.db.execute(
+            select(DataSnapshot)
+            .where(
+                DataSnapshot.dataset == dataset,
+                DataSnapshot.scope_key == scope_key,
+                DataSnapshot.schema_version == schema_version,
+                DataSnapshot.source == source,
+            )
+            .order_by(DataSnapshot.trade_date.desc(), DataSnapshot.fetched_at.desc())
+            .limit(bounded * 2)
+        ).scalars().all()
+        result: list[DataSnapshot] = []
+        seen: set[str] = set()
+        for row in rows:
+            if row.trade_date in seen:
+                continue
+            seen.add(row.trade_date)
+            result.append(row)
+            if len(result) >= bounded:
+                break
+        return result
+
     def cleanup(self, *, retention_days: int = 730) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         result = self.db.execute(delete(DataSnapshot).where(DataSnapshot.fetched_at < cutoff))

@@ -23,19 +23,15 @@ const apiResponse = (url) => {
       { code: '000688', name: '科创50', price: 1026.55, change_pct: -0.18 },
     ] }
   }
-  if (url.includes('/api/stocks/sectors/overview')) {
-    return { code: 0, message: 'ok', data: {
-      category: '银行金融', period: '1月', updated_at: '2026-08-12T19:00:00',
-      sectors: [
-        { name: '银行', price: 1888, change_pct: 1.2 },
-        { name: '证券', price: 1550, change_pct: -0.5 },
-        { name: '保险', price: 1210, change_pct: 0.7 },
-      ],
-      stocks: [
-        { code: '600036', name: '招商银行', price: 42.18, change_pct: 0.86 },
-        { code: '601318', name: '中国平安', price: 58.21, change_pct: -0.22 },
-      ],
-    } }
+  if (url.includes('/api/stocks/market-hotspots')) {
+    const kind = new URL(url).searchParams.get('kind') || 'industry'
+    return { code: 0, message: 'ok', data: { kind, items: [{ board_code: kind === 'industry' ? 'BK0001' : 'BK0002', board_name: kind === 'industry' ? '银行' : '新能源', kind, change_pct: 1.2, hot_score: 80, rank: 1, trend_status: 'steady', trade_date: '2026-08-22' }] }, meta: { provider: '东方财富', freshness: 'fresh', trade_date: '2026-08-22' } }
+  }
+  if (url.includes('/api/stocks/market-cloud')) {
+    return { code: 0, message: 'ok', data: { kind: 'industry', nodes: [{ code: 'BK0001', name: '银行', kind: 'industry', value: 100, market_cap: 100, change_pct: 1.2 }] }, meta: { provider: '东方财富', freshness: 'fresh', trade_date: '2026-08-22' } }
+  }
+  if (url.includes('/api/stocks/boards/')) {
+    return { code: 0, message: 'ok', data: { items: [{ code: '600036.SS', name: '招商银行', price: 42.18, change_pct: 0.86, rank: 1 }] }, meta: { provider: '东方财富', freshness: 'fresh', trade_date: '2026-08-22' } }
   }
   if (url.includes('/api/stocks/portfolio/stocks')) {
     return { code: 0, message: 'ok', data: [] }

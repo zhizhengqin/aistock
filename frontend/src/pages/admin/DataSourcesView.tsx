@@ -17,7 +17,8 @@ type CredentialState = Record<string, string>
 
 const CAPABILITY_LABELS: Record<string, string> = {
   'market.indices': '大盘指数',
-  'market.sector_overview': '板块概览',
+  'market.board_quotes': '板块行情',
+  'market.board_constituents': '板块成分股',
   'stock.snapshot': '个股实时行情',
   'stock.kline.daily': '日K线',
   'stock.financials': '财务摘要',

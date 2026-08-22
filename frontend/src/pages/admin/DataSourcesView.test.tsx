@@ -70,6 +70,18 @@ describe('DataSourcesView', () => {
     expect(screen.getByText(/尚未接入/)).toBeInTheDocument()
   })
 
+  it('显示新增板块行情与板块成分股能力名称', async () => {
+    const api = await import('../../api/dataHub')
+    vi.mocked(api.listDataSourceRoutes).mockResolvedValueOnce({ items: [
+      { capability: 'market.board_quotes', mode: 'auto', providers: ['eastmoney'], contract_version: '1.0', version: 1 },
+      { capability: 'market.board_constituents', mode: 'auto', providers: ['eastmoney'], contract_version: '1.0', version: 1 },
+    ] })
+    render(<DataSourcesView />)
+    expect(await screen.findByText('板块行情')).toBeInTheDocument()
+    expect(await screen.findByText('板块成分股')).toBeInTheDocument()
+    expect(screen.queryByText('板块概览')).not.toBeInTheDocument()
+  })
+
   it('调整首选顺序后仍保留候选来源勾选项', async () => {
     const api = await import('../../api/dataHub')
     vi.mocked(api.listDataSourceRoutes).mockResolvedValueOnce({ items: [{

@@ -29,7 +29,8 @@ from app.core.config import settings
 def default_routes() -> dict[Capability, RouteDefinition]:
     return {
         Capability.MARKET_INDICES: RouteDefinition(providers=["tencent", "sina"], ttl_seconds=60, stale_ttl_seconds=900),
-        Capability.MARKET_SECTOR_OVERVIEW: RouteDefinition(providers=["eastmoney"], ttl_seconds=300, stale_ttl_seconds=3600),
+        Capability.MARKET_BOARD_QUOTES: RouteDefinition(providers=["eastmoney"], ttl_seconds=300, stale_ttl_seconds=3600),
+        Capability.MARKET_BOARD_CONSTITUENTS: RouteDefinition(providers=["eastmoney"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.STOCK_SNAPSHOT: RouteDefinition(providers=["tencent", "sina"], ttl_seconds=30, stale_ttl_seconds=900),
         Capability.STOCK_KLINE_DAILY: RouteDefinition(providers=["tencent", "tdx"], ttl_seconds=300, stale_ttl_seconds=86400),
         Capability.STOCK_FINANCIALS: RouteDefinition(providers=["sina"], ttl_seconds=3600, stale_ttl_seconds=604800),
@@ -224,7 +225,12 @@ def _merge_database_routes(
             provider_fingerprint=_route_fingerprint(base.providers, configs),
         )
     for row in rows:
-        capability = Capability(getattr(row, "capability"))
+        try:
+            capability = Capability(getattr(row, "capability"))
+        except (TypeError, ValueError):
+            # Database rows can outlive a removed capability enum.  Ignore
+            # those historical overrides while retaining every code default.
+            continue
         base = routes.get(capability)
         if base is None:
             continue

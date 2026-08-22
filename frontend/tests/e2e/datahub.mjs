@@ -37,7 +37,7 @@ const sources = [{
   update_frequency: '盘后', risk_note: '逐能力探测', enabled: false, version: 0, key_hint: null,
   fingerprint: null, last_probe_status: null, last_probe_at: null, last_probe_latency_ms: null,
 }]
-const routes = [{ capability: 'market.indices', mode: 'auto', providers: ['tencent', 'akshare'], contract_version: '1.0', version: 0 }]
+const routes = [{ capability: 'market.indices', mode: 'auto', providers: ['tencent', 'akshare'], contract_version: '1.0', version: 0 }, { capability: 'market.board_quotes', mode: 'auto', providers: ['eastmoney'], contract_version: '1.0', version: 0 }]
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
   const context = await browser.newContext({ viewport })
@@ -50,7 +50,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       if (path === '/api/admin/data-sources') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ items: sources })) })
       if (path === '/api/admin/data-source-routes') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ items: routes })) })
       if (path === '/api/stocks/market-indices') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...envelope([{ code: '000001', name: '上证指数', price: 3000, change_pct: 1 }]), meta: { freshness: 'stale', provider: '腾讯财经', data_at: '2026-08-22T07:30:00Z' } }) })
-      if (path === '/api/stocks/sectors/overview') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ category: '银行金融', period: '1月', sectors: [], stocks: [] })) })
+      if (path === '/api/stocks/market-hotspots') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...envelope({ kind: new URL(route.request().url()).searchParams.get('kind') || 'industry', items: [] }), meta: { freshness: 'stale', provider: '历史快照', trade_date: '2026-08-22' } }) })
+      if (path === '/api/stocks/market-cloud') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ kind: 'industry', nodes: [] })) })
+      if (path.includes('/api/stocks/boards/')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ items: [] })) })
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({})) })
     })
   } else if (process.env.QA_REAL_API_AUTH_MOCK === '1') {

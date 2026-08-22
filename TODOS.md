@@ -12,6 +12,17 @@
 - `[x]` Batch 0–8：统一能力契约、供应商路由、配置中心、消费者迁移与 KPL 接入
 - `[ ]` DataHub 后续能力扩展：按业务模块接入 `a-stock-data` 其余端点，逐项补齐契约、夹具和 live-smoke
 - `[ ]` 高频快照专用表/分区：当 `data_snapshots` 达到容量阈值或慢查询稳定出现时评估结构化表、分区和双读迁移
+- `[ ]` 热点轮动历史页：待首页热点中心稳定积累盘后快照后，增加按日期查看板块排名、连续升温天数和轮动轨迹的页面；依赖本次热点快照与趋势口径先稳定运行，本次 Build 不扩大到独立历史页面
+
+### 首页热点中心与大盘云图（2026-08-23）
+
+- `[x]` DataHub 新增 `market.board_quotes` 与 `market.board_constituents` 契约、Eastmoney provider、缓存与校验链路
+- `[x]` 统一 `HotspotService`：热度分、升温/降温趋势、行业/题材云图、代表股和 DataHub/快照回退
+- `[x]` 新增热点、云图、代表股 API；删除旧固定板块/K 线入口
+- `[x]` 交易日 15:10/15:20/15:30 盘后快照任务（Asia/Shanghai、进程级非阻塞锁、`requires_llm=False`）
+- `[x]` 首页改为行业/题材独立加载、代表股下钻、云图返回、局部错误与历史数据标记
+- `[x]` 侧边栏导航改用语义 Lucide 图标；补充桌面和 390px 首页 Playwright 验证
+- `[ ]` 独立热点轮动历史页：留待快照积累后评估（不属于本次 Build）
  
  | 阶段 | 内容 | 预计工期 | 状态 |
  |---|---|---|---|
@@ -71,9 +82,9 @@ P3 的模块路由、故障转移、统一网关和评测平台不在本阶段�
  - `[x]` pytest 全绿：注册/登录/refresh/me/忘记密码/重置密码/错误场景
  
  ### M1-4 后端 akshare 取数封装
- - `[x]` datasource/akshare_client.py — get_market_indices / get_sector_kline / get_stock_info
+ - `[x]` datasource/akshare_client.py — get_market_indices / get_stock_info（历史数据源封装）
  - `[x]` datasource/cache.py — Redis 缓存层（指数60s / 板块5min / 个股30s）
- - `[x]` api/market.py — /api/stocks/market-indices / /api/stocks/sectors/overview
+ - `[x]` api/market.py — /api/stocks/market-indices（热点中心接口已迁移至 DataHub）
  - `[x]` pytest 全绿（mock akshare 返回固定 DataFrame）
  
  ### M1-5 前端骨架 + 登录注册
@@ -85,7 +96,7 @@ P3 的模块路由、故障转移、统一网关和评测平台不在本阶段�
  - `[x]` 路由守卫：未登录跳 /login
  
  ### M1-6 前端 首页
- - `[x]` pages/Home.tsx — 6 板块切换 + K线图（ECharts）
+ - `[x]` pages/Home.tsx — 行业/题材热点、代表股联动与大盘云图（ECharts）
  - `[x]` 大盘指数卡片（5 指数 + 每分钟轮询 + 刷新按钮 + 更新时间）
  - `[x]` 大盘云图（ECharts 热力图初版）
  - `[x]` 代表个股卡片列表

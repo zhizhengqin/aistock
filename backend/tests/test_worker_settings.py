@@ -24,11 +24,11 @@ def _reset_scheduler():
 
 def test_worker_registers_all_tasks():
     names = [f.__name__ for f in WorkerSettings.functions]
-    assert len(names) == 9
+    assert len(names) == 10
     for expected in [
         "analyze_stock_task", "main_force_task", "sector_analysis_task",
         "dragon_tiger_task", "portfolio_diagnosis_task", "stock_risk_task",
-        "portfolio_risk_task", "news_collect_task", "us_research_task",
+        "portfolio_risk_task", "news_collect_task", "us_research_task", "market_hotspot_snapshot_task",
     ]:
         assert expected in names
 

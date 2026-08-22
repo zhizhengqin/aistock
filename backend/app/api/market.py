@@ -1,8 +1,14 @@
-from fastapi import APIRouter
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
 from app.core.response import success
-from app.datahub.consumer import get_market_indices, get_sector_kline
+from app.datahub.consumer import get_market_indices
 from app.datahub.errors import DataHubError
+from app.services.market_hotspots import HotspotService
 
 router = APIRouter()
 
@@ -19,33 +25,47 @@ async def market_indices():
     return payload
 
 
-@router.get("/stocks/sectors/overview")
-async def sectors_overview(category: str = "银行金融", period: str = "1月"):
+@router.get("/stocks/market-hotspots")
+async def market_hotspots(
+    kind: Literal["industry", "theme"] = Query(default="industry"),
+    limit: int = Query(default=12, ge=1, le=12),
+    db: Session = Depends(get_db),
+):
     try:
-        result = await get_sector_kline(category, period)
+        result = await HotspotService(db).get_hotspots(kind, limit)
     except DataHubError as exc:
         return JSONResponse(status_code=exc.status_code, content=exc.to_response())
-    rows = result.data if isinstance(result.data, list) else [result.data]
-    keywords = {
-        "银行金融": ("银行", "证券", "保险", "金融"),
-        "科技互联网": ("科技", "软件", "互联网", "通信", "电子"),
-        "新能源": ("新能源", "电池", "光伏", "电力设备"),
-        "大消费": ("食品", "饮料", "家电", "消费", "零售"),
-        "高端制造": ("机械", "军工", "制造", "汽车", "工业"),
-        "周期资源": ("煤炭", "钢铁", "有色", "化工", "资源"),
-    }.get(category, ())
-    selected = [row for row in rows if keywords and any(word in getattr(row, "name", "") for word in keywords)] or rows[:30]
-    sectors = [row.model_dump(mode="json") if hasattr(row, "model_dump") else dict(row) for row in selected]
-    stocks = [stock for row in selected for stock in (getattr(row, "representative_stocks", None) or [])]
-    data = {
-        "category": category,
-        "period": period,
-        "period_label": "实时/当日（当前来源未提供历史区间）",
-        "sectors": sectors,
-        "stocks": stocks[:30],
-        "updated_at": (result.data_at or result.fetched_at).isoformat(),
-    }
-    payload = success(data=data, message="板块数据已更新；当前为实时/当日口径")
-    if hasattr(result, "meta"):
-        payload["meta"] = result.meta.model_dump(mode="json")
+    payload = success(data=result.model_dump(mode="json"), message="市场热点数据已更新")
+    payload["meta"] = result.meta.model_dump(mode="json")
+    return payload
+
+
+@router.get("/stocks/market-cloud")
+async def market_cloud(
+    kind: Literal["industry", "theme"] = Query(default="industry"),
+    limit: int = Query(default=80, ge=1, le=80),
+    db: Session = Depends(get_db),
+):
+    try:
+        result = await HotspotService(db).get_market_cloud(kind, limit)
+    except DataHubError as exc:
+        return JSONResponse(status_code=exc.status_code, content=exc.to_response())
+    payload = success(data=result.model_dump(mode="json"), message="大盘云图数据已更新")
+    payload["meta"] = result.meta.model_dump(mode="json")
+    return payload
+
+
+@router.get("/stocks/boards/{board_code}/constituents")
+async def board_constituents(
+    board_code: str = Path(pattern=r"^BK\d{3,6}$"),
+    kind: Literal["industry", "theme"] = Query(default="industry"),
+    limit: int = Query(default=20, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    try:
+        result = await HotspotService(db).get_constituents(kind, board_code, limit)
+    except DataHubError as exc:
+        return JSONResponse(status_code=exc.status_code, content=exc.to_response())
+    payload = success(data=result.model_dump(mode="json"), message="代表个股数据已更新")
+    payload["meta"] = result.meta.model_dump(mode="json")
     return payload

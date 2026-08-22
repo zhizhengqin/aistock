@@ -41,6 +41,8 @@ def validate_payload(capability: Capability | str, payload: Any) -> int:
 
     required: dict[Capability, tuple[str, ...]] = {
         Capability.MARKET_INDICES: ("code", "name", "price"),
+        Capability.MARKET_BOARD_QUOTES: ("board_code", "board_name", "kind", "data_at"),
+        Capability.MARKET_BOARD_CONSTITUENTS: ("code", "name", "data_at"),
         Capability.STOCK_SNAPSHOT: ("code", "name", "price"),
         Capability.STOCK_KLINE_DAILY: ("date", "open", "close", "high", "low"),
         Capability.KPL_LIMIT_LIST: ("trade_date",),

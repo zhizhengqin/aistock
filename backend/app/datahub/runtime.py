@@ -53,6 +53,8 @@ def _decode_cache_value(value: Any) -> Any:
     if payload.get("__datahub_type__") == "result":
         from app.datahub.contracts import (
             AuctionOpen,
+            BoardConstituent,
+            BoardQuote,
             Capability,
             DataResult,
             DragonTigerItem,
@@ -69,7 +71,6 @@ def _decode_cache_value(value: Any) -> Any:
             MarketIndex,
             NewsItem,
             SectorFlow,
-            SectorOverview,
             SectorQuote,
             ShareholderSummary,
             StockSnapshot,
@@ -80,7 +81,8 @@ def _decode_cache_value(value: Any) -> Any:
             capability = Capability(value.get("capability"))
             models = {
                 Capability.MARKET_INDICES: list[MarketIndex],
-                Capability.MARKET_SECTOR_OVERVIEW: list[SectorOverview],
+                Capability.MARKET_BOARD_QUOTES: list[BoardQuote],
+                Capability.MARKET_BOARD_CONSTITUENTS: list[BoardConstituent],
                 Capability.STOCK_SNAPSHOT: StockSnapshot,
                 Capability.STOCK_KLINE_DAILY: list[KlineBar],
                 Capability.STOCK_FINANCIALS: FinancialSummary,

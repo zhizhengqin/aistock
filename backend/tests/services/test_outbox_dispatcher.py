@@ -56,6 +56,22 @@ async def test_dispatch_once_maps_snapshot_and_uses_deterministic_job_id(test_db
 
 
 @pytest.mark.asyncio
+async def test_market_hotspot_snapshot_dispatch_uses_durable_task_id_and_job_id(test_db):
+    from app.services.outbox_dispatcher import OutboxDispatcher
+
+    _, session_factory = test_db
+    db = session_factory()
+    task = _task(db, "market_hotspot_snapshot", user_id=7, board_code="BK0001")
+    sender = FakeSender()
+
+    dispatched = await OutboxDispatcher(session_factory, sender=sender).dispatch_once()
+
+    assert dispatched == 1
+    assert sender.jobs == [("market_hotspot_snapshot_task", (task.id,), f"task:{task.id}")]
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_sender_returning_none_still_marks_outbox_delivered(test_db):
     from app.services.outbox_dispatcher import OutboxDispatcher
 

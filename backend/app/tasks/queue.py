@@ -10,6 +10,7 @@ from app.tasks.risk_analysis import stock_risk_task
 from app.tasks.portfolio_risk import portfolio_risk_task
 from app.tasks.news_collect import news_collect_task
 from app.tasks.us_research import us_research_task
+from app.tasks.market_hotspot_snapshot import market_hotspot_snapshot_task
 from app.core.config import settings
 from app.services.llm.http_client import close_llm_http_client, get_llm_http_client
 
@@ -84,7 +85,7 @@ async def _on_worker_shutdown(ctx):
 class WorkerSettings:
     on_startup = _on_worker_startup
     on_shutdown = _on_worker_shutdown
-    functions = [analyze_stock_task, main_force_task, sector_analysis_task, dragon_tiger_task, portfolio_diagnosis_task, stock_risk_task, portfolio_risk_task, news_collect_task, us_research_task]
+    functions = [analyze_stock_task, main_force_task, sector_analysis_task, dragon_tiger_task, portfolio_diagnosis_task, stock_risk_task, portfolio_risk_task, news_collect_task, us_research_task, market_hotspot_snapshot_task]
     redis_settings = get_redis_settings()
     max_jobs = 2
     job_timeout = 300

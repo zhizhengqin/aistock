@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.datahub.contracts import Capability
-from app.datahub.contracts import DataQuality, DataResult, SectorOverview
+from app.datahub.contracts import DataQuality, DataResult
 from app.datahub.providers.eastmoney import EastmoneyProvider
 from app.datahub.providers.sina import SinaProvider
 from app.datahub.providers.tencent import TencentProvider
@@ -97,7 +97,6 @@ async def test_sina_quote_sends_origin_headers_required_by_public_endpoint():
 @pytest.mark.parametrize(
     ("capability", "path", "payload"),
     [
-        (Capability.MARKET_SECTOR_OVERVIEW, "/api/qt/clist/get", {"data": {"diff": [{"f12": "BK001", "f14": "银行", "f2": 100, "f3": 1.2, "f124": 1787295600} ]}}),
         (Capability.STOCK_FUND_FLOW, "/api/qt/stock/fflow/daykline/get", {"data": {"klines": ["2026-08-21,100,20,30,40,10", "2026-08-22,200,30,40,50,20"]}}),
         (Capability.STOCK_SHAREHOLDERS, "https://datacenter-web.eastmoney.com/api/data/v1/get", {"result": {"data": [{"SECURITY_CODE": "600000", "SECURITY_NAME_ABBR": "浦发银行", "END_DATE": "2026-06-30", "HOLDER_NUM": 1000, "HOLDER_NUM_RATIO": -9.09}, {"SECURITY_CODE": "600000", "SECURITY_NAME_ABBR": "浦发银行", "END_DATE": "2026-03-31", "HOLDER_NUM": 1100, "HOLDER_NUM_RATIO": 0}]}}),
         (Capability.STOCK_NEWS, "https://search-api-web.eastmoney.com/search/jsonp", None),
@@ -115,10 +114,7 @@ async def test_eastmoney_capabilities_use_documented_endpoint_fixtures(capabilit
     result = await EastmoneyProvider(http_client=Client()).fetch(capability, params)
     assert result.data
     assert result.data_at is not None
-    if capability is Capability.MARKET_SECTOR_OVERVIEW:
-        assert result.data[0].change_pct == 1.2
-        assert result.data_at == datetime(2026, 8, 21, 7, 0, tzinfo=timezone.utc)
-    elif capability is Capability.STOCK_FUND_FLOW:
+    if capability is Capability.STOCK_FUND_FLOW:
         assert result.data.net_main_flow == 300
         assert result.data.net_super_large == 30
         assert len(result.data.daily_flows) == 2
@@ -179,45 +175,6 @@ async def test_eastmoney_flow_days_select_daily_endpoint_and_all_a_share_rank_fi
     rank_query = calls[1][1]
     for filter_value in ("m:1+t:2", "m:1+t:23", "m:0+t:6", "m:0+t:80", "m:0+t:81+s:2048"):
         assert filter_value in rank_query["fs"]
-
-
-@pytest.mark.asyncio
-async def test_eastmoney_sector_overview_maps_real_leader_fields_to_representative_stocks():
-    class Client:
-        def get(self, url, params=None, timeout=None, **kwargs):
-            assert all(field in params.get("fields", "") for field in ("f128", "f136", "f138", "f139", "f140", "f141"))
-            return _Response(payload={"data": {"diff": [{
-                "f12": "BK001", "f14": "银行", "f2": 100, "f3": 1.2,
-                "f140": "浦发银行", "f141": "600000", "f136": 2.5,
-                "f124": 1787295600,
-            }]}})
-
-    result = await EastmoneyProvider(http_client=Client()).fetch(Capability.MARKET_SECTOR_OVERVIEW, {"limit": 1})
-    assert result.data[0].representative_stocks == [{"code": "600000.SS", "name": "浦发银行", "price": None, "change_pct": 2.5}]
-
-
-@pytest.mark.asyncio
-async def test_sector_overview_api_preserves_home_contract_and_datahub_meta(monkeypatch):
-    from app.api import market
-
-    result = DataResult(
-        data=[SectorOverview(name="银行", change_pct=1.2, price=100)],
-        capability=Capability.MARKET_SECTOR_OVERVIEW,
-        provider="eastmoney",
-        data_at=datetime(2026, 8, 21, tzinfo=timezone.utc),
-        quality=DataQuality(valid=True, rows=1),
-    )
-
-    async def fake_fetch(category, period):
-        return result
-
-    monkeypatch.setattr(market, "get_sector_kline", fake_fetch)
-    response = await market.sectors_overview(category="银行金融", period="1月")
-    assert response["data"]["category"] == "银行金融"
-    assert response["data"]["period"] == "1月"
-    assert response["data"]["sectors"][0]["name"] == "银行"
-    assert response["data"]["stocks"] == []
-    assert response["meta"]["provider"] == "eastmoney"
 
 
 def test_default_routes_only_reference_declared_available_capabilities():

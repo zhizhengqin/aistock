@@ -1,23 +1,24 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
+import { BookOpen, Blocks, BriefcaseBusiness, Crown, Globe2, Home, ListTree, LucideIcon, Newspaper, Radar, ScanSearch, Search, Settings, ShieldAlert } from 'lucide-react'
 
 const NAV_ITEMS = [
-  { path: '/', label: '首页行情' },
-  { path: '/analysis', label: '股票分析' },
-  { path: '/main-force', label: '主力选股' },
-  { path: '/sector', label: '智策板块' },
-  { path: '/dragon-tiger', label: '智瞰龙虎榜' },
-  { path: '/portfolio', label: '持仓分析' },
-  { path: '/realtime', label: '实时监测' },
-  { path: '/risk-warning', label: '风险预警' },
-  { path: '/news', label: '实时新闻' },
-  { path: '/us-research', label: '美股研报' },
+  { path: '/', label: '首页行情', icon: Home },
+  { path: '/analysis', label: '股票分析', icon: Search },
+  { path: '/main-force', label: '主力选股', icon: ScanSearch },
+  { path: '/sector', label: '智策板块', icon: Blocks },
+  { path: '/dragon-tiger', label: '智瞰龙虎榜', icon: ListTree },
+  { path: '/portfolio', label: '持仓分析', icon: BriefcaseBusiness },
+  { path: '/realtime', label: '实时监测', icon: Radar },
+  { path: '/risk-warning', label: '风险预警', icon: ShieldAlert },
+  { path: '/news', label: '实时新闻', icon: Newspaper },
+  { path: '/us-research', label: '美股研报', icon: Globe2 },
 ]
 
 const ACCOUNT_ITEMS = [
-  { path: '/guide', label: '使用指南' },
-  { path: '/membership', label: '会员中心' },
+  { path: '/guide', label: '使用指南', icon: BookOpen },
+  { path: '/membership', label: '会员中心', icon: Crown },
 ]
 
 const PAGE_TITLES: Record<string, string> = Object.fromEntries(
@@ -77,7 +78,9 @@ export default function Layout() {
 
   const title = PAGE_TITLES[location.pathname] ?? '睿见投研'
 
-  const navLink = (item: { path: string; label: string }) => (
+  const navLink = (item: { path: string; label: string; icon: LucideIcon }) => {
+    const Icon = item.icon
+    return (
     <NavLink
       key={item.path}
       to={item.path}
@@ -85,10 +88,11 @@ export default function Layout() {
       className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
       onClick={closeNav}
     >
-      <span className="dot"></span>
+      <Icon className="nav-icon" aria-hidden="true" strokeWidth={1.8} />
       <span>{item.label}</span>
     </NavLink>
-  )
+    )
+  }
 
   return (
     <div className="shell">
@@ -120,7 +124,7 @@ export default function Layout() {
           {NAV_ITEMS.map(navLink)}
           <div className="nav-section">账户</div>
           {ACCOUNT_ITEMS.map(navLink)}
-          {user?.role === 'admin' && navLink({ path: '/admin', label: '系统配置' })}
+          {user?.role === 'admin' && navLink({ path: '/admin', label: '系统配置', icon: Settings })}
         </nav>
         {user && (
           <div className="mobile-user-cluster" data-testid="mobile-user-cluster">

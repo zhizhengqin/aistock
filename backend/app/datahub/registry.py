@@ -58,7 +58,8 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
         display_name="东方财富",
         description="提供板块、资金流、股东户数与龙虎榜等特色数据。",
         capabilities=(
-            Capability.MARKET_SECTOR_OVERVIEW,
+            Capability.MARKET_BOARD_QUOTES,
+            Capability.MARKET_BOARD_CONSTITUENTS,
             Capability.STOCK_FUND_FLOW,
             Capability.MARKET_FUND_FLOW_RANK,
             Capability.STOCK_SHAREHOLDERS,

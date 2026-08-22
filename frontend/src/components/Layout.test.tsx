@@ -75,6 +75,18 @@ describe('Layout mobile navigation', () => {
     expect(drawer()).toHaveAttribute('aria-hidden', 'true')
   })
 
+  it('renders one semantic hidden SVG icon for every visible navigation link', () => {
+    renderLayout()
+    const links = Array.from(drawer().querySelectorAll<HTMLAnchorElement>('.nav-item'))
+    expect(links.length).toBeGreaterThan(0)
+    links.forEach((link) => {
+      const icon = link.querySelector('svg.nav-icon')
+      expect(icon).toBeInTheDocument()
+      expect(icon).toHaveAttribute('aria-hidden', 'true')
+    })
+    expect(drawer().querySelector('.dot')).not.toBeInTheDocument()
+  })
+
   it('keeps the desktop navigation exposed to assistive technology', () => {
     mediaMatches = false
     renderLayout()

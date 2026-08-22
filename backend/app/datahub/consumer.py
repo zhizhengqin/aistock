@@ -8,6 +8,7 @@ module may import the legacy AkShare compatibility client.
 from __future__ import annotations
 
 from typing import Any
+import re
 
 import pandas as pd
 
@@ -28,8 +29,34 @@ async def get_market_indices(*, codes: list[str] | None = None) -> DataResult:
     return await _fetch(Capability.MARKET_INDICES, {"codes": list(codes or DEFAULT_INDEX_CODES)})
 
 
-async def get_sector_kline(category: str, period: str = "1月") -> DataResult:
-    return await _fetch(Capability.MARKET_SECTOR_OVERVIEW, {"category": category, "period": period})
+def _validate_board_kind(kind: str) -> str:
+    if kind not in {"industry", "theme"}:
+        raise DataHubError(DataHubErrorCode.VALIDATION, "板块类型必须是 industry 或 theme")
+    return kind
+
+
+def _validate_board_code(board_code: str) -> str:
+    value = str(board_code or "").upper()
+    if not re.fullmatch(r"BK\d{3,6}", value):
+        raise DataHubError(DataHubErrorCode.VALIDATION, "板块代码格式无效")
+    return value
+
+
+async def get_market_board_quotes(kind: str) -> DataResult:
+    """Fetch the complete raw board cross-section for one category."""
+
+    return await _fetch(Capability.MARKET_BOARD_QUOTES, {"kind": _validate_board_kind(kind)})
+
+
+async def get_market_board_constituents(kind: str, board_code: str, limit: int = 20) -> DataResult:
+    """Fetch up to ``limit`` constituents for one validated board."""
+
+    if limit < 1 or limit > 20:
+        raise DataHubError(DataHubErrorCode.VALIDATION, "代表个股数量必须在 1 到 20 之间")
+    return await _fetch(
+        Capability.MARKET_BOARD_CONSTITUENTS,
+        {"kind": _validate_board_kind(kind), "board_code": _validate_board_code(board_code), "limit": limit},
+    )
 
 
 async def get_stock_info(code: str) -> DataResult:

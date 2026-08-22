@@ -9,12 +9,14 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:e2e:llm": "node tests/e2e/llm-model-center.mjs",
-    "test:e2e:datahub": "node tests/e2e/datahub.mjs"
+    "test:e2e:datahub": "node tests/e2e/datahub.mjs",
+    "test:e2e:home": "node tests/e2e/home-market.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.7",
     "axios": "^1.7.9",
     "echarts-for-react": "^3.0.2",
+    "lucide-react": "^1.33.0",
     "playwright": "^1.62.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

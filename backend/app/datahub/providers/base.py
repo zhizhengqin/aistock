@@ -103,7 +103,15 @@ def capability_probe_params(capability: Capability | str) -> dict[str, Any]:
         return {"code": "600000.SS", "days": 5, "period": "daily"}
     if capability is Capability.STOCK_NEWS:
         return {"code": "600000.SS", "source": "华尔街见闻", "limit": 1}
-    if capability in {Capability.MARKET_SECTOR_OVERVIEW, Capability.SECTOR_REALTIME, Capability.SECTOR_FUND_FLOW, Capability.MARKET_FUND_FLOW_RANK}:
+    if capability in {
+        Capability.MARKET_BOARD_QUOTES,
+        Capability.MARKET_BOARD_CONSTITUENTS,
+        Capability.SECTOR_REALTIME,
+        Capability.SECTOR_FUND_FLOW,
+        Capability.MARKET_FUND_FLOW_RANK,
+    }:
+        if capability in {Capability.MARKET_BOARD_QUOTES, Capability.MARKET_BOARD_CONSTITUENTS}:
+            return {"kind": "industry", **({"board_code": "BK0475", "limit": 1} if capability is Capability.MARKET_BOARD_CONSTITUENTS else {})}
         return {"limit": 1}
     if capability is Capability.SECTOR_KLINE:
         return {"code": "BK0475", "days": 5}

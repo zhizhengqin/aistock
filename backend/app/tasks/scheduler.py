@@ -115,6 +115,15 @@ async def _run_news_collect_scheduled():
     )
 
 
+async def _run_market_hotspot_snapshot_scheduled():
+    from app.tasks.market_hotspot_snapshot import market_hotspot_snapshot_task
+
+    await _guarded(
+        "market_hotspot_snapshot",
+        _submit_scheduled("market_hotspot_snapshot", market_hotspot_snapshot_task, [], requires_llm=False),
+    )
+
+
 async def _run_us_research_scheduled():
     from app.tasks.us_research import us_research_task
     from app.services.us_research_orchestrator import latest_us_trade_date
@@ -199,6 +208,11 @@ def start_scheduler(app=None, force: bool = False):
         id="news_collect_15min", replace_existing=True,
     )
     sched.add_job(
+        _run_market_hotspot_snapshot_scheduled,
+        CronTrigger(day_of_week="mon-fri", hour=15, minute="10,20,30", timezone="Asia/Shanghai"),
+        id="market_hotspot_snapshot_15m", replace_existing=True,
+    )
+    sched.add_job(
         _run_us_research_scheduled,
         CronTrigger(day_of_week="tue-sat", hour=3, minute=30),
         id="us_research_daily", replace_existing=True,
@@ -221,7 +235,7 @@ def start_scheduler(app=None, force: bool = False):
     if settings.TASK_INLINE or force:
         if not sched.running:
             sched.start()
-        logger.info("APScheduler started: 7 jobs registered")
+        logger.info("APScheduler started: 8 jobs registered")
     else:
         logger.info("APScheduler jobs registered (will run in arq worker)")
 

@@ -2,7 +2,7 @@ import pandas as pd
 from unittest.mock import patch
 from tests.conftest import client
 from datetime import datetime, timezone
-from app.datahub.contracts import Capability, DataQuality, DataResult, MarketIndex, SectorOverview
+from app.datahub.contracts import Capability, DataQuality, DataResult, MarketIndex
 
 
 def _indices_result():
@@ -35,22 +35,5 @@ def test_market_indices_cache_hit(client, fake_redis):
     assert len(resp.json()["data"]) == 5
 
 
-def test_sectors_overview_route(client, fake_redis):
-    now = datetime(2026, 8, 21, tzinfo=timezone.utc)
-    result = DataResult(data=[SectorOverview(name="银行", change_pct=1.2, price=100, representative_stocks=[{"code": "002142.SZ", "name": "宁波银行", "price": 25.3, "change_pct": 1.1}], data_at=now)], capability=Capability.MARKET_SECTOR_OVERVIEW, provider="eastmoney", data_at=now, quality=DataQuality(valid=True, rows=1))
-    with patch("app.api.market.get_sector_kline", return_value=result):
-        resp = client.get("/api/stocks/sectors/overview?category=银行金融")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data["category"] == "银行金融"
-    assert "sectors" in data
-    assert "stocks" in data
-
-
-def test_sectors_overview_cached(client, fake_redis):
-    now = datetime(2026, 8, 21, tzinfo=timezone.utc)
-    result = DataResult(data=[SectorOverview(name="煤炭", change_pct=1.2, price=100, data_at=now)], capability=Capability.MARKET_SECTOR_OVERVIEW, provider="eastmoney", data_at=now, quality=DataQuality(valid=True, rows=1))
-    with patch("app.api.market.get_sector_kline", return_value=result):
-        resp = client.get("/api/stocks/sectors/overview?category=周期资源")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["category"] == "周期资源"
+def test_legacy_sectors_overview_route_removed(client):
+    assert client.get("/api/stocks/sectors/overview").status_code == 404

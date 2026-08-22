@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
@@ -20,7 +20,8 @@ from app.datahub.canonical_ticker import normalise_ticker
 
 class Capability(str, Enum):
     MARKET_INDICES = "market.indices"
-    MARKET_SECTOR_OVERVIEW = "market.sector_overview"
+    MARKET_BOARD_QUOTES = "market.board_quotes"
+    MARKET_BOARD_CONSTITUENTS = "market.board_constituents"
     STOCK_SNAPSHOT = "stock.snapshot"
     STOCK_KLINE_DAILY = "stock.kline.daily"
     STOCK_FINANCIALS = "stock.financials"
@@ -150,12 +151,38 @@ class MarketIndex(BaseModel):
     data_at: datetime | None = None
 
 
-class SectorOverview(BaseModel):
+class BoardQuote(BaseModel):
+    """Vendor-neutral full cross-section quote for one market board."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    board_code: str = Field(min_length=1)
+    board_name: str = Field(min_length=1)
+    kind: Literal["industry", "theme"]
+    change_pct: float | None = None
+    turnover: float | None = None
+    market_cap: float | None = None
+    rise_count: int | None = None
+    fall_count: int | None = None
+    flat_count: int | None = None
+    leader_code: str | None = None
+    leader_name: str | None = None
+    leader_change_pct: float | None = None
+    data_at: datetime
+
+
+class BoardConstituent(BaseModel):
+    """Typed representative stock quote returned for a board."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    code: str = Field(min_length=4, max_length=16)
     name: str = Field(min_length=1)
-    change_pct: float
     price: float | None = None
-    representative_stocks: list[dict[str, Any]] = Field(default_factory=list)
-    data_at: datetime | None = None
+    change_pct: float | None = None
+    turnover: float | None = None
+    market_cap: float | None = None
+    data_at: datetime
 
 
 class StockSnapshot(BaseModel):

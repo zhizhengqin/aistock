@@ -248,6 +248,57 @@ async def test_market_board_router_retries_sina_after_eastmoney_internal_error()
 
 
 @pytest.mark.asyncio
+async def test_canonical_constituent_code_skips_eastmoney_and_falls_back_to_sina():
+    from app.datahub.router import DataHubRouter, RouteDefinition
+
+    data_at = datetime.now(timezone.utc)
+    eastmoney_client = RecordingClient(_board_payload())
+    eastmoney = EastmoneyProvider(http_client=eastmoney_client)
+
+    with pytest.raises(DataHubError) as provider_error:
+        await eastmoney.fetch(
+            Capability.MARKET_BOARD_CONSTITUENTS,
+            {"kind": "industry", "board_code": "BK1234567890", "limit": 1},
+        )
+    assert provider_error.value.code is DataHubErrorCode.UNSUPPORTED
+    assert eastmoney_client.calls == []
+
+    class SinaFallback:
+        async def fetch(self, capability, params):
+            row = BoardConstituent(code="600000.SS", name="浦发银行", price=10.5, change_pct=1.2, data_at=data_at)
+            return DataResult(
+                data=[row],
+                capability=capability,
+                provider="sina",
+                data_at=data_at,
+                quality=DataQuality(valid=True, rows=1),
+            )
+
+    router = DataHubRouter(
+        {"eastmoney": eastmoney, "sina": SinaFallback()},
+        {
+            Capability.MARKET_BOARD_CONSTITUENTS: RouteDefinition(
+                mode="auto",
+                providers=["eastmoney", "sina"],
+                ttl_seconds=300,
+                stale_ttl_seconds=3600,
+            )
+        },
+    )
+
+    result = await router.fetch(
+        Capability.MARKET_BOARD_CONSTITUENTS,
+        {"kind": "industry", "board_code": "BK1234567890", "limit": 1},
+    )
+
+    assert eastmoney_client.calls == []
+    assert result.provider == "sina"
+    assert result.attempts == ["eastmoney", "sina"]
+    assert result.fallback_used is True
+    assert result.data[0].code == "600000.SS"
+
+
+@pytest.mark.asyncio
 async def test_consumer_rejects_invalid_kind_and_board_code(monkeypatch):
     with pytest.raises(Exception) as kind_error:
         await get_market_board_quotes("invalid")

@@ -445,6 +445,8 @@ def _validated_kind(value: Any) -> str:
 
 def _validated_board_code(value: Any) -> str:
     raw = str(value or "").upper()
+    if re.fullmatch(r"BK\d{7,10}", raw):
+        raise DataHubError(DataHubErrorCode.UNSUPPORTED, "东方财富不支持该板块代码", provider="eastmoney")
     if not re.fullmatch(r"BK\d{3,6}", raw):
         raise DataHubError(DataHubErrorCode.VALIDATION, "板块代码格式无效", provider="eastmoney")
     return raw

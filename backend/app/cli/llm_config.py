@@ -1053,7 +1053,7 @@ async def live_smoke_async(
                         LlmUsage.model_config_id == model_config_id,
                         LlmUsage.module == "live_smoke",
                         LlmUsage.status == "success",
-                    ).order_by(LlmUsage.created_at.desc())
+                    ).order_by(LlmUsage.created_at.desc()).limit(1)
                 ).scalar_one_or_none()
                 if attempt is None or usage is None or not attempt.reservation_id:
                     raise LlmError("实时 smoke 缺少调用审计证据", code="llm_smoke_audit_missing")

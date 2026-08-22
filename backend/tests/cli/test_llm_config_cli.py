@@ -977,6 +977,17 @@ def test_live_smoke_requires_matching_provider_and_uses_live_smoke_executor(
                 max_output_tokens=256,
             )
         )
+        db.add(
+            LlmUsage(
+                model_config_id=config_id,
+                module="live_smoke",
+                model="deepseek-chat",
+                prompt_tokens=1,
+                completion_tokens=1,
+                status="success",
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+            )
+        )
         db.commit()
     mismatch = cli.run_live_smoke(
         provider="kimi", model_config_id=config_id, session_factory=db_factory
@@ -1004,11 +1015,14 @@ def test_live_smoke_requires_matching_provider_and_uses_live_smoke_executor(
     }
     with db_factory() as db:
         attempt = db.query(LlmCallAttempt).one()
-        usage = db.query(LlmUsage).one()
+        usage_rows = db.query(LlmUsage).order_by(LlmUsage.created_at.desc()).all()
+        assert len(usage_rows) == 2
+        usage = usage_rows[0]
         reservation = db.get(LlmTokenReservation, attempt.reservation_id)
         assert attempt.operation_type == "live_smoke"
         assert attempt.task_id is None
         assert usage.module == "live_smoke"
+        assert (usage.prompt_tokens, usage.completion_tokens) == (8, 4)
         assert reservation.status == "settled"
 
 

@@ -113,6 +113,11 @@ jobs:
             set -e
             cd /opt/aistock
             git pull origin main
+            # Compose validates ${DATAHUB_CONFIG_ENCRYPTION_KEY:? ...} while
+            # parsing the file, so bootstrap/validate the host dotenv first.
+            # This script uses only the host Python stdlib and never prints a
+            # generated or existing secret.
+            python3 deploy/ensure_llm_keyring.py deploy/.env
             compose='docker compose --env-file deploy/.env -f deploy/docker-compose.yml'
             # 先构建新镜像；旧流量保持运行，直到配置预检全部通过。
             $compose build migrator api worker nginx

@@ -8,6 +8,7 @@ import pytest
 
 
 SCRIPT = Path(__file__).resolve().parents[3] / "deploy" / "ensure_llm_keyring.py"
+WORKFLOW = SCRIPT.parents[1] / ".github" / "workflows" / "deploy.yml"
 
 
 def _run(env_file: Path) -> subprocess.CompletedProcess[str]:
@@ -23,6 +24,17 @@ def _valid_keyring() -> tuple[str, str]:
     key_id = "release-2026-08"
     encoded = base64.b64encode(b"x" * 32).decode("ascii")
     return key_id, encoded
+
+
+def test_deploy_bootstraps_datahub_key_before_first_compose_call() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    pull_position = workflow.index("git pull origin main")
+    compose_position = workflow.index("docker compose", pull_position)
+    bootstrap_position = workflow.index(
+        "python3 deploy/ensure_llm_keyring.py deploy/.env", pull_position
+    )
+
+    assert bootstrap_position < compose_position
 
 
 def test_missing_keyring_is_generated_atomically_and_restricted(tmp_path: Path) -> None:

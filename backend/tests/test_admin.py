@@ -116,7 +116,8 @@ def test_get_datasource_config_admin(client, test_db):
     resp = client.get("/api/admin/datasource-config")
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["primary_source"] == "akshare"
+    assert data["primary_source"] == "datahub"
+    assert any(item["provider"] == "tencent" for item in data["providers"])
 
 
 def test_get_datasource_forbidden(auth_client):

@@ -2,7 +2,7 @@
 
 All endpoints require admin role. Covers:
 - User management (list / toggle active / change tier / change role)
-- Data source config (view / test akshare connectivity)
+- Data source config (view / test DataHub connectivity)
 - Agent config (view / update agent settings)
 """
 from fastapi import APIRouter, Depends, HTTPException
@@ -77,38 +77,44 @@ async def update_user(
 
 @router.get("/admin/datasource-config")
 async def get_datasource_config(admin: User = Depends(get_admin_user)):
-    """Return current data source configuration."""
+    """Return the registry-backed DataHub source summary."""
+    from app.datahub.registry import PROVIDER_REGISTRY
+
     return success(data={
-        "primary_source": "akshare",
-        "akshare_version": _get_akshare_version(),
+        "primary_source": "datahub",
+        "providers": [
+            {
+                "provider": definition.name,
+                "display_name": definition.display_name,
+                "capabilities": [capability.value for capability in definition.capabilities],
+                "enabled_by_default": definition.enabled_by_default,
+                "available": definition.available,
+            }
+            for definition in PROVIDER_REGISTRY.values()
+        ],
         "redis_url": settings.REDIS_URL,
         "database_url_masked": _mask_db_url(settings.DATABASE_URL),
-        "news_sources": ["财联社", "新浪财经", "同花顺", "雪球", "央视"],
-        "us_market_source": "akshare / yfinance",
+        "news_sources": ["华尔街见闻", "FT中文网"],
+        "us_market_source": "独立美股数据源",
     })
 
 
 @router.post("/admin/datasource-test")
 async def test_datasource(admin: User = Depends(get_admin_user)):
-    """Test akshare connectivity by fetching a simple quote."""
+    """Test the default index route through the controlled DataHub probe."""
     try:
-        import akshare as ak
-        df = ak.stock_zh_a_spot_em()
+        from app.datahub.consumer import get_market_indices
+
+        result = await get_market_indices()
         return success(data={
             "status": "ok",
-            "rows": len(df),
-            "sample": df.head(2).to_dict("records") if len(df) > 0 else [],
+            "rows": result.quality.rows,
+            "sample": result.data[0].model_dump(mode="json") if isinstance(result.data, list) and result.data else None,
+            "provider": result.provider,
+            "error_code": None,
         }, message="数据源连接正常")
-    except Exception as e:
-        return success(data={"status": "error", "error": str(e)}, message="数据源连接失败")
-
-
-def _get_akshare_version():
-    try:
-        import akshare
-        return akshare.__version__
     except Exception:
-        return "unknown"
+        return success(data={"status": "error", "error": "数据源连接失败，请稍后重试"}, message="数据源连接失败")
 
 
 def _mask_db_url(url: str) -> str:

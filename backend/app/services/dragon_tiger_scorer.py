@@ -70,9 +70,11 @@ def rank_top_stocks(records: list[dict], top_n: int = 10) -> list[dict]:
                 "reasons": [],
             }
         a = agg[code]
-        a["net_amount"] += r.get("net_amount", 0) * 1e8
-        a["buy_amount"] += r.get("buy_amount", 0) * 1e8
-        a["sell_amount"] += r.get("sell_amount", 0) * 1e8
+        # Provider and DataHub contracts already use yuan.  Do not apply the
+        # old AkShare facade's 亿→元 compensation a second time.
+        a["net_amount"] += r.get("net_amount", 0)
+        a["buy_amount"] += r.get("buy_amount", 0)
+        a["sell_amount"] += r.get("sell_amount", 0)
         a["appearances"] += 1
         a["change_pct"] = max(a["change_pct"], abs(r.get("change_pct", 0)))
         if r.get("date"):

@@ -1,11 +1,14 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.datasource.akshare_client import (
+from app.datahub.contracts import Capability
+from app.datahub.consumer import (
     get_market_indices,
     get_sw_sector_list,
     get_sector_capital_flow,
+    get_optional_kpl,
 )
+from app.datahub.errors import DataHubError
 from app.schemas.llm_outputs import (
     SectorCapitalOutput,
     SectorChiefOutput,
@@ -17,9 +20,11 @@ from app.schemas.llm_outputs import (
 
 def _build_macro_prompt(data: dict) -> list[dict]:
     indices_text = json.dumps(data["indices"], ensure_ascii=False, default=str)
+    kpl_text = json.dumps(data.get("kpl_strong_sectors", []), ensure_ascii=False, default=str)
     system = f"""{{ANALYST_KEY:sector_macro}}
 你是一位宏观策略师（sector_macro）。基于市场指数与宏观环境给出策略分析报告。
 大盘指数：{indices_text}
+开盘啦/Tushare 强势板块（可选参考）：{kpl_text}
 
 只返回 JSON 对象，且只能包含字段：report(文字报告), score(0-10)。"""
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON"}]
@@ -92,17 +97,27 @@ async def run_sector_analysis(user_id: int, task, db) -> dict:
     await _set_progress(context, 10)
 
     # 1. Collect market data
-    indices = get_market_indices()
+    indices = [item.model_dump(mode="json") for item in (await get_market_indices()).data]
     await _set_progress(context, 25)
-    sw_sectors = get_sw_sector_list()
+    sw_sectors = [item.model_dump(mode="json") for item in (await get_sw_sector_list()).data]
     await _set_progress(context, 40)
-    sector_flow = get_sector_capital_flow()
+    sector_flow = [item.model_dump(mode="json") for item in (await get_sector_capital_flow()).data]
     await _set_progress(context, 50)
+
+    kpl_strong_sectors: list[dict] = []
+    kpl_warnings: list[str] = []
+    try:
+        kpl_result = await get_optional_kpl(Capability.KPL_STRONG_SECTORS, {})
+        if kpl_result is not None:
+            kpl_strong_sectors = [item.model_dump(mode="json") for item in kpl_result.data]
+    except DataHubError:
+        kpl_warnings.append("开盘啦/Tushare 强势板块暂不可用，已继续基础板块分析")
 
     data = {
         "indices": indices,
         "sw_sectors": sw_sectors[:30],
         "sector_flow": sector_flow[:20],
+        "kpl_strong_sectors": kpl_strong_sectors,
     }
 
     # 2. Run 4 agents in parallel
@@ -142,5 +157,6 @@ async def run_sector_analysis(user_id: int, task, db) -> dict:
             "indices": indices,
             "top_flow_sectors": [s for s in sector_flow[:5]],
         },
+        "kpl": {"strong_sectors": kpl_strong_sectors, "warnings": kpl_warnings},
     }
     return report

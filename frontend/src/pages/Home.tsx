@@ -11,6 +11,13 @@ interface IndexData {
   change_pct: number
 }
 
+interface DataMeta {
+  provider?: string
+  freshness?: 'fresh' | 'stale'
+  data_at?: string | null
+  warnings?: string[]
+}
+
 interface StockItem {
   code: string
   name: string
@@ -24,6 +31,7 @@ interface SectorData {
   sectors: { name: string; price: number; change_pct: number }[]
   stocks: StockItem[]
   updated_at: string
+  period_label?: string
 }
 
 const fmtPct = (v: number) => (v >= 0 ? '+' : '\u2212') + Math.abs(v).toFixed(2) + '%'
@@ -44,12 +52,25 @@ export default function Home() {
   const [sectorData, setSectorData] = useState<SectorData | null>(null)
   const [updatedTime, setUpdatedTime] = useState('')
   const [loading, setLoading] = useState(false)
+  const [indicesMeta, setIndicesMeta] = useState<DataMeta | null>(null)
+  const [sectorMeta, setSectorMeta] = useState<DataMeta | null>(null)
+  const [indicesError, setIndicesError] = useState('')
+  const [sectorError, setSectorError] = useState('')
 
   const fetchIndices = async () => {
     try {
       const resp = await client.get('/stocks/market-indices')
       setIndices(resp.data.data || [])
-    } catch {/* ignore */}
+      const meta: DataMeta | null = resp.data.meta || null
+      setIndicesMeta(meta)
+      const parsedTime = meta?.data_at ? new Date(meta.data_at) : new Date()
+      setUpdatedTime(Number.isNaN(parsedTime.getTime()) ? new Date().toLocaleTimeString('zh-CN') : parsedTime.toLocaleTimeString('zh-CN'))
+      setIndicesError('')
+    } catch (error: any) {
+      setIndicesError(error?.response?.status === 503 ? '行情数据暂不可用，请稍后重试' : '行情数据加载失败，请重试')
+      setIndices([])
+      setIndicesMeta(null)
+    }
   }
 
   const fetchSector = async () => {
@@ -58,14 +79,19 @@ export default function Home() {
       const resp = await client.get('/stocks/sectors/overview', { params: { category, period } })
       const data: SectorData = resp.data.data
       setSectorData(data)
+      setSectorMeta(resp.data.meta || null)
+      setSectorError('')
       setUpdatedTime(new Date().toLocaleTimeString('zh-CN'))
-    } catch {/* ignore */}
+    } catch (error: any) {
+      setSectorError(error?.response?.status === 503 ? '板块数据暂不可用，请稍后重试' : '板块数据加载失败，请重试')
+      setSectorData(null)
+      setSectorMeta(null)
+    }
     finally { setLoading(false) }
   }
 
   useEffect(() => {
     fetchIndices()
-    fetchSector()
     const id = setInterval(fetchIndices, 60000)
     return () => clearInterval(id)
   }, [])
@@ -89,6 +115,10 @@ export default function Home() {
           </span>
         </div>
         <div className="kpi-grid home-index-grid">
+          {indicesMeta?.freshness === 'stale' && <div className="status-banner stale" role="status" style={{ gridColumn: '1/-1' }}>
+            最近有效行情：{indicesMeta.provider || '备用数据源'}{indicesMeta.data_at ? ` · 数据时间 ${new Date(indicesMeta.data_at).toLocaleString('zh-CN')}` : ''}
+          </div>}
+          {indicesError && <div className="status-banner datahub-error" role="alert" style={{ gridColumn: '1/-1' }}>{indicesError}</div>}
           {indices.map((idx) => (
             <div className="kpi" key={idx.code}>
               <div className="k-label">{idx.name}</div>
@@ -96,7 +126,7 @@ export default function Home() {
               <div className={`k-sub mono ${cls(idx.change_pct)}`}>{fmtPct(idx.change_pct)}</div>
             </div>
           ))}
-          {indices.length === 0 && <div className="empty" style={{ gridColumn: '1/-1' }}>指数数据加载中...</div>}
+          {indices.length === 0 && !indicesError && <div className="empty" style={{ gridColumn: '1/-1' }}>指数数据加载中...</div>}
         </div>
       </section>
 
@@ -115,6 +145,10 @@ export default function Home() {
             <button key={p} className={`pill${period === p ? ' active' : ''}`} onClick={() => setPeriod(p)}>{p}</button>
           ))}
         </div>
+        {sectorError && <div className="status-banner datahub-error mt16" role="alert">{sectorError}</div>}
+        {sectorMeta?.freshness === 'stale' && <div className="status-banner stale mt16" role="status">
+          最近有效板块数据：{sectorMeta.provider || '备用数据源'}{sectorMeta.data_at ? ` · 数据时间 ${new Date(sectorMeta.data_at).toLocaleString('zh-CN')}` : ''}
+        </div>}
         {sectors.length > 0 ? (
           <div className="bars mt16">
             {sectors.map((s) => (
@@ -126,9 +160,9 @@ export default function Home() {
             ))}
           </div>
         ) : (
-          <div className="empty mt16">{loading ? '加载中...' : '暂无板块数据'}</div>
+          <div className="empty mt16">{loading ? '加载中...' : sectorError ? '暂无可用板块数据，请稍后重试' : '暂无板块数据'}</div>
         )}
-        <p className="caption mt16">{sectorData ? `${sectorData.category}板块走势 · 近${sectorData.period}涨跌幅 %` : '板块走势'}</p>
+        <p className="caption mt16">{sectorData ? `${sectorData.category}板块走势 · ${sectorData.period_label || `近${sectorData.period}`}涨跌幅 %` : '板块走势'}</p>
       </section>
 
       {/* 代表个股 */}
@@ -160,7 +194,7 @@ export default function Home() {
             ))}
           </div>
         ) : (
-          <div className="empty">指数数据加载中...</div>
+          <div className="empty">{indicesError ? '指数行情暂不可用，请重试' : '指数数据加载中...'}</div>
         )}
         <p className="caption mt8">指数涨跌 · 红涨绿跌，色深代表幅度</p>
       </section>

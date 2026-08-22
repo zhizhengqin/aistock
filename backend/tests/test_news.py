@@ -156,6 +156,6 @@ def test_news_api_filter(auth_client, test_db):
 
 
 def test_news_sources_config():
-    assert len(NEWS_SOURCES) >= 3
+    assert {source["name"] for source in NEWS_SOURCES} == {"华尔街见闻", "FT中文网"}
     for s in NEWS_SOURCES:
-        assert "name" in s and ("url" in s or "akshare_func" in s)
+        assert "name" in s and s.get("source") == s["name"]

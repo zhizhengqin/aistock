@@ -2,8 +2,10 @@
 __pycache__/
 *.pyc
 .venv/
+**/.venv
 *.egg-info/
 .pytest_cache/
+*.coverage
 
 # Node
 node_modules/
@@ -12,6 +14,8 @@ frontend/dist/
 
 # Env
 .env
+!.env.example
+*.tsbuildinfo
 
 # Docker data
 deploy/data/
@@ -32,3 +36,7 @@ screenshots/m1/04-*mobile.png.bak
 
 # Local git worktrees
 .worktrees/
+
+# Build/test output must never be tracked.
+coverage.xml
+htmlcov/

@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.api import health, auth, market, tasks, m3, m4, m5, m6, admin, admin_llm
+from app.api import health, auth, market, tasks, m3, m4, m5, m6, admin, admin_llm, admin_datahub, datahub_health
 from app.services.llm.http_client import close_llm_http_client, get_llm_http_client
 
 
@@ -47,7 +47,11 @@ async def llm_validation_exception_handler(request: Request, exc: RequestValidat
     name.  Existing non-LLM endpoints retain FastAPI's historical response.
     """
 
-    if not request.url.path.startswith(f"{settings.API_PREFIX}/admin/llm"):
+    redacted_admin_paths = (
+        f"{settings.API_PREFIX}/admin/llm",
+        f"{settings.API_PREFIX}/admin/data-source",
+    )
+    if not any(request.url.path.startswith(prefix) for prefix in redacted_admin_paths):
         return await request_validation_exception_handler(request, exc)
     field = None
     if exc.errors():
@@ -60,7 +64,7 @@ async def llm_validation_exception_handler(request: Request, exc: RequestValidat
     return JSONResponse(
         status_code=422,
         content={
-            "code": "llm_validation_error",
+            "code": "llm_validation_error" if request.url.path.startswith(f"{settings.API_PREFIX}/admin/llm") else "admin_validation_error",
             "message": "请求参数校验失败",
             "data": None,
             "field": field,
@@ -86,3 +90,5 @@ app.include_router(m5.router, prefix=settings.API_PREFIX)
 app.include_router(m6.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(admin_llm.router, prefix=settings.API_PREFIX)
+app.include_router(admin_datahub.router, prefix=settings.API_PREFIX)
+app.include_router(datahub_health.router, prefix=settings.API_PREFIX)

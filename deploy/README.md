@@ -41,6 +41,7 @@ cd /opt/aistock
 # 2. 配置环境变量（密码、密钥）
 cp deploy/.env.example deploy/.env
 openssl rand -hex 32        # 把输出填进 deploy/.env 的 JWT_SECRET
+python deploy/ensure_llm_keyring.py deploy/.env  # 原子生成/校验 LLM 密钥环和 DataHub 32 字节密钥
 nano deploy/.env            # 填数据库、JWT、LLM 加密密钥环和观察期 bootstrap 输入
 
 # 3. 先只执行 migrator（首次构建约 10-15 分钟）
@@ -66,6 +67,9 @@ docker compose -f deploy/docker-compose.yml ps   # 5 个容器都该是 Up
 bootstrap 输入：仅在模型中心为空时消费一次，管理员保存模型后不会覆盖数据库配置。生产还必须
 配置 `LLM_CONFIG_ENCRYPTION_KEY_ID` 和 `LLM_CONFIG_ENCRYPTION_KEYS`（32 字节密钥的 Base64
 JSON）。密钥环支持双读单写轮换；观察期结束后将另开任务删除这三个旧 bootstrap 变量。
+`DATAHUB_CONFIG_ENCRYPTION_KEY` 是 PostgreSQL DataHub 凭据的独立 32 字节十六进制主密钥，
+由上面的脚本生成并以 0600 权限写入；migrator、api、worker 三个容器都会强制读取它。不要把
+真实 `deploy/.env` 提交到仓库，也不要把该密钥写入日志或 API 响应。
 系统没有假数据开关；没有可用供应商时 readiness/smoke 会失败，不能用伪造报告绕过。
 
 ## 三、日常更新（推到 GitHub 后自动部署）

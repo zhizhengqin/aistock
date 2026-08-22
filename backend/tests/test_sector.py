@@ -1,5 +1,15 @@
 import pytest
+from datetime import datetime, timezone
 from unittest.mock import patch
+
+from app.datahub.contracts import (
+    Capability,
+    DataQuality,
+    DataResult,
+    MarketIndex,
+    SectorFlow,
+    SectorQuote,
+)
 from app.schemas.llm_outputs import (
     SectorCapitalOutput,
     SectorChiefOutput,
@@ -47,24 +57,37 @@ class _Llm:
         return output_type.model_validate(payload)
 
 
+_DATA_AT = datetime(2026, 8, 21, 7, 0, tzinfo=timezone.utc)
+
+
+def _result(capability, data):
+    return DataResult(
+        data=data,
+        capability=capability,
+        provider="fixture",
+        data_at=_DATA_AT,
+        quality=DataQuality(valid=True, rows=len(data)),
+    )
+
+
 @pytest.mark.asyncio
 async def test_sector_full_report_structure():
     mock_indices = [
-        {"code": "000001", "name": "上证指数", "price": 3200, "change_pct": 0.5},
-        {"code": "399001", "name": "深证成指", "price": 10500, "change_pct": 0.8},
+        MarketIndex(code="000001.SS", name="上证指数", price=3200, change_pct=0.5, data_at=_DATA_AT),
+        MarketIndex(code="399001.SZ", name="深证成指", price=10500, change_pct=0.8, data_at=_DATA_AT),
     ]
     mock_sw = [
-        {"code": "801013", "name": "白酒", "change_pct": 1.5, "price": 5000, "turnover": 1e9},
-        {"code": "801081", "name": "半导体", "change_pct": 2.3, "price": 3000, "turnover": 2e9},
+        SectorQuote(code="801013", name="白酒", change_pct=1.5, price=5000, turnover=1e9, data_at=_DATA_AT),
+        SectorQuote(code="801081", name="半导体", change_pct=2.3, price=3000, turnover=2e9, data_at=_DATA_AT),
     ]
     mock_flow = [
-        {"name": "半导体", "change_pct": 2.3, "net_main_flow": 5e8, "net_main_pct": 3.5},
-        {"name": "银行", "change_pct": 0.5, "net_main_flow": 3e8, "net_main_pct": 2.1},
+        SectorFlow(name="半导体", change_pct=2.3, net_main_flow=5e8, net_main_pct=3.5, data_at=_DATA_AT),
+        SectorFlow(name="银行", change_pct=0.5, net_main_flow=3e8, net_main_pct=2.1, data_at=_DATA_AT),
     ]
 
-    with patch("app.services.sector_orchestrator.get_market_indices", return_value=mock_indices), \
-         patch("app.services.sector_orchestrator.get_sw_sector_list", return_value=mock_sw), \
-         patch("app.services.sector_orchestrator.get_sector_capital_flow", return_value=mock_flow):
+    with patch("app.services.sector_orchestrator.get_market_indices", return_value=_result(Capability.MARKET_INDICES, mock_indices)), \
+         patch("app.services.sector_orchestrator.get_sw_sector_list", return_value=_result(Capability.SECTOR_REALTIME, mock_sw)), \
+         patch("app.services.sector_orchestrator.get_sector_capital_flow", return_value=_result(Capability.SECTOR_FUND_FLOW, mock_flow)):
         report = await run_sector_analysis(1, _Context(), None)
 
     assert "agents" in report

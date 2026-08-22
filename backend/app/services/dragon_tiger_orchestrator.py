@@ -1,20 +1,25 @@
 import json
 from datetime import datetime, timezone
-from app.datasource.akshare_client import (
+from app.datahub.contracts import Capability
+from app.datahub.consumer import (
     get_dragon_tiger_list,
     get_dragon_tiger_institution,
+    get_optional_kpl,
 )
+from app.datahub.errors import DataHubError
 from app.services.dragon_tiger_scorer import rank_top_stocks, compute_stats, rank_institutions
 from app.schemas.llm_outputs import DragonTigerAnalysisOutput
 
 
-def _build_analyst_prompt(stats: dict, top_stocks: list[dict]) -> list[dict]:
+def _build_analyst_prompt(stats: dict, top_stocks: list[dict], kpl_limit_list: list[dict] | None = None) -> list[dict]:
     stats_text = json.dumps(stats, ensure_ascii=False, default=str)
     stocks_text = json.dumps(top_stocks, ensure_ascii=False, default=str)
+    kpl_text = json.dumps(kpl_limit_list or [], ensure_ascii=False, default=str)
     system = f"""{{ANALYST_KEY:dragon_tiger_analyst}}
 你是一位游资行为分析师（dragon_tiger_analyst）。基于龙虎榜统计数据和排行股票做行为分析。
 统计摘要：{stats_text}
 TOP10股票：{stocks_text}
+开盘啦/Tushare 涨停池（可选参考）：{kpl_text}
 
 只返回 JSON 对象，且只能包含字段：summary(文字摘要)、confidence_score(0-100)、
 active_institutions(数组，元素含name/success_rate(0-100)/appearances/style)、
@@ -42,8 +47,17 @@ async def run_dragon_tiger_analysis(period_days: int, user_id: int, task, db) ->
     await _set_progress(context, 15)
 
     # 1. Collect dragon-tiger records
-    records = get_dragon_tiger_list(days=period_days)
+    records = [item.model_dump(mode="json") for item in (await get_dragon_tiger_list(days=period_days)).data]
     await _set_progress(context, 35)
+
+    kpl_limit_list: list[dict] = []
+    kpl_warnings: list[str] = []
+    try:
+        kpl_result = await get_optional_kpl(Capability.KPL_LIMIT_LIST, {})
+        if kpl_result is not None:
+            kpl_limit_list = [item.model_dump(mode="json") for item in kpl_result.data]
+    except DataHubError:
+        kpl_warnings.append("开盘啦/Tushare 涨停池暂不可用，已继续基础龙虎榜分析")
 
     # 2. Score and rank
     stats = compute_stats(records)
@@ -51,7 +65,7 @@ async def run_dragon_tiger_analysis(period_days: int, user_id: int, task, db) ->
     await _set_progress(context, 55)
 
     # 3. Collect institution data
-    institutions = get_dragon_tiger_institution()
+    institutions = [item.model_dump(mode="json") for item in (await get_dragon_tiger_institution()).data]
     ranked_institutions = rank_institutions(institutions, top_n=10)
     await _set_progress(context, 70)
 
@@ -59,7 +73,7 @@ async def run_dragon_tiger_analysis(period_days: int, user_id: int, task, db) ->
     analysis_result = await _execute_step(
         context,
         "dragon_tiger.analysis.v1",
-        _build_analyst_prompt(stats, top_stocks),
+        _build_analyst_prompt(stats, top_stocks, kpl_limit_list),
         DragonTigerAnalysisOutput,
     )
     analysis = analysis_result.model_dump(mode="json")
@@ -75,5 +89,6 @@ async def run_dragon_tiger_analysis(period_days: int, user_id: int, task, db) ->
         "analysis": analysis,
         "strategy_advice": analysis.get("strategy_advice", ""),
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
+        "kpl": {"limit_list": kpl_limit_list, "warnings": kpl_warnings},
     }
     return report

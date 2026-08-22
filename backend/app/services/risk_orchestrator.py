@@ -1,7 +1,8 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.datasource.akshare_client import get_stock_info, get_stock_kline
+from app.datahub.consumer import get_stock_info, get_stock_kline
+from app.datahub.consumer import kline_dataframe
 from app.datasource.indicators import compute_all
 from app.services.risk_engine import analyze_stock_risk, compute_portfolio_risk
 from app.schemas.llm_outputs import RiskAnalysisOutput
@@ -40,9 +41,9 @@ async def run_stock_risk_analysis(stock_code: str, days: int, user_id: int, task
     context = task
     await _set_progress(context, 20)
 
-    info = get_stock_info(stock_code)
+    info = (await get_stock_info(stock_code)).data.model_dump(mode="json")
     stock_name = info.get("name", stock_code)
-    kline_df = get_stock_kline(stock_code, min(days * 2, 250))
+    kline_df = kline_dataframe(await get_stock_kline(stock_code, min(days * 2, 250)))
     await _set_progress(context, 40)
 
     indicators = compute_all(kline_df) if not kline_df.empty else {"rsi": {}}
@@ -82,7 +83,7 @@ async def run_portfolio_risk_scan(holdings: list[dict], user_id: int, task, db) 
 
     enriched = []
     for h in holdings:
-        kline_df = get_stock_kline(h["stock_code"], 60)
+        kline_df = kline_dataframe(await get_stock_kline(h["stock_code"], 60))
         indicators = compute_all(kline_df) if not kline_df.empty else {"rsi": {}}
         rsi = indicators.get("rsi", {}).get("RSI")
         warnings = analyze_stock_risk(kline_df, rsi)

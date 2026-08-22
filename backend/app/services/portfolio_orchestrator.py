@@ -1,7 +1,8 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.datasource.akshare_client import get_stock_info, get_stock_kline, get_stock_financial_summary
+from app.datahub.consumer import get_stock_info, get_stock_kline, get_stock_financial_summary
+from app.datahub.consumer import kline_dataframe
 from app.datasource.indicators import compute_all
 from app.schemas.llm_outputs import PortfolioDiagnosisOutput
 
@@ -51,8 +52,8 @@ async def run_portfolio_diagnosis(holdings: list[dict], user_id: int, task, db) 
     # Enrich holdings with latest prices
     enriched = []
     for h in holdings:
-        info = get_stock_info(h["stock_code"])
-        kline_df = get_stock_kline(h["stock_code"], 60)
+        info = (await get_stock_info(h["stock_code"])).data.model_dump(mode="json")
+        kline_df = kline_dataframe(await get_stock_kline(h["stock_code"], 60))
         current_price = info.get("price", 0) or h.get("cost_price", 0)
         indicators = compute_all(kline_df) if not kline_df.empty else {"rsi": {}, "ma": {}}
         rsi = indicators.get("rsi", {}).get("RSI")

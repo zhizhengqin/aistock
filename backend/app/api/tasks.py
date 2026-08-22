@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import settings
@@ -153,10 +154,14 @@ async def download_analysis_pdf(report_id: int, user: User = Depends(get_current
 @router.get("/stocks/{code}/snapshot")
 async def stock_snapshot(code: str, user: User = Depends(get_current_user)):
     """Return real-time snapshot + indicators for a stock (no AI call)."""
-    from app.datasource.akshare_client import get_stock_info, get_stock_kline
+    from app.datahub.consumer import get_stock_info, get_stock_kline, kline_dataframe
+    from app.datahub.errors import DataHubError
     from app.datasource.indicators import compute_all
-    info = get_stock_info(code)
-    kline_df = get_stock_kline(code, 120)
+    try:
+        info = (await get_stock_info(code)).data.model_dump(mode="json")
+        kline_df = kline_dataframe(await get_stock_kline(code, 120))
+    except DataHubError as exc:
+        return JSONResponse(status_code=exc.status_code, content=exc.to_response())
     indicators = compute_all(kline_df) if not kline_df.empty else {"ma": {}, "macd": {}, "rsi": {}, "kdj": {}, "boll": {}}
     kline_data = []
     if not kline_df.empty:

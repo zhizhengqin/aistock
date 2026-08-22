@@ -9,6 +9,8 @@ from app.schemas.llm_outputs import (
     MainForceTechnicalOutput,
 )
 from app.services.main_force_orchestrator import run_main_force_selection, _strategy_filter
+from app.datahub.contracts import Capability, DataQuality, DataResult, FundFlow, FundFlowRankItem, KlineBar, ShareholderSummary, StockSnapshot
+from datetime import datetime, timezone
 
 
 class _Context:
@@ -97,13 +99,18 @@ async def test_main_force_full_report_structure():
         "close": [100.0 + i * 0.05 for i in range(120)], "volume": [10000]*120,
     })
 
-    with patch("app.services.main_force_orchestrator.get_market_capital_flow_rank", return_value=mock_candidates), \
-         patch("app.services.main_force_orchestrator.get_stock_info", return_value=mock_info), \
-         patch("app.services.main_force_orchestrator.get_stock_kline", return_value=mock_kline), \
-         patch("app.services.main_force_orchestrator.get_stock_shareholder_count", return_value=mock_gdhs), \
-         patch("app.services.main_force_orchestrator.get_stock_capital_flow", return_value={
-             "net_main_flow": 2.3,
-         }):
+    now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+    rank_result = DataResult(data=[FundFlowRankItem(code=row["code"], name=row["name"], net_main_flow=row["net_main_flow"], change_pct=row["change_pct"], net_main_pct=row["net_main_pct"], data_at=now) for row in mock_candidates], capability=Capability.MARKET_FUND_FLOW_RANK, provider="fixture", data_at=now, quality=DataQuality(valid=True, rows=2))
+    snapshot_result = DataResult(data=StockSnapshot(code="600519.SS", name="测试", price=100, change_pct=1, market_cap=200, industry="测试", data_at=now), capability=Capability.STOCK_SNAPSHOT, provider="fixture", data_at=now)
+    kline_result = DataResult(data=[KlineBar(date=f"2026-08-{(i % 20) + 1:02d}", open=100, high=101, low=99, close=100 + i * 0.05, volume=10000, data_at=now) for i in range(120)], capability=Capability.STOCK_KLINE_DAILY, provider="fixture", data_at=now, quality=DataQuality(valid=True, rows=120))
+    shareholder_result = DataResult(data=ShareholderSummary(code="600519.SS", latest=10000, previous=11000, change_pct=-9, history=[10000, 11000], data_at=now), capability=Capability.STOCK_SHAREHOLDERS, provider="fixture", data_at=now)
+    flow_result = DataResult(data=FundFlow(code="600519.SS", net_main_flow=2.3, data_at=now), capability=Capability.STOCK_FUND_FLOW, provider="fixture", data_at=now)
+
+    with patch("app.services.main_force_orchestrator.get_market_capital_flow_rank", return_value=rank_result), \
+         patch("app.services.main_force_orchestrator.get_stock_info", return_value=snapshot_result), \
+         patch("app.services.main_force_orchestrator.get_stock_kline", return_value=kline_result), \
+         patch("app.services.main_force_orchestrator.get_stock_shareholder_count", return_value=shareholder_result), \
+         patch("app.services.main_force_orchestrator.get_stock_capital_flow", return_value=flow_result):
         report = await run_main_force_selection(1, _Context(), None)
 
     assert "skim_count" in report

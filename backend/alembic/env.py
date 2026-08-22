@@ -13,6 +13,7 @@ from app.models import news_item, us_research_report  # noqa: F401
 from app.models import membership_plan, usage_log  # noqa: F401
 from app.models import ai_trade_plan, ai_decision_record  # noqa: F401
 from app.models import llm_config, llm_execution, task_outbox  # noqa: F401
+from app.models import datahub  # noqa: F401
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 if os.getenv("TEST_DATABASE_URL"):
     config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])

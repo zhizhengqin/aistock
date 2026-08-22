@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import client from '../api/client'
 import { errMsg } from '../utils/errors'
 import LlmModelsView from './admin/LlmModelsView'
+import DataSourcesView from './admin/DataSourcesView'
 
 type Tab = 'stats' | 'users' | 'llm' | 'datasource' | 'agent'
 
@@ -42,7 +43,7 @@ export default function Admin() {
       {tab === 'stats' && <StatsView />}
       {tab === 'users' && <UsersView />}
       {tab === 'llm' && <LlmModelsView />}
-      {tab === 'datasource' && <DatasourceView />}
+      {tab === 'datasource' && <DataSourcesView />}
       {tab === 'agent' && <AgentConfigView />}
     </>
   )
@@ -164,62 +165,6 @@ function UsersView() {
   )
 }
 
-
-function DatasourceView() {
-  const [config, setConfig] = useState<any>(null)
-  const [testing, setTesting] = useState(false)
-  const [result, setResult] = useState<any>(null)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    client.get('/admin/datasource-config')
-      .then((r) => setConfig(r.data.data))
-      .catch((err) => setError(errMsg(err, '加载数据源配置失败')))
-  }, [])
-
-  const test = () => {
-    setTesting(true)
-    setResult(null)
-    client.post('/admin/datasource-test')
-      .then((r) => { setResult(r.data.data); setTesting(false) })
-      .catch((err) => { setResult({ status: 'error', error: errMsg(err, '测试失败') }); setTesting(false) })
-  }
-
-  if (!config) return <div className="empty">{error || '加载中…'}</div>
-
-  const rows: [string, any][] = [
-    ['主数据源', config.primary_source],
-    ['akshare 版本', config.akshare_version],
-    ['Redis', config.redis_url],
-    ['数据库', config.database_url_masked],
-    ['新闻源', (config.news_sources ?? []).join('、')],
-    ['美股数据源', config.us_market_source],
-  ]
-
-  return (
-    <section className="card">
-      <h2 className="card-title">数据源配置</h2>
-      <div>
-        {rows.map(([k, v]) => (
-          <div className="dl-row" key={k}>
-            <span className="dl-k">{k}</span>
-            <span className="dl-v mono">{String(v)}</span>
-          </div>
-        ))}
-      </div>
-      <div className="flex mt16 wrap">
-        <button className="btn btn-ghost" onClick={test} disabled={testing}>
-          {testing ? '测试中…' : '测试连接'}
-        </button>
-        {result && (
-          <span className={`test-result ${result.status === 'ok' ? 'up' : 'down'}`}>
-            {result.status === 'ok' ? `连接正常，获取 ${result.rows} 行行情数据` : `连接失败：${result.error}`}
-          </span>
-        )}
-      </div>
-    </section>
-  )
-}
 
 function AgentConfigView() {
   const [config, setConfig] = useState<any>(null)

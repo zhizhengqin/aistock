@@ -1,6 +1,17 @@
-import pandas as pd
+from datetime import datetime, timezone
 import pytest
 from unittest.mock import patch
+
+from app.datahub.contracts import (
+    Capability,
+    DataQuality,
+    DataResult,
+    FinancialSummary,
+    FundFlow,
+    KlineBar,
+    NewsItem,
+    StockSnapshot,
+)
 
 from app.schemas.llm_outputs import (
     CapitalAnalysisOutput,
@@ -62,25 +73,65 @@ def _context():
     return _Context()
 
 
+_DATA_AT = datetime(2026, 8, 21, 7, 0, tzinfo=timezone.utc)
+
+
+def _result(capability, data, *, rows=None):
+    if rows is None:
+        rows = len(data) if isinstance(data, list) else 1
+    return DataResult(
+        data=data,
+        capability=capability,
+        provider="fixture",
+        data_at=_DATA_AT,
+        quality=DataQuality(valid=True, rows=rows),
+    )
+
+
+def _kline_result(rows: int = 120):
+    return _result(
+        Capability.STOCK_KLINE_DAILY,
+        [
+            KlineBar(
+                date=f"2026-05-{(i % 28) + 1:02d}",
+                open=100,
+                high=101,
+                low=99,
+                close=100.0 + i * 0.1,
+                volume=10000 + i,
+                data_at=_DATA_AT,
+            )
+            for i in range(rows)
+        ],
+        rows=rows,
+    )
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_full_report_structure():
-    mock_kline = pd.DataFrame({
-        "open": [100] * 120, "high": [101] * 120, "low": [99] * 120,
-        "close": [100.0 + i * 0.1 for i in range(120)], "volume": [10000 + i for i in range(120)],
-    })
     context = _context()
-    with patch("app.services.analysis_orchestrator.get_stock_info", return_value={
-        "name": "贵州茅台", "price": 1685.5, "change_pct": 1.32, "industry": "白酒",
-    }), patch("app.services.analysis_orchestrator.get_stock_kline", return_value=mock_kline), \
-        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value={
-            "revenue": 88e8, "net_profit": 40e8, "roe": 15.2, "pe_ttm": 22.8, "pb": 7.5,
-            "market_cap": 20000, "gross_margin": 91.5, "debt_ratio": 22.3,
-        }), patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value={
-            "net_main_flow": 2.3e8, "net_super_large": 1.5e8, "net_large": 0.5e8,
-            "net_medium": -0.3e8, "net_small": -0.7e8,
-        }), patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=[
-            {"title": "业绩预增公告", "content": "营收稳健", "date": "2026-01-01"},
-        ]):
+    with patch("app.services.analysis_orchestrator.get_stock_info", return_value=_result(
+        Capability.STOCK_SNAPSHOT,
+        StockSnapshot(code="600519.SS", name="贵州茅台", price=1685.5, change_pct=1.32, industry="白酒", data_at=_DATA_AT),
+    )), patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_kline_result()), \
+        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value=_result(
+            Capability.STOCK_FINANCIALS,
+            FinancialSummary(
+                code="600519.SS", revenue=88e8, net_profit=40e8, roe=15.2,
+                pe_ttm=22.8, pb=7.5, market_cap=20000, gross_margin=91.5,
+                debt_ratio=22.3, data_at=_DATA_AT,
+            ),
+        )), patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value=_result(
+            Capability.STOCK_FUND_FLOW,
+            FundFlow(
+                code="600519.SS", net_main_flow=2.3e8, net_super_large=1.5e8,
+                net_large=0.5e8, net_medium=-0.3e8, net_small=-0.7e8,
+                data_at=_DATA_AT,
+            ),
+        )), patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=_result(
+            Capability.STOCK_NEWS,
+            [NewsItem(title="业绩预增公告", content="营收稳健", date=_DATA_AT)],
+        )):
         report = await run_full_analysis("600519", 1, context, None)
 
     assert report["stock_code"] == "600519"
@@ -98,16 +149,22 @@ async def test_orchestrator_full_report_structure():
 @pytest.mark.asyncio
 async def test_orchestrator_missing_data_graceful():
     """Empty market data still produces a typed report from the model service."""
-    with patch("app.services.analysis_orchestrator.get_stock_info", return_value={
-        "name": "", "price": 0, "change_pct": 0, "industry": "",
-    }), patch("app.services.analysis_orchestrator.get_stock_kline", return_value=pd.DataFrame()), \
-        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value={
-            "revenue": 0, "net_profit": 0, "roe": 0, "pe_ttm": 0, "pb": 0,
-            "market_cap": 0, "gross_margin": 0, "debt_ratio": 0,
-        }), patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value={
-            "net_main_flow": 0, "net_super_large": 0, "net_large": 0,
-            "net_medium": 0, "net_small": 0,
-        }), patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=[]):
+    with patch("app.services.analysis_orchestrator.get_stock_info", return_value=_result(
+        Capability.STOCK_SNAPSHOT,
+        StockSnapshot(code="999999.SZ", name="", price=0, change_pct=0, industry="", data_at=_DATA_AT),
+    )), patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_result(Capability.STOCK_KLINE_DAILY, [], rows=0)), \
+        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value=_result(
+        Capability.STOCK_FINANCIALS,
+            FinancialSummary(
+                code="999999.SZ", pe_ttm=0, pb=0, market_cap=0,
+                gross_margin=0, debt_ratio=0, data_at=_DATA_AT,
+            ),
+        )), patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value=_result(
+            Capability.STOCK_FUND_FLOW,
+            FundFlow(code="999999.SZ", data_at=_DATA_AT),
+        )), patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=_result(
+            Capability.STOCK_NEWS, [], rows=0,
+        )):
         report = await run_full_analysis("999999", 1, _context(), None)
 
     assert report["stock_code"] == "999999"

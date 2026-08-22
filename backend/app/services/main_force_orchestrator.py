@@ -2,14 +2,18 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from app.core.logger import logger
-from app.datasource.akshare_client import (
+from app.datahub.contracts import Capability
+from app.datahub.consumer import (
     get_market_capital_flow_rank,
     get_stock_shareholder_count,
     get_stock_info,
     get_stock_kline,
     get_stock_financial_summary,
     get_stock_capital_flow,
+    get_optional_kpl,
 )
+from app.datahub.errors import DataHubError
+from app.datahub.consumer import kline_dataframe
 from app.datasource.indicators import compute_all
 from app.schemas.llm_outputs import (
     MainForceCapitalOutput,
@@ -54,20 +58,20 @@ def _strategy_filter(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
     return passed, excluded
 
 
-def _enrich_candidate(c: dict) -> dict:
+async def _enrich_candidate(c: dict) -> dict:
     """Add strategy-relevant fields to a raw capital-flow candidate."""
     code = c["code"]
-    info = get_stock_info(code)
-    kline_df = get_stock_kline(code, 120)
+    info = (await get_stock_info(code)).data.model_dump(mode="json")
+    kline_df = kline_dataframe(await get_stock_kline(code, 120))
 
     change_pct_20d = 0
     if not kline_df.empty and len(kline_df) >= 20:
         close = kline_df["close"]
         change_pct_20d = round((close.iloc[-1] / close.iloc[-21] - 1) * 100, 2)
 
-    gdhs = get_stock_shareholder_count(code)
+    gdhs = (await get_stock_shareholder_count(code)).data.model_dump(mode="json")
 
-    flow_60d = get_stock_capital_flow(code, 60)
+    flow_60d = (await get_stock_capital_flow(code, 60)).data.model_dump(mode="json")
 
     return {
         **c,
@@ -77,16 +81,21 @@ def _enrich_candidate(c: dict) -> dict:
         "price": info.get("price", 0),
         "change_pct_20d": change_pct_20d,
         "shareholder": gdhs,
-        "net_main_flow_60d": flow_60d.get("net_main_flow", 0) * 1e8,
+        # DataHub's monetary contract is yuan.  Keep that unit across
+        # consumers; presentation converts to 亿 only inside Chinese text.
+        "net_main_flow_60d": flow_60d.get("net_main_flow", 0),
     }
 
 
 def _build_capital_prompt(data: dict) -> list[dict]:
     candidates_text = "\n".join([f"{c['code']} {c['name']}" for c in data["candidates"]])
+    kpl_text = json.dumps(data.get("kpl_strong_sectors", []), ensure_ascii=False, default=str)
     system = f"""{{ANALYST_KEY:main_force_capital}}
 你是一位资金流向分析师（main_force_capital）。基于以下候选股的资金流数据分析，选出最值得关注的3-5只。
 候选股：
 {candidates_text}
+开盘啦/Tushare 强势板块（可选参考）：
+{kpl_text}
 
 只返回 JSON 对象，且只能包含字段：focus_stocks(字符串数组), analysis(文字), score(0-10),
 flow_concentration(资金集中度描述)。"""
@@ -173,24 +182,34 @@ async def run_main_force_selection(user_id: int, task, db) -> dict:
     await _set_progress(context, 10)
 
     # 1. Get top-N from full market capital flow ranking
-    raw_candidates = get_market_capital_flow_rank(limit=40)
+    raw_candidates = [item.model_dump(mode="json") for item in (await get_market_capital_flow_rank(limit=40)).data]
     await _set_progress(context, 25)
+
+    kpl_strong_sectors: list[dict] = []
+    kpl_warnings: list[str] = []
+    try:
+        kpl_result = await get_optional_kpl(Capability.KPL_STRONG_SECTORS, {})
+        if kpl_result is not None:
+            kpl_strong_sectors = [item.model_dump(mode="json") for item in kpl_result.data]
+    except DataHubError:
+        kpl_warnings.append("开盘啦/Tushare 强势板块暂不可用，已继续基础主力筛选")
 
     # 2. Enrich candidates with strategy-relevant data + filter
     candidates = []
     for c in raw_candidates:
-        try:
-            candidates.append(_enrich_candidate(c))
-        except Exception as e:
-            logger.warning(f"Enrich failed for {c.get('code')}: {e}")
-            candidates.append(c)
+        # Quote/K-line/financial/flow failures are critical: do not pass a
+        # partially enriched candidate (or silent zeroes) into the LLM.
+        candidates.append(await _enrich_candidate(c))
     await _set_progress(context, 40)
 
     passed, excluded = _strategy_filter(candidates)
     await _set_progress(context, 50)
 
     # 3. Run 5 analysts in parallel
-    data = {"candidates": passed[:20] if passed else candidates[:20]}
+    data = {
+        "candidates": passed[:20] if passed else candidates[:20],
+        "kpl_strong_sectors": kpl_strong_sectors,
+    }
     analyst_tasks = [
         ("capital", _build_capital_prompt(data), MainForceCapitalOutput),
         ("industry", _build_industry_prompt(data), MainForceIndustryOutput),
@@ -234,5 +253,6 @@ async def run_main_force_selection(user_id: int, task, db) -> dict:
             "min_60d_net_flow": STRATEGY_FILTERS["min_60d_net_flow"],
         },
         "run_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "kpl": {"strong_sectors": kpl_strong_sectors, "warnings": kpl_warnings},
     }
     return report

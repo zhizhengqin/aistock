@@ -30,4 +30,4 @@
 
 ## 一句话速览
 
-「睿见投研」= React 单页应用 + FastAPI 后端 + PostgreSQL/Redis + akshare 免费数据源 + DeepSeek 多智能体分析 + 定时任务自动产出 + 会员配额收费，单机 Docker Compose 部署到京东云，预计 8-10 周完成，月成本约 200-400 元。
+「睿见投研」= React 单页应用 + FastAPI 后端 + PostgreSQL/Redis + DataHub 多供应商数据平台（腾讯、东方财富、新浪、RSS 等）+ DeepSeek 多智能体分析 + 定时任务自动产出 + 会员配额收费，单机 Docker Compose 部署到京东云，预计 8-10 周完成，月成本约 200-400 元。

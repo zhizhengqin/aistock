@@ -16,6 +16,7 @@ from typing import Any
 
 KEY_ID = "LLM_CONFIG_ENCRYPTION_KEY_ID"
 KEYS = "LLM_CONFIG_ENCRYPTION_KEYS"
+DATAHUB_KEY = "DATAHUB_CONFIG_ENCRYPTION_KEY"
 _ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)(?:\r?\n)?$")
 
 
@@ -39,7 +40,7 @@ def _read_env(path: Path) -> tuple[str, dict[str, str], dict[str, int]]:
         if not match:
             continue
         name, value = match.groups()
-        if name in {KEY_ID, KEYS}:
+        if name in {KEY_ID, KEYS, DATAHUB_KEY}:
             occurrences[name] = occurrences.get(name, 0) + 1
             if occurrences[name] > 1:
                 raise KeyringError("LLM 密钥环配置存在重复声明")
@@ -100,17 +101,38 @@ def _validate_existing(values: dict[str, str]) -> None:
         raise KeyringError("LLM 写入密钥 ID 不存在于密钥环")
 
 
+def _validate_datahub(values: dict[str, str]) -> None:
+    value = values.get(DATAHUB_KEY, "")
+    if not value:
+        return
+    try:
+        decoded = bytes.fromhex(value)
+    except ValueError as exc:
+        raise KeyringError("DataHub 加密主密钥必须是 32 字节十六进制") from exc
+    if len(decoded) != 32 or value.lower() != value:
+        raise KeyringError("DataHub 加密主密钥必须是 32 字节十六进制")
+
+
 def _new_values() -> tuple[str, str]:
     key_id = f"llm-key-{secrets.token_hex(12)}"
     encoded = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
     return key_id, encoded
 
 
-def _replace_or_append(text: str, key_id: str, encoded: str) -> str:
+def _replace_or_append(
+    text: str,
+    key_id: str,
+    encoded: str,
+    datahub_key: str | None = None,
+    keyring: dict[str, Any] | None = None,
+) -> str:
+    keyring = keyring or {key_id: encoded}
     replacements = {
         KEY_ID: key_id,
-        KEYS: json.dumps({key_id: encoded}, ensure_ascii=True, separators=(",", ":")),
+        KEYS: json.dumps(keyring, ensure_ascii=True, separators=(",", ":")),
     }
+    if datahub_key is not None:
+        replacements[DATAHUB_KEY] = datahub_key
     seen: set[str] = set()
     lines = text.splitlines(keepends=True)
     rendered: list[str] = []
@@ -130,6 +152,8 @@ def _replace_or_append(text: str, key_id: str, encoded: str) -> str:
         rendered.append(f"{KEY_ID}={replacements[KEY_ID]}\n")
     if KEYS not in seen:
         rendered.append(f"{KEYS}={replacements[KEYS]}\n")
+    if datahub_key is not None and DATAHUB_KEY not in seen:
+        rendered.append(f"{DATAHUB_KEY}={datahub_key}\n")
     return "".join(rendered)
 
 
@@ -169,15 +193,31 @@ def ensure_keyring(path: Path) -> bool:
     """Ensure a valid keyring exists; return True when a new one was written."""
 
     text, values, occurrences = _read_env(path)
+    _validate_datahub(values)
+    datahub_key = values.get(DATAHUB_KEY) or secrets.token_hex(32)
+    datahub_missing = not values.get(DATAHUB_KEY)
     if occurrences.get(KEY_ID, 0) == 0 and occurrences.get(KEYS, 0) == 0:
         key_id, encoded = _new_values()
-        _atomic_write(path, _replace_or_append(text, key_id, encoded))
+        _atomic_write(path, _replace_or_append(text, key_id, encoded, datahub_key))
         return True
     if not values.get(KEY_ID, "") and not values.get(KEYS, ""):
         key_id, encoded = _new_values()
-        _atomic_write(path, _replace_or_append(text, key_id, encoded))
+        _atomic_write(path, _replace_or_append(text, key_id, encoded, datahub_key))
         return True
     _validate_existing(values)
+    if datahub_missing:
+        keyring = _parse_json_object(values[KEYS])
+        _atomic_write(
+            path,
+            _replace_or_append(
+                text,
+                values[KEY_ID],
+                str(keyring[values[KEY_ID]]),
+                datahub_key,
+                keyring=keyring,
+            ),
+        )
+        return True
     return False
 
 

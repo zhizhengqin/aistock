@@ -1,11 +1,26 @@
 """Orchestrator contracts for task-scoped, typed model calls."""
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pandas as pd
 import pytest
+
+from app.datahub.contracts import (
+    Capability,
+    DataQuality,
+    DataResult,
+    FinancialSummary,
+    FundFlow,
+    FundFlowRankItem,
+    KlineBar,
+    MarketIndex,
+    NewsItem,
+    SectorFlow,
+    SectorQuote,
+    StockSnapshot,
+)
 
 from app.schemas.llm_outputs import (
     CapitalAnalysisOutput,
@@ -141,26 +156,73 @@ def _payload_for(output_type):
     raise AssertionError(f"unhandled output type: {output_type}")
 
 
-def _kline():
-    return pd.DataFrame(
-        {
-            "open": [100] * 120,
-            "high": [101] * 120,
-            "low": [99] * 120,
-            "close": [100 + i * 0.1 for i in range(120)],
-            "volume": [10000] * 120,
-        }
+_DATA_AT = datetime(2026, 8, 21, 7, 0, tzinfo=timezone.utc)
+
+
+def _result(capability, data, *, rows=None):
+    if rows is None:
+        rows = len(data) if isinstance(data, list) else 1
+    return DataResult(
+        data=data,
+        capability=capability,
+        provider="fixture",
+        data_at=_DATA_AT,
+        quality=DataQuality(valid=True, rows=rows),
     )
+
+
+def _kline_result(rows: int = 120):
+    return _result(
+        Capability.STOCK_KLINE_DAILY,
+        [
+            KlineBar(
+                date=f"2026-05-{(i % 28) + 1:02d}",
+                open=100,
+                high=101,
+                low=99,
+                close=100 + i * 0.1,
+                volume=10000,
+                data_at=_DATA_AT,
+            )
+            for i in range(rows)
+        ],
+        rows=rows,
+    )
+
+
+def _stock_data_results():
+    info = _result(
+        Capability.STOCK_SNAPSHOT,
+        StockSnapshot(code="600519.SS", name="测试", price=100, change_pct=1, industry="科技", data_at=_DATA_AT),
+    )
+    financial = _result(
+        Capability.STOCK_FINANCIALS,
+        FinancialSummary(
+            code="600519.SS", revenue=1e8, net_profit=0.5e8, roe=12,
+            pe_ttm=20, pb=2, market_cap=100, gross_margin=40,
+            debt_ratio=30, data_at=_DATA_AT,
+        ),
+    )
+    flow = _result(
+        Capability.STOCK_FUND_FLOW,
+        FundFlow(code="600519.SS", net_main_flow=1e8, net_super_large=1e8, data_at=_DATA_AT),
+    )
+    news = _result(
+        Capability.STOCK_NEWS,
+        [NewsItem(title="测试资讯", source="fixture", date=_DATA_AT)],
+    )
+    return info, financial, flow, news
 
 
 @pytest.mark.asyncio
 async def test_stock_orchestrator_uses_typed_task_llm_and_stable_steps():
     context = FakeContext(StructuredLLM())
-    with patch("app.services.analysis_orchestrator.get_stock_info", return_value={"name": "测试", "price": 100, "change_pct": 1, "industry": "科技"}), \
-        patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_kline()), \
-        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value={"revenue": 1e8, "net_profit": 0.5e8, "roe": 12, "pe_ttm": 20, "pb": 2, "market_cap": 100, "gross_margin": 40, "debt_ratio": 30}), \
-        patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value={"net_main_flow": 1e8, "net_super_large": 1e8, "net_large": 0, "net_medium": 0, "net_small": 0}), \
-        patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=[]), \
+    info, financial, flow, news = _stock_data_results()
+    with patch("app.services.analysis_orchestrator.get_stock_info", return_value=info), \
+        patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_kline_result()), \
+        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value=financial), \
+        patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value=flow), \
+        patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=news), \
         patch("app.services.analysis_orchestrator.compute_all", return_value={"ma": {}, "macd": {}, "rsi": {}, "kdj": {}, "boll": {}}):
         report = await run_full_analysis("600519", 1, context, None)
 
@@ -181,11 +243,12 @@ async def test_stock_orchestrator_uses_typed_task_llm_and_stable_steps():
 @pytest.mark.asyncio
 async def test_required_stock_step_failure_propagates_without_neutral_fallback():
     context = FakeContext(StructuredLLM(failure=RuntimeError("provider failed")))
-    with patch("app.services.analysis_orchestrator.get_stock_info", return_value={"name": "测试", "price": 100, "change_pct": 1, "industry": "科技"}), \
-        patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_kline()), \
-        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value={"revenue": 1e8, "net_profit": 0.5e8, "roe": 12, "pe_ttm": 20, "pb": 2, "market_cap": 100, "gross_margin": 40, "debt_ratio": 30}), \
-        patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value={"net_main_flow": 1e8, "net_super_large": 1e8, "net_large": 0, "net_medium": 0, "net_small": 0}), \
-        patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=[]), \
+    info, financial, flow, news = _stock_data_results()
+    with patch("app.services.analysis_orchestrator.get_stock_info", return_value=info), \
+        patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_kline_result()), \
+        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value=financial), \
+        patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value=flow), \
+        patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=news), \
         patch("app.services.analysis_orchestrator.compute_all", return_value={"ma": {}, "macd": {}, "rsi": {}, "kdj": {}, "boll": {}}):
         with pytest.raises(RuntimeError, match="provider failed"):
             await run_full_analysis("600519", 1, context, None)
@@ -196,9 +259,9 @@ async def test_required_stock_step_failure_propagates_without_neutral_fallback()
 async def test_main_force_and_sector_wait_for_typed_synthesis_inputs():
     llm = StructuredLLM()
     context = FakeContext(llm)
-    candidate = {"code": "600519", "name": "贵州茅台", "net_main_flow": 1e8, "change_pct": 1, "net_main_pct": 1}
-    with patch("app.services.main_force_orchestrator.get_market_capital_flow_rank", return_value=[candidate]), \
-        patch("app.services.main_force_orchestrator._enrich_candidate", return_value={**candidate, "market_cap": 100, "change_pct_20d": 1, "net_main_flow_60d": 1, "shareholder": {"change_pct": -1}}):
+    candidate = FundFlowRankItem(code="600519.SS", name="贵州茅台", net_main_flow=1e8, change_pct=1, net_main_pct=1, data_at=_DATA_AT)
+    with patch("app.services.main_force_orchestrator.get_market_capital_flow_rank", return_value=_result(Capability.MARKET_FUND_FLOW_RANK, [candidate])), \
+        patch("app.services.main_force_orchestrator._enrich_candidate", return_value={**candidate.model_dump(mode="json"), "market_cap": 100, "change_pct_20d": 1, "net_main_flow_60d": 1, "shareholder": {"change_pct": -1}}):
         main_report = await run_main_force_selection(1, context, None)
 
     assert main_report["recommended"]["companies"]
@@ -210,9 +273,9 @@ async def test_main_force_and_sector_wait_for_typed_synthesis_inputs():
     }
 
     llm.calls.clear()
-    with patch("app.services.sector_orchestrator.get_market_indices", return_value=[]), \
-        patch("app.services.sector_orchestrator.get_sw_sector_list", return_value=[]), \
-        patch("app.services.sector_orchestrator.get_sector_capital_flow", return_value=[]):
+    with patch("app.services.sector_orchestrator.get_market_indices", return_value=_result(Capability.MARKET_INDICES, [])), \
+        patch("app.services.sector_orchestrator.get_sw_sector_list", return_value=_result(Capability.SECTOR_REALTIME, [])), \
+        patch("app.services.sector_orchestrator.get_sector_capital_flow", return_value=_result(Capability.SECTOR_FUND_FLOW, [])):
         sector_report = await run_sector_analysis(1, context, None)
 
     assert sector_report["decision"]["operation_advice"]

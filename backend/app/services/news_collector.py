@@ -1,10 +1,12 @@
-"""Multi-source financial news collector with dedupe and deterministic tags.
+"""DataHub-backed financial news collector with dedupe and deterministic tags.
 
-Sources: akshare telegraph APIs (财联社/新浪/同花顺) + RSS feeds.
+Sources: the configured DataHub RSS adapters.  Unsupported historical source
+names are intentionally not called through an old SDK or a direct HTTP path.
 Dedupe is by url_hash (sha1 of url, or of title when url is missing).
 Tagging is ordinary keyword classification and never consumes model budget.
 """
 import hashlib
+import anyio
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -14,13 +16,11 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import logger
 from app.models.news_item import NewsItem
+from app.datahub.consumer import get_global_news
 
 NEWS_SOURCES = [
-    {"name": "财联社", "akshare_func": "stock_info_global_cls"},
-    {"name": "新浪财经", "akshare_func": "stock_info_global_sina"},
-    {"name": "同花顺", "akshare_func": "stock_info_global_ths"},
-    {"name": "华尔街见闻", "url": "https://dedicated.wallstreetcn.com/rss.xml"},
-    {"name": "FT中文网", "url": "https://www.ftchinese.com/rss/news"},
+    {"name": "华尔街见闻", "source": "华尔街见闻"},
+    {"name": "FT中文网", "source": "FT中文网"},
 ]
 
 POSITIVE_KEYWORDS = ["降准", "降息", "利好", "增长", "上涨", "突破", "中标", "回购", "预增",
@@ -147,39 +147,20 @@ def rule_based_tag(title: str, summary: str = "") -> dict:
 
 def fetch_source_items(source: dict, limit: int = 30) -> list[dict]:
     """Fetch raw items from one source. Raises on failure — caller catches."""
-    if "akshare_func" in source:
-        import akshare as ak
-        func = getattr(ak, source["akshare_func"])
-        df = func()
-        items = []
-        # telegraph DataFrames: 标题/内容/发布日期/发布时间 columns vary by source
-        cols = list(df.columns)
-        title_col = next((c for c in cols if "标题" in c), None)
-        content_col = next((c for c in cols if "内容" in c or "摘要" in c), None)
-        date_col = next((c for c in cols if "日期" in c), None)
-        time_col = next((c for c in cols if "时间" in c), None)
-        for _, row in df.head(limit).iterrows():
-            title = str(row[title_col]) if title_col else ""
-            content = str(row[content_col]) if content_col else ""
-            if not title and content:
-                title = content[:60]
-            raw_date = f"{row[date_col]} {row[time_col]}" if date_col and time_col else (
-                str(row[date_col]) if date_col else "")
-            items.append({
-                "title": title.strip(),
-                "url": "",
-                "summary": content[:300],
-                "source": source["name"],
-                "published_at": _parse_date(raw_date.strip()),
-            })
-        return [i for i in items if i["title"]]
-
-    # RSS via httpx
-    import httpx
-    resp = httpx.get(source["url"], timeout=15, follow_redirects=True,
-                     headers={"User-Agent": "Mozilla/5.0 (compatible; aistock-bot/1.0)"})
-    resp.raise_for_status()
-    return parse_rss(resp.text, source["name"])[:limit]
+    result = anyio.run(get_global_news, source["source"], limit)
+    items = []
+    for row_model in result.data:
+        row = row_model.model_dump(mode="json")
+        title = str(row.get("title", ""))
+        content = str(row.get("content", ""))
+        items.append({
+            "title": title.strip(),
+            "url": str(row.get("url") or ""),
+            "summary": content[:300],
+            "source": source["name"],
+            "published_at": _parse_date(str(row.get("date", ""))),
+        })
+    return [i for i in items if i["title"]]
 
 
 def _tag_item(title: str, summary: str) -> dict:

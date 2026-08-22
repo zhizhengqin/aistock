@@ -32,6 +32,8 @@
   --hold-bg: oklch(0.96 0.04 85);
   --info: oklch(0.5 0.09 250);    /* 提示 / 观望 */
   --info-bg: oklch(0.96 0.02 250);
+  --error: oklch(0.43 0.16 25);   /* 系统/数据源错误，不与涨跌数据混用 */
+  --error-bg: oklch(0.97 0.03 25);
 
   /* 半径 / 间距 */
   --r-cta: 4px;
@@ -214,6 +216,10 @@ input, select, textarea { font-family: inherit; }
 .muted { color: var(--muted); }
 .fg2 { color: var(--fg-secondary); }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.status-banner { border: 1px solid var(--border); border-radius: var(--r-card); padding: 10px 12px; font-size: 13px; background: var(--surface-alt); }
+.status-banner.stale { color: var(--hold); border-color: var(--hold); background: var(--hold-bg); }
+.status-banner.down { color: var(--down); border-color: var(--down); background: var(--down-bg); }
+.status-banner.datahub-error, .test-result.datahub-error { color: var(--error); border-color: var(--error); background: var(--error-bg); }
 
 /* 涨跌条形(填充式数据编码) */
 .bars { display: flex; align-items: flex-end; gap: 12px; height: 240px; padding-top: 16px; }

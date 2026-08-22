@@ -3,6 +3,8 @@ from unittest.mock import patch
 from app.services.dragon_tiger_scorer import score_stock, rank_top_stocks, compute_stats, rank_institutions
 from app.services.dragon_tiger_orchestrator import run_dragon_tiger_analysis
 from tests.services.test_remaining_llm_contracts import _Context, _TypedLlm
+from app.datahub.contracts import Capability, DataQuality, DataResult, DragonTigerItem, DragonTigerSeat
+from datetime import datetime, timezone
 
 
 # --- Scoring engine tests (pure functions) ---
@@ -93,8 +95,11 @@ async def test_dragon_tiger_orchestrator_structure():
     mock_institutions = [
         {"name": "东方财富拉萨", "appearances": 12, "suance_rate": 48.2, "net_amount": 5e8},
     ]
-    with patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_list", return_value=mock_records), \
-         patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_institution", return_value=mock_institutions):
+    now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+    records_result = DataResult(data=[DragonTigerItem(code=row["code"], name=row["name"], net_amount=row["net_amount"], buy_amount=row["buy_amount"], sell_amount=row["sell_amount"], change_pct=row["change_pct"], date=row["date"], reason=row["reason"], data_at=now) for row in mock_records], capability=Capability.DRAGON_TIGER_LIST, provider="fixture", data_at=now, quality=DataQuality(valid=True, rows=2))
+    institutions_result = DataResult(data=[DragonTigerSeat(name=row["name"], appearances=row["appearances"], net_amount=row["net_amount"], data_at=now) for row in mock_institutions], capability=Capability.DRAGON_TIGER_SEATS, provider="fixture", data_at=now, quality=DataQuality(valid=True, rows=1))
+    with patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_list", return_value=records_result), \
+         patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_institution", return_value=institutions_result):
         report = await run_dragon_tiger_analysis(5, 1, _Context(_TypedLlm()), None)
 
     assert "period_days" in report

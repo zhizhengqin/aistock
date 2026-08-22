@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from pydantic import ValidationError
+
+from app.datahub.contracts import (
+    Capability,
+    DataQuality,
+    DataResult,
+    DragonTigerItem,
+    DragonTigerSeat,
+    KlineBar,
+    StockSnapshot,
+)
 
 from app.schemas.llm_outputs import (
     DragonTigerAnalysisOutput,
@@ -112,6 +123,47 @@ def _kline(rows: int = 60):
     })
 
 
+_DATA_AT = datetime(2026, 8, 21, 7, 0, tzinfo=timezone.utc)
+
+
+def _result(capability, data, *, rows=None):
+    if rows is None:
+        rows = len(data) if isinstance(data, list) else 1
+    return DataResult(
+        data=data,
+        capability=capability,
+        provider="fixture",
+        data_at=_DATA_AT,
+        quality=DataQuality(valid=True, rows=rows),
+    )
+
+
+def _kline_result(rows: int = 60):
+    return _result(
+        Capability.STOCK_KLINE_DAILY,
+        [
+            KlineBar(
+                date=f"2026-07-{(i % 28) + 1:02d}",
+                open=100 + i * 0.2,
+                high=(100 + i * 0.2) * 1.02,
+                low=(100 + i * 0.2) * 0.98,
+                close=100 + i * 0.2,
+                volume=10000,
+                data_at=_DATA_AT,
+            )
+            for i in range(rows)
+        ],
+        rows=rows,
+    )
+
+
+def _snapshot_result(*, price=110):
+    return _result(
+        Capability.STOCK_SNAPSHOT,
+        StockSnapshot(code="600519.SS", name="贵州茅台", price=price, industry="白酒", data_at=_DATA_AT),
+    )
+
+
 @pytest.mark.parametrize(
     ("model", "field", "value"),
     [
@@ -140,29 +192,32 @@ def test_remaining_outputs_reject_missing_and_extra_fields():
 @pytest.mark.asyncio
 async def test_remaining_orchestrators_use_typed_task_service_and_stable_steps():
     context = _Context(_TypedLlm())
-    records = [{
-        "code": "600519", "name": "茅台", "net_amount": 3e8,
-        "buy_amount": 4e8, "sell_amount": 1e8, "appearances": 1,
-        "change_pct": 7, "date": "2026-08-01", "reason": "涨幅偏离",
-    }]
-    institutions = [{"name": "东方财富拉萨", "appearances": 12, "success_rate": 48.2, "net_amount": 5e8}]
-    with patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_list", return_value=records), \
-        patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_institution", return_value=institutions):
+    records = [DragonTigerItem(
+        code="600519.SS", name="茅台", net_amount=3e8,
+        buy_amount=4e8, sell_amount=1e8, change_pct=7,
+        date="2026-08-01", reason="涨幅偏离", data_at=_DATA_AT,
+    )]
+    institutions = [DragonTigerSeat(
+        name="东方财富拉萨", appearances=12, net_amount=5e8,
+        data_at=_DATA_AT,
+    )]
+    with patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_list", return_value=_result(Capability.DRAGON_TIGER_LIST, records)), \
+        patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_institution", return_value=_result(Capability.DRAGON_TIGER_SEATS, institutions)):
         dragon = await run_dragon_tiger_analysis(5, 1, context, None)
     assert dragon["analysis"]["summary"]
     assert context.llm.calls[-1]["step_key"] == "dragon_tiger.analysis.v1"
 
     context.llm.calls.clear()
     holdings = [{"stock_code": "600519", "stock_name": "贵州茅台", "shares": 100, "cost_price": 100, "industry": "白酒"}]
-    with patch("app.services.portfolio_orchestrator.get_stock_info", return_value={"name": "贵州茅台", "price": 110, "industry": "白酒"}), \
-        patch("app.services.portfolio_orchestrator.get_stock_kline", return_value=_kline()):
+    with patch("app.services.portfolio_orchestrator.get_stock_info", return_value=_snapshot_result()), \
+        patch("app.services.portfolio_orchestrator.get_stock_kline", return_value=_kline_result()):
         portfolio = await run_portfolio_diagnosis(holdings, 1, context, None)
     assert portfolio["summary"]
     assert context.llm.calls[-1]["step_key"] == "portfolio.diagnosis.v1"
 
     context.llm.calls.clear()
-    with patch("app.services.risk_orchestrator.get_stock_info", return_value={"name": "贵州茅台", "price": 110}), \
-        patch("app.services.risk_orchestrator.get_stock_kline", return_value=_kline()):
+    with patch("app.services.risk_orchestrator.get_stock_info", return_value=_snapshot_result()), \
+        patch("app.services.risk_orchestrator.get_stock_kline", return_value=_kline_result()):
         risk = await run_stock_risk_analysis("600519", 30, 1, context, None)
     assert risk["ai_analysis"]["risk_score"] == 56
     assert context.llm.calls[-1]["step_key"] == "risk.analysis.v1"
@@ -190,9 +245,13 @@ async def test_remaining_orchestrators_use_typed_task_service_and_stable_steps()
 @pytest.mark.asyncio
 async def test_required_model_failure_propagates_without_fallback():
     context = _Context(_TypedLlm(failure=RuntimeError("provider failed")))
-    records = [{"code": "600519", "name": "茅台", "net_amount": 1, "buy_amount": 2, "sell_amount": 1, "appearances": 1, "change_pct": 1, "date": "2026-08-01", "reason": "涨幅"}]
-    with patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_list", return_value=records), \
-        patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_institution", return_value=[]):
+    records = [DragonTigerItem(
+        code="600519.SS", name="茅台", net_amount=1, buy_amount=2,
+        sell_amount=1, appearances=1, change_pct=1,
+        date="2026-08-01", reason="涨幅", data_at=_DATA_AT,
+    )]
+    with patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_list", return_value=_result(Capability.DRAGON_TIGER_LIST, records)), \
+        patch("app.services.dragon_tiger_orchestrator.get_dragon_tiger_institution", return_value=_result(Capability.DRAGON_TIGER_SEATS, [])):
         with pytest.raises(RuntimeError, match="provider failed"):
             await run_dragon_tiger_analysis(5, 1, context, None)
 

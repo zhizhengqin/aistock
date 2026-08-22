@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-- 后端：Python 3.12 + FastAPI + SQLAlchemy + PostgreSQL + Redis + akshare
+- 后端：Python 3.12 + FastAPI + SQLAlchemy + PostgreSQL + Redis + DataHub 供应商适配器
 - 前端：React 18 + TypeScript + Vite + Tailwind CSS + ECharts + zustand + TanStack Query
 - 部署：Docker Compose（单机，京东云）
 
@@ -72,6 +72,13 @@ python -m pytest tests/ -q
 
 - M0 环境就绪 ✅
 - M1 项目骨架 + 用户系统 + 首页行情 ✅（21 pytest 全绿，Playwright 端到端验证通过）
-- M2 股票分析（核心 AI 流程） 🚧 下一阶段
+- M2 股票分析（核心 AI 流程） ✅（业务消费者已统一通过 DataHub typed 能力取数）
+- DataHub 统一数据平台 ✅（路由、凭证、探针、缓存与多供应商降级链路已接入）
 
 完整路线图见 [TODOS.md](TODOS.md)。
+
+## DataHub 数据源平台
+
+现有投研模块通过 `app.datahub` 的能力契约取数，不再直接依赖某一个供应商。管理员在系统配置 → 数据源配置中查看说明、录入凭证、按能力测试并选择自动/固定路由。凭证加密保存，测试完成后输入框会清空；Redis 只承担缓存和协调，PostgreSQL 保存配置事实。
+
+详细操作、错误状态和 KPL 配置见 [DataHub 数据源配置说明](docs/DataHub数据源配置.md)。

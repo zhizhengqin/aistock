@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6380/0"
 
+    # DataHub credentials are encrypted before persistence.  Production must
+    # provide this value through deployment secrets; local development uses a
+    # process-derived fallback only so the test fixture remains self-contained.
+    DATAHUB_CONFIG_ENCRYPTION_KEY: str = ""
+
     # JWT
     JWT_SECRET: str = "dev-secret-change-in-prod"
     JWT_ALGORITHM: str = "HS256"
@@ -106,6 +111,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_encryption_keyring(self):
+        if self.ENV.lower() in {"prod", "production"} and not self.DATAHUB_CONFIG_ENCRYPTION_KEY:
+            raise ValueError("生产环境必须配置 DATAHUB_CONFIG_ENCRYPTION_KEY")
         keyring = self.LLM_CONFIG_ENCRYPTION_KEYS
         write_key_id = self.LLM_CONFIG_ENCRYPTION_KEY_ID
 

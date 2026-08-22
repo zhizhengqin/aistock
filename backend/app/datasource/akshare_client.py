@@ -20,9 +20,16 @@ def get_market_indices():
         return cached
 
     results = []
+    try:
+        # AkShare expects the Chinese category label; numeric index codes are
+        # row selectors and must not be passed as ``symbol``.
+        df = ak.stock_zh_index_spot_em(symbol="上证系列指数")
+    except Exception as e:
+        logger.warning(f"get_market_indices fetch failed: {e}")
+        df = pd.DataFrame()
+
     for code in MARKET_INDICES:
         try:
-            df = ak.stock_zh_index_spot_em(symbol="000001")
             row = df[df["代码"] == code].iloc[0]
             results.append({
                 "code": code,

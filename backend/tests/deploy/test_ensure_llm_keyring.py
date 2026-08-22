@@ -54,6 +54,7 @@ def test_existing_valid_keyring_is_verified_without_changing_file(tmp_path: Path
         "POSTGRES_PASSWORD=placeholder\n"
         f"LLM_CONFIG_ENCRYPTION_KEY_ID={key_id}\n"
         f"LLM_CONFIG_ENCRYPTION_KEYS={json.dumps({key_id: encoded}, separators=(',', ':'))}\n"
+        "DATAHUB_CONFIG_ENCRYPTION_KEY=" + "a" * 64 + "\n"
     )
     env_file.write_text(original, encoding="utf-8")
     env_file.chmod(0o600)
@@ -64,6 +65,25 @@ def test_existing_valid_keyring_is_verified_without_changing_file(tmp_path: Path
     assert "校验通过" in result.stdout
     assert env_file.read_text(encoding="utf-8") == original
     assert env_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_missing_datahub_key_preserves_all_existing_llm_key_ids(tmp_path: Path) -> None:
+    first_id, first_key = _valid_keyring()
+    second_id = "previous-2026-07"
+    second_key = base64.b64encode(b"y" * 32).decode("ascii")
+    env_file = tmp_path / ".env"
+    original = (
+        f"LLM_CONFIG_ENCRYPTION_KEY_ID={first_id}\n"
+        f"LLM_CONFIG_ENCRYPTION_KEYS={json.dumps({first_id: first_key, second_id: second_key}, separators=(',', ':'))}\n"
+    )
+    env_file.write_text(original, encoding="utf-8")
+    env_file.chmod(0o600)
+
+    result = _run(env_file)
+    assert result.returncode == 0, result.stderr
+    values = dict(line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines() if "=" in line)
+    assert set(json.loads(values["LLM_CONFIG_ENCRYPTION_KEYS"])) == {first_id, second_id}
+    assert len(values["DATAHUB_CONFIG_ENCRYPTION_KEY"]) == 64
 
 
 @pytest.mark.parametrize(

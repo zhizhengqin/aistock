@@ -11,6 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Repository hygiene guard
+        run: |
+          set -eu
+          if git ls-files | rg '(^|/)(\.env$|__pycache__/|.*\.pyc$|.*\.tsbuildinfo$|node_modules/|frontend/dist/|\.venv/)' ; then
+            echo '仓库仍跟踪环境、生成或构建文件' >&2
+            exit 1
+          fi
+
       - name: Backend — pytest
         uses: actions/setup-python@v5
         with:
@@ -40,6 +48,8 @@ jobs:
           cd frontend
           npx playwright install --with-deps chromium
           npm run test:e2e:llm
+      - name: Frontend — DataHub Playwright (desktop + 390px)
+        run: cd frontend && npm run test:e2e:datahub
 
   integration:
     name: PostgreSQL 16 + Redis 7 integration

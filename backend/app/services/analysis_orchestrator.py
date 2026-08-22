@@ -1,10 +1,11 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from app.datasource.akshare_client import (
+from app.datahub.consumer import (
     get_stock_info, get_stock_kline, get_stock_financial_summary,
     get_stock_capital_flow, get_stock_news_titles,
 )
+from app.datahub.consumer import kline_dataframe
 from app.datasource.indicators import compute_all
 from app.schemas.llm_outputs import (
     CapitalAnalysisOutput,
@@ -139,11 +140,18 @@ async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
     await _set_progress(context, 20)
 
     # 1. Collect data
-    info = get_stock_info(stock_code)
-    kline_df = get_stock_kline(stock_code, 120)
-    financial = get_stock_financial_summary(stock_code)
-    capital_flow = get_stock_capital_flow(stock_code, 20)
-    news = get_stock_news_titles(stock_code, 10)
+    info = (await get_stock_info(stock_code)).data.model_dump(mode="json")
+    kline_df = kline_dataframe(await get_stock_kline(stock_code, 120))
+    financial = (await get_stock_financial_summary(stock_code)).data.model_dump(mode="json")
+    capital_flow = (await get_stock_capital_flow(stock_code, 20)).data.model_dump(mode="json")
+    data_warnings: list[str] = []
+    try:
+        news = [item.model_dump(mode="json") for item in (await get_stock_news_titles(stock_code, 10)).data]
+    except Exception:
+        # News is optional. Preserve a visible warning while allowing the
+        # critical quote/K-line/financial/flow inputs to reach the analysts.
+        news = []
+        data_warnings.append("新闻数据暂不可用，已跳过新闻分析")
 
     await _set_progress(context, 40)
 
@@ -162,6 +170,7 @@ async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
         "financial": financial,
         "capital_flow": capital_flow,
         "news": news,
+        "data_warnings": data_warnings,
     }
 
     await _set_progress(context, 50)
@@ -221,5 +230,6 @@ async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
         "decision": decision,
         "disclaimer": "本分析仅供参考，不构成任何投资建议。",
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
+        "data_warnings": data_warnings,
     }
     return report

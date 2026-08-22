@@ -17,6 +17,7 @@
 | 文档 | 回答的问题 | 读者 |
 |---|---|---|
 | [现有技术架构与LangChain对比报告.md](现有技术架构与LangChain对比报告.md) | 为什么我们不用 LangChain？现有架构和它比怎么样？（技术小白友好）| 项目负责人 / 技术小白 |
+| [Sol-Advisor中文版评估与使用说明书.md](Sol-Advisor中文版评估与使用说明书.md) | Sol Advisor 已禁用但可恢复；当前 aistock 如何用 Sol/High + 单一 Luna/Max Build 角色开发和排障？ | 项目负责人 / Codex 用户 |
 
 ## 生产大模型中心（2026-08）
 

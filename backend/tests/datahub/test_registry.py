@@ -23,3 +23,16 @@ def test_kpl_native_provider_is_present_but_disabled_by_default():
 def test_registry_contains_all_twenty_first_phase_capabilities():
     capabilities = {cap for provider in PROVIDER_REGISTRY.values() for cap in provider.capabilities}
     assert set(Capability) <= capabilities
+
+
+def test_market_board_routes_keep_eastmoney_first_and_sina_as_fallback():
+    for capability in (Capability.MARKET_BOARD_QUOTES, Capability.MARKET_BOARD_CONSTITUENTS):
+        assert [provider.name for provider in providers_for(capability)] == ["eastmoney", "sina"]
+
+
+def test_default_market_board_routes_use_sina_after_eastmoney():
+    from app.datahub.platform import default_routes
+
+    routes = default_routes()
+    assert routes[Capability.MARKET_BOARD_QUOTES].providers == ["eastmoney", "sina"]
+    assert routes[Capability.MARKET_BOARD_CONSTITUENTS].providers == ["eastmoney", "sina"]

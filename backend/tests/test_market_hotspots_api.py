@@ -43,6 +43,7 @@ def test_market_cloud_and_constituents_routes_have_defaults_and_validate_board(c
         service_cls.return_value.get_constituents = AsyncMock(return_value=stocks)
         assert client.get("/api/stocks/market-cloud?kind=industry").status_code == 200
         assert client.get("/api/stocks/boards/BK0475/constituents?kind=industry").status_code == 200
+        assert client.get("/api/stocks/boards/BK1234567890/constituents?kind=industry").status_code == 200
     assert client.get("/api/stocks/boards/NOPE/constituents?kind=industry").status_code == 422
     assert client.get("/api/stocks/market-cloud?kind=industry&limit=81").status_code == 422
 

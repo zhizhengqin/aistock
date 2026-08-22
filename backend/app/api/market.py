@@ -57,7 +57,7 @@ async def market_cloud(
 
 @router.get("/stocks/boards/{board_code}/constituents")
 async def board_constituents(
-    board_code: str = Path(pattern=r"^BK\d{3,6}$"),
+    board_code: str = Path(pattern=r"^BK\d{3,10}$"),
     kind: Literal["industry", "theme"] = Query(default="industry"),
     limit: int = Query(default=20, ge=1, le=20),
     db: Session = Depends(get_db),

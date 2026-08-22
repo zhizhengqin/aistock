@@ -78,7 +78,13 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
         name="sina",
         display_name="新浪财经",
         description="提供基础实时行情，作为公开备用来源。",
-        capabilities=(Capability.MARKET_INDICES, Capability.STOCK_SNAPSHOT, Capability.STOCK_FINANCIALS),
+        capabilities=(
+            Capability.MARKET_INDICES,
+            Capability.MARKET_BOARD_QUOTES,
+            Capability.MARKET_BOARD_CONSTITUENTS,
+            Capability.STOCK_SNAPSHOT,
+            Capability.STOCK_FINANCIALS,
+        ),
         enabled_by_default=True,
         update_frequency="盘中实时/盘后",
         risk_note="字段口径和更新时间以实际响应为准。",
@@ -151,7 +157,13 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
         name="akshare",
         display_name="AkShare 兼容",
         description="迁移期兼容适配器，保留现有口径但不作为默认主源。",
-        capabilities=tuple(capability for capability in Capability if not capability.value.startswith("kpl.") and capability is not Capability.MARKET_AUCTION_OPEN),
+        capabilities=tuple(
+            capability
+            for capability in Capability
+            if not capability.value.startswith("kpl.")
+            and capability is not Capability.MARKET_AUCTION_OPEN
+            and capability not in {Capability.MARKET_BOARD_QUOTES, Capability.MARKET_BOARD_CONSTITUENTS}
+        ),
         enabled_by_default=False,
         update_frequency="按请求",
         risk_note="上游函数变化时保持禁用并记录结构化错误。",

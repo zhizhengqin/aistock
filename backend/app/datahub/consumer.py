@@ -37,7 +37,7 @@ def _validate_board_kind(kind: str) -> str:
 
 def _validate_board_code(board_code: str) -> str:
     value = str(board_code or "").upper()
-    if not re.fullmatch(r"BK\d{3,6}", value):
+    if not re.fullmatch(r"BK\d{3,10}", value):
         raise DataHubError(DataHubErrorCode.VALIDATION, "板块代码格式无效")
     return value
 

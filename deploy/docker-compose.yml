@@ -101,6 +101,12 @@ services:
     container_name: aistock-worker
     restart: unless-stopped
     command: ["./docker-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "arq", "--check", "app.tasks.queue.WorkerSettings"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     environment:
       CONTAINER_ROLE: worker
       ENV: prod

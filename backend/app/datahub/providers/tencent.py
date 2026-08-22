@@ -152,6 +152,17 @@ def _parse_quote(symbol: str, fields: list[str]) -> dict[str, Any] | None:
     change_pct = round((price - previous) / previous * 100, 4) if previous else _number(fields[5])
     data_at = None
     for item in fields:
+        compact = re.search(r"(?<!\d)(20\d{12})(?!\d)", str(item))
+        if compact:
+            try:
+                local = datetime.strptime(compact.group(1), "%Y%m%d%H%M%S").replace(
+                    tzinfo=ZoneInfo("Asia/Shanghai")
+                )
+            except ValueError:
+                pass
+            else:
+                data_at = local.astimezone(timezone.utc)
+                break
         match = re.search(r"(20\d{2})[/-](\d{1,2})[/-](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?", str(item))
         if match:
             local = datetime(*[int(value or 0) for value in match.groups()], tzinfo=ZoneInfo("Asia/Shanghai"))

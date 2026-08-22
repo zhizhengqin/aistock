@@ -61,6 +61,28 @@ async def test_tencent_fixture_parser_decodes_gbk_quote_and_timestamp():
 
 
 @pytest.mark.asyncio
+async def test_tencent_fixture_parser_accepts_compact_quote_timestamp():
+    payload = "v_sh000001=\"1~上证指数~000001~3001.23~2990.12~2995.00~123~45~67~0.37~20260821161402\";"
+
+    class Response:
+        content = payload.encode("gbk")
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def get(self, url, timeout):
+            return Response()
+
+    result = await TencentProvider(http_client=Client()).fetch(
+        Capability.MARKET_INDICES,
+        {"codes": ["000001.SS"]},
+    )
+
+    assert result.data_at == datetime(2026, 8, 21, 8, 14, 2, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
 async def test_tencent_code_whitelist_preserves_index_etf_and_beijing_symbols_and_timezone():
     payload = (
         'v_sh000300="1~沪深300~000300~3500.00~3490~3495~0~0~0~0~2026/08/22 15:00:00";'

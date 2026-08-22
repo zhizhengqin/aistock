@@ -1,5 +1,6 @@
 """arq WorkerSettings + scheduler wiring for the production worker container."""
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -7,6 +8,9 @@ from app.core.config import settings
 from app.tasks import scheduler as sched_mod
 from app.tasks.queue import WorkerSettings
 from app.tasks.scheduler import start_scheduler, shutdown_scheduler
+
+
+COMPOSE_FILE = Path(__file__).resolve().parents[2] / "deploy" / "docker-compose.yml"
 
 
 def _reset_scheduler():
@@ -32,6 +36,15 @@ def test_worker_registers_all_tasks():
 def test_worker_has_lifecycle_hooks():
     assert callable(getattr(WorkerSettings, "on_startup", None))
     assert callable(getattr(WorkerSettings, "on_shutdown", None))
+
+
+def test_worker_compose_healthcheck_uses_arq_worker_probe():
+    compose = COMPOSE_FILE.read_text(encoding="utf-8")
+    worker = compose.split("\n  worker:\n", 1)[1].split("\n  nginx:\n", 1)[0]
+
+    assert "healthcheck:" in worker
+    assert '"arq", "--check", "app.tasks.queue.WorkerSettings"' in worker
+    assert "localhost:8000/api/health" not in worker
 
 
 @pytest.mark.asyncio

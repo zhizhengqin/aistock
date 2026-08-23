@@ -19,15 +19,15 @@ jobs:
       - name: SSH 读取生产任务状态
         uses: appleboy/ssh-action@v1.2.0
         env:
-          task_id: ${{ inputs.task_id }}
+          TASK_ID: ${{ inputs.task_id }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: task_id
+          envs: TASK_ID
           script: |
             set -eu
-            case "${task_id:-}" in
+            case "${TASK_ID:-}" in
               ''|*[!0-9]*)
                 echo '任务 ID 必须只包含数字' >&2
                 exit 64
@@ -41,11 +41,11 @@ jobs:
             $compose ps
 
             echo '=== 任务记录 ==='
-            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$task_id" -U aistock -d aistock \
+            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$TASK_ID" -U aistock -d aistock \
               -c "SELECT id, task_type, status, progress, started_at, finished_at FROM task_records WHERE id = :'task_id'::integer;"
 
             echo '=== 任务 outbox ==='
-            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$task_id" -U aistock -d aistock \
+            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$TASK_ID" -U aistock -d aistock \
               -c "SELECT status, attempts, available_at, locked_at, last_error FROM task_outbox WHERE task_id = :'task_id'::integer;"
 
             echo '=== ARQ 队列长度 ==='

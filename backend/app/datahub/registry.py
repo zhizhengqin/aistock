@@ -65,6 +65,7 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
             Capability.STOCK_SHAREHOLDERS,
             Capability.SECTOR_REALTIME,
             Capability.SECTOR_KLINE,
+            Capability.STOCK_KLINE_DAILY,
             Capability.SECTOR_FUND_FLOW,
             Capability.DRAGON_TIGER_LIST,
             Capability.DRAGON_TIGER_SEATS,

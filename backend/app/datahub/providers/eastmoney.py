@@ -40,6 +40,7 @@ class EastmoneyProvider(ProviderAdapter):
         Capability.STOCK_SHAREHOLDERS,
         Capability.SECTOR_REALTIME,
         Capability.SECTOR_FUND_FLOW,
+        Capability.STOCK_KLINE_DAILY,
     Capability.DRAGON_TIGER_LIST,
         Capability.DRAGON_TIGER_SEATS,
         Capability.STOCK_NEWS,
@@ -216,7 +217,7 @@ def _typed_rows(capability: Capability, rows: list[dict[str, Any]], params: dict
             title = str(row.get("title") or "").strip()
             if title:
                 output.append(NewsItem(title=title, content=str(row.get("content") or ""), date=row.get("date"), source=str(row.get("source") or row.get("mediaName") or "东方财富"), url=row.get("url")))
-        elif capability is Capability.SECTOR_KLINE:
+        elif capability in {Capability.SECTOR_KLINE, Capability.STOCK_KLINE_DAILY}:
             output.append(KlineBar(date=row.get("date") or row.get("f51"), open=_num(row.get("open", row.get("f52", 0))), close=_num(row.get("close", row.get("f53", 0))), high=_num(row.get("high", row.get("f54", 0))), low=_num(row.get("low", row.get("f55", 0))), volume=_num(row.get("volume", row.get("f56", 0))), data_at=row_time))
     return output
 
@@ -345,6 +346,18 @@ def _endpoint(capability: Capability, params: dict[str, Any]) -> tuple[str, dict
         fs, fid = "m:90+t:2", "f62"
     else:
         fs, fid = "m:90+t:2", "f3"
+    if capability is Capability.STOCK_KLINE_DAILY:
+        days = max(1, min(int(params.get("days", 120)), 500))
+        return "https://push2his.eastmoney.com/api/qt/stock/kline/get", {
+            "secid": f"{market}.{plain}",
+            "klt": "101",
+            "fqt": "1",
+            "lmt": str(days),
+            "beg": "0",
+            "end": "20500101",
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        }
     if capability is Capability.SECTOR_KLINE:
         return "https://push2his.eastmoney.com/api/qt/stock/kline/get", {"secid": f"90.{plain}", "klt": "101", "fqt": "1", "lmt": str(params.get("days", 120)), "fields1": "f1,f2,f3,f4", "fields2": "f51,f52,f53,f54,f55,f56,f57"}
     return "https://push2.eastmoney.com/api/qt/clist/get", {"pn": "1", "pz": str(params.get("limit", 200)), "po": "1", "np": "1", "fltt": "2", "invt": "2", "fid": fid, "fs": fs, "fields": fields}

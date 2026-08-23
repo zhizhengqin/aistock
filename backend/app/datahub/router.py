@@ -144,24 +144,28 @@ class DataHubRouter:
                     provider = self.providers.get(provider_name)
                     attempts.append(provider_name)
                     if self.provider_states and not self.provider_states.get(provider_name, False):
-                        last_error = DataHubError(
+                        not_configured = DataHubError(
                             DataHubErrorCode.NOT_CONFIGURED,
                             "数据源未启用",
                             provider=provider_name,
                             request_id=request_id,
                         )
                         if route.mode == "fixed":
-                            raise last_error
+                            raise not_configured
+                        if last_error is None:
+                            last_error = not_configured
                         continue
                     if provider is None:
-                        last_error = DataHubError(
+                        not_configured = DataHubError(
                             DataHubErrorCode.NOT_CONFIGURED,
                             "数据源尚未配置",
                             provider=provider_name,
                             request_id=request_id,
                         )
                         if route.mode == "fixed":
-                            raise last_error
+                            raise not_configured
+                        if last_error is None:
+                            last_error = not_configured
                         continue
                     # Breaker state is checked before consuming shared rate budget.
                     if self.circuit_breaker is not None and not await self.circuit_breaker.allow(provider_name):

@@ -226,3 +226,86 @@ async def test_redis_cache_serializes_data_result_for_another_process():
     assert isinstance(stale, DataResult)
     assert stale.provider == "tencent"
     assert isinstance(stale.data[0], MarketIndex)
+
+
+@pytest.mark.asyncio
+async def test_auto_route_keeps_real_timeout_when_disabled_tdx_is_skipped():
+    primary = FakeProvider("tencent", [DataHubError(DataHubErrorCode.TIMEOUT, "腾讯日K请求超时")])
+    router = DataHubRouter(
+        {"tencent": primary},
+        {Capability.STOCK_KLINE_DAILY: RouteDefinition(providers=["tencent", "tdx"])},
+        provider_states={"tencent": True, "tdx": False},
+    )
+
+    with pytest.raises(DataHubError) as exc_info:
+        await router.fetch(Capability.STOCK_KLINE_DAILY, {"code": "600519.SS", "days": 5})
+
+    assert exc_info.value.code is DataHubErrorCode.TIMEOUT
+    assert exc_info.value.message == "腾讯日K请求超时"
+
+
+@pytest.mark.asyncio
+async def test_auto_route_returns_not_configured_when_all_candidates_are_disabled():
+    primary = FakeProvider("tencent", [])
+    router = DataHubRouter(
+        {"tencent": primary},
+        {Capability.STOCK_KLINE_DAILY: RouteDefinition(providers=["tencent", "tdx"])},
+        provider_states={"tencent": False, "tdx": False},
+    )
+
+    with pytest.raises(DataHubError) as exc_info:
+        await router.fetch(Capability.STOCK_KLINE_DAILY, {"code": "600519.SS", "days": 5})
+
+    assert exc_info.value.code is DataHubErrorCode.NOT_CONFIGURED
+    assert primary.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_eastmoney_stock_kline_daily_fixture_parses_to_kline_bars():
+    from app.datahub.contracts import KlineBar
+    from app.datahub.providers.eastmoney import EastmoneyProvider
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": {"klines": ["2026-08-21,10,11,12,9,1000"]}}
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, params=None, **kwargs):
+            self.calls.append((url, params, kwargs))
+            return Response()
+
+    client = Client()
+    result = await EastmoneyProvider(http_client=client).fetch(
+        Capability.STOCK_KLINE_DAILY,
+        {"code": "600519.SS", "days": 5},
+    )
+
+    assert isinstance(result, DataResult)
+    assert result.provider == "eastmoney"
+    assert isinstance(result.data[0], KlineBar)
+    assert result.data[0].close == 11
+    assert result.data_at == datetime(2026, 8, 21, tzinfo=timezone.utc)
+    url, query, _ = client.calls[0]
+    assert url == "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    assert query["secid"] == "1.600519"
+    assert query["klt"] == "101"
+    assert query["fqt"] == "1"
+    assert query["lmt"] == "5"
+    assert query["beg"] == "0"
+    assert query["end"] == "20500101"
+    assert query["fields1"] == "f1,f2,f3,f4,f5,f6"
+    assert query["fields2"] == "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+
+
+def test_stock_kline_route_and_registry_declare_eastmoney_fallback():
+    from app.datahub.platform import default_routes
+    from app.datahub.registry import PROVIDER_REGISTRY
+
+    assert default_routes()[Capability.STOCK_KLINE_DAILY].providers == ["tencent", "eastmoney", "tdx"]
+    assert Capability.STOCK_KLINE_DAILY in PROVIDER_REGISTRY["eastmoney"].capabilities

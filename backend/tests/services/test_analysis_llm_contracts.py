@@ -1,6 +1,7 @@
 """Orchestrator contracts for task-scoped, typed model calls."""
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -33,6 +34,7 @@ from app.schemas.llm_outputs import (
     MainForceResearcherOutput,
     MainForceTechnicalOutput,
     NewsAnalysisOutput,
+    RiskAnalysisOutput,
     SectorCapitalOutput,
     SectorChiefOutput,
     SectorDiagnosisOutput,
@@ -100,6 +102,8 @@ def _payload_for(output_type):
         return {"sentiment_rating": "利好", "key_news": ["业绩稳定"], "impact": "情绪正面"}
     if output_type is SentimentAnalysisOutput:
         return {"sentiment_score": 67, "indicators": "RSI偏强", "assessment": "情绪回暖"}
+    if output_type is RiskAnalysisOutput:
+        return {"risk_level": "中等风险", "risk_score": 42, "analysis": "波动可控", "advice": "设置止损"}
     if output_type is ChiefDecisionOutput:
         return {
             "rating": "买入",
@@ -226,7 +230,7 @@ async def test_stock_orchestrator_uses_typed_task_llm_and_stable_steps():
         patch("app.services.analysis_orchestrator.compute_all", return_value={"ma": {}, "macd": {}, "rsi": {}, "kdj": {}, "boll": {}}):
         report = await run_full_analysis("600519", 1, context, None)
 
-    assert set(report["analysts"]) == {"technical", "fundamental", "capital", "news", "sentiment"}
+    assert set(report["analysts"]) == {"technical", "fundamental", "capital", "news", "sentiment", "risk"}
     assert report["decision"]["rating"] == "买入"
     assert {call["step_key"] for call in context.llm.calls} == {
         "stock.technical.v1",
@@ -234,10 +238,32 @@ async def test_stock_orchestrator_uses_typed_task_llm_and_stable_steps():
         "stock.capital.v1",
         "stock.news.v1",
         "stock.sentiment.v1",
+        "stock.risk.v1",
         "stock.chief.v1",
     }
-    assert all(call["prompt_version"].endswith(".v1") for call in context.llm.calls)
-    assert context.fence_checks >= 6
+    assert {call["prompt_version"] for call in context.llm.calls} == {"stock-analysis-v2"}
+    assert context.fence_checks >= 7
+
+
+@pytest.mark.asyncio
+async def test_stock_orchestrator_runs_six_analysts_and_serializes_kline_for_chief():
+    context = FakeContext(StructuredLLM())
+    info, financial, flow, news = _stock_data_results()
+    with patch("app.services.analysis_orchestrator.get_stock_info", return_value=info), \
+        patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_kline_result()), \
+        patch("app.services.analysis_orchestrator.get_stock_financial_summary", return_value=financial), \
+        patch("app.services.analysis_orchestrator.get_stock_capital_flow", return_value=flow), \
+        patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=news), \
+        patch("app.services.analysis_orchestrator.compute_all", return_value={"ma": {}, "macd": {}, "rsi": {}, "kdj": {}, "boll": {}}):
+        report = await run_full_analysis("600519", 1, context, None)
+
+    assert set(report["analysts"]) == {"technical", "fundamental", "capital", "news", "sentiment", "risk"}
+    assert len(report["kline"]) == 60
+    assert isinstance(report["kline"][0]["date"], str)
+    json.dumps(report, ensure_ascii=False)
+    chief_call = next(call for call in context.llm.calls if call["step_key"] == "stock.chief.v1")
+    chief_prompt = chief_call["messages"][0]["content"]
+    assert '"analyst": "risk"' in chief_prompt
 
 
 @pytest.mark.asyncio

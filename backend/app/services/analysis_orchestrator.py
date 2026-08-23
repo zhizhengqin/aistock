@@ -5,13 +5,14 @@ from app.datahub.consumer import (
     get_stock_info, get_stock_kline, get_stock_financial_summary,
     get_stock_capital_flow, get_stock_news_titles,
 )
-from app.datahub.consumer import kline_dataframe
+from app.datahub.consumer import kline_dataframe, records
 from app.datasource.indicators import compute_all
 from app.schemas.llm_outputs import (
     CapitalAnalysisOutput,
     ChiefDecisionOutput,
     FundamentalAnalysisOutput,
     NewsAnalysisOutput,
+    RiskAnalysisOutput,
     SentimentAnalysisOutput,
     TechnicalAnalysisOutput,
 )
@@ -101,6 +102,24 @@ KDJ: K={indicators['kdj'].get('K','N/A')} D={indicators['kdj'].get('D','N/A')}
     return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON分析报告"}]
 
 
+def _build_risk_prompt(data: dict) -> list[dict]:
+    info = data["stock_info"]
+    indicators = data["indicators"]
+    financial = data["financial"]
+    system = f"""{{ANALYST_KEY:risk}}
+你是一位风险分析师（risk）。请基于以下真实数据识别投资风险，输出 JSON。
+禁止编造数据；缺失数据必须明确说明，不得用估算值补齐。
+
+股票：{info.get('name', '')} {data['stock_code']}，最新价 {info.get('price', 0)}，涨跌幅 {info.get('change_pct', 0)}%
+行业：{info.get('industry', '')}
+财务：资产负债率={financial.get('debt_ratio', 'N/A')}%，PE(TTM)={financial.get('pe_ttm', 'N/A')}，PB={financial.get('pb', 'N/A')}
+RSI={indicators['rsi'].get('RSI', 'N/A')}，近5日收盘价：{data['kline_summary']['recent_closes']}
+
+只返回一个 JSON 对象，且只能包含字段：risk_level(低风险/中等风险/高风险/信息/警告/危险/严重),
+risk_score(0-100), analysis(风险分析文字), advice(风险控制建议)。"""
+    return [{"role": "system", "content": system}, {"role": "user", "content": "请输出JSON风险分析报告"}]
+
+
 def _build_chief_prompt(reports: list[dict]) -> list[dict]:
     reports_text = json.dumps(reports, ensure_ascii=False, indent=2)
     system = f"""{{ANALYST_KEY:chief}}
@@ -129,7 +148,7 @@ async def _execute_step(context, step_key: str, messages: list[dict], output_typ
         step_key=step_key,
         messages=messages,
         output_type=output_type,
-        prompt_version=step_key,
+        prompt_version="stock-analysis-v2",
     )
 
 
@@ -141,7 +160,9 @@ async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
 
     # 1. Collect data
     info = (await get_stock_info(stock_code)).data.model_dump(mode="json")
-    kline_df = kline_dataframe(await get_stock_kline(stock_code, 120))
+    kline_result = await get_stock_kline(stock_code, 120)
+    kline_rows = records(kline_result)
+    kline_df = kline_dataframe(kline_result)
     financial = (await get_stock_financial_summary(stock_code)).data.model_dump(mode="json")
     capital_flow = (await get_stock_capital_flow(stock_code, 20)).data.model_dump(mode="json")
     data_warnings: list[str] = []
@@ -175,13 +196,14 @@ async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
 
     await _set_progress(context, 50)
 
-    # 3. Run 5 analysts in parallel
+    # 3. Run 6 analysts in parallel
     analyst_tasks = [
         ("technical", _build_technical_prompt(data), TechnicalAnalysisOutput),
         ("fundamental", _build_fundamental_prompt(data), FundamentalAnalysisOutput),
         ("capital", _build_capital_prompt(data), CapitalAnalysisOutput),
         ("news", _build_news_prompt(data), NewsAnalysisOutput),
         ("sentiment", _build_sentiment_prompt(data), SentimentAnalysisOutput),
+        ("risk", _build_risk_prompt(data), RiskAnalysisOutput),
     ]
 
     results = await asyncio.gather(*[
@@ -195,13 +217,14 @@ async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
 
     await _set_progress(context, 80)
 
-    # 4. Chief analyst: summarize all
+    # 4. Chief analyst: summarize all six analyst reports
     chief_input = [
         {"analyst": "technical", "report": analyst_reports.get("technical", {})},
         {"analyst": "fundamental", "report": analyst_reports.get("fundamental", {})},
         {"analyst": "capital", "report": analyst_reports.get("capital", {})},
         {"analyst": "news", "report": analyst_reports.get("news", {})},
         {"analyst": "sentiment", "report": analyst_reports.get("sentiment", {})},
+        {"analyst": "risk", "report": analyst_reports.get("risk", {})},
     ]
     decision_result = await _execute_step(
         context,
@@ -226,6 +249,7 @@ async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
             "industry": info.get("industry", ""),
         },
         "indicators": indicators,
+        "kline": kline_rows[-60:],
         "analysts": analyst_reports,
         "decision": decision,
         "disclaimer": "本分析仅供参考，不构成任何投资建议。",

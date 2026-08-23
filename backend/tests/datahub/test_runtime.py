@@ -3,11 +3,20 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.datahub.contracts import Capability, DataQuality, DataResult, Freshness, MarketIndex
+from app.datahub.contracts import (
+    Capability,
+    DataQuality,
+    DataResult,
+    FinancialSummary,
+    Freshness,
+    FundFlow,
+    MarketIndex,
+    StockSnapshot,
+)
 from app.datahub.errors import DataHubError, DataHubErrorCode
 from app.datahub.runtime import InMemoryDataCache, RedisDataCache
 from app.datahub.router import DataHubRouter, RouteDefinition
-from app.datahub.validators import validate_payload
+from app.datahub.validators import validate_cross_source, validate_payload
 
 
 def _result(provider: str, price: float = 3000) -> DataResult:
@@ -35,6 +44,39 @@ class FakeProvider:
         if isinstance(value, Exception):
             raise value
         return value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capability", "payload"),
+    [
+        (
+            Capability.STOCK_SNAPSHOT,
+            StockSnapshot(code="600519.SS", name="贵州茅台", price=1500, data_at=datetime.now(timezone.utc)),
+        ),
+        (
+            Capability.STOCK_FINANCIALS,
+            FinancialSummary(code="600519.SS", revenue=1, data_at=datetime.now(timezone.utc)),
+        ),
+        (
+            Capability.STOCK_FUND_FLOW,
+            FundFlow(code="600519.SS", net_main_flow=1, data_at=datetime.now(timezone.utc)),
+        ),
+    ],
+)
+async def test_router_accepts_singleton_pydantic_data_result(capability, payload):
+    provider = FakeProvider(
+        "fixture",
+        [DataResult(data=payload, capability=capability, provider="fixture", data_at=payload.data_at)],
+    )
+    router = DataHubRouter(
+        {"fixture": provider},
+        {capability: RouteDefinition(mode="fixed", providers=["fixture"])},
+    )
+
+    result = await router.fetch(capability, {"code": "600519.SS"})
+
+    assert result.data == payload
 
 
 @pytest.mark.asyncio
@@ -116,6 +158,48 @@ def test_quality_validator_rejects_empty_all_zero_and_nan_payloads():
     with pytest.raises(DataHubError) as nan:
         validate_payload(Capability.MARKET_INDICES, [{"code": "000001", "name": "上证指数", "price": float("nan"), "change_pct": 0}])
     assert nan.value.code is DataHubErrorCode.EMPTY_INVALID
+
+
+@pytest.mark.parametrize(
+    ("capability", "payload"),
+    [
+        (
+            Capability.STOCK_SNAPSHOT,
+            StockSnapshot(code="600519.SS", name="贵州茅台", price=1500, data_at=datetime.now(timezone.utc)),
+        ),
+        (
+            Capability.STOCK_FINANCIALS,
+            FinancialSummary(code="600519.SS", revenue=1, data_at=datetime.now(timezone.utc)),
+        ),
+        (
+            Capability.STOCK_FUND_FLOW,
+            FundFlow(code="600519.SS", net_main_flow=1, data_at=datetime.now(timezone.utc)),
+        ),
+    ],
+)
+def test_quality_validator_accepts_singleton_pydantic_models(capability, payload):
+    """A provider may return one typed model instead of a list of rows."""
+    from app.datahub.validators import validate_payload
+
+    assert validate_payload(capability, payload) == 1
+
+
+def test_cross_source_validator_accepts_singleton_pydantic_models():
+    """Cross-source checks must normalize typed singleton rows before reading fields."""
+    first = StockSnapshot(
+        code="600519.SS",
+        name="贵州茅台",
+        price=1500,
+        data_at=datetime.now(timezone.utc),
+    )
+    second = StockSnapshot(
+        code="600519.SS",
+        name="贵州茅台",
+        price=1501,
+        data_at=datetime.now(timezone.utc),
+    )
+
+    validate_cross_source(Capability.STOCK_SNAPSHOT, [first, second])
 
 
 @pytest.mark.asyncio

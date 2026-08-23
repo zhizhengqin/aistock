@@ -11,12 +11,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any, Awaitable, Callable, Mapping
 from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.datahub.errors import DataHubError, DataHubErrorCode
 from app.core.database import SessionLocal
 from app.models.llm_execution import LlmCallAttempt, LlmDailyBudget, LlmTokenReservation
 from app.models.llm_usage import LlmUsage
@@ -98,6 +100,48 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+def _safe_error_code(error: BaseException, default: str) -> str:
+    """Normalize enum/string error codes without exposing implementation names."""
+    raw = getattr(error, "code", None) or default
+    if isinstance(raw, Enum):
+        raw = raw.value
+    return str(raw) if isinstance(raw, (str, int)) else default
+
+
+_DATAHUB_SAFE_MESSAGES: dict[DataHubErrorCode, str] = {
+    DataHubErrorCode.NOT_CONFIGURED: "数据源尚未配置",
+    DataHubErrorCode.AUTHENTICATION_FAILED: "数据源鉴权失败",
+    DataHubErrorCode.PERMISSION_DENIED: "数据源访问权限不足",
+    DataHubErrorCode.RATE_LIMITED: "数据源请求过于频繁，请稍后重试",
+    DataHubErrorCode.IP_BLOCKED: "数据源访问受到限制",
+    DataHubErrorCode.TIMEOUT: "数据源请求超时，请稍后重试",
+    DataHubErrorCode.SCHEMA_CHANGED: "数据源字段发生变化",
+    DataHubErrorCode.EMPTY_INVALID: "数据源返回空数据",
+    DataHubErrorCode.STALE_INVALID: "数据源数据已过期",
+    DataHubErrorCode.UNSUPPORTED: "当前数据源不支持该能力",
+    DataHubErrorCode.INTERNAL: "数据源暂时不可用",
+    DataHubErrorCode.CONFLICT: "数据源配置发生冲突，请刷新后重试",
+    DataHubErrorCode.VALIDATION: "数据源参数校验失败",
+}
+
+
+def _safe_error_message(error: BaseException, default: str) -> str:
+    """Return only explicitly safe business text for durable task errors."""
+    user_message = getattr(error, "user_message", None)
+    if isinstance(user_message, str) and user_message.strip():
+        return user_message.strip()
+    if isinstance(error, DataHubError):
+        if isinstance(error.message, str) and error.message.strip():
+            return error.message.strip()
+        return _DATAHUB_SAFE_MESSAGES.get(error.code, default)
+    # LlmError's text is explicitly constructed from a safe user message.
+    if isinstance(error, LlmError):
+        safe_text = str(error).strip()
+        if safe_text:
+            return safe_text
+    return default
+
+
 class TaskExecutionRunner:
     """Claim and execute one durable task with execution-token fencing."""
 
@@ -175,10 +219,8 @@ class TaskExecutionRunner:
         reprs never enter ``TaskRecord.error``.
         """
 
-        code = getattr(error, "code", None) or "llm_config_error"
-        message = getattr(error, "user_message", None) or str(error)
-        if not isinstance(message, str) or not message:
-            message = "大模型配置不可用"
+        code = _safe_error_code(error, "llm_config_error")
+        message = _safe_error_message(error, "大模型配置不可用")
         task.status = "failed"
         task.error = f"{code}: {message}"[:1000]
         task.finished_at = now
@@ -488,8 +530,8 @@ class TaskExecutionRunner:
                 message = "模型调用结果未知，任务未自动重试"
             else:
                 status = "failed"
-                message = getattr(error, "user_message", None) or "任务执行失败"
-                code = getattr(error, "code", None) or "task_execution_failed"
+                message = _safe_error_message(error, "任务执行失败")
+                code = _safe_error_code(error, "task_execution_failed")
             result = db.execute(
                 update(TaskRecord)
                 .where(

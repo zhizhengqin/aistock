@@ -14,6 +14,7 @@ from app.models.analysis_report import AnalysisReport  # noqa: F401
 from app.models.task_outbox import TaskOutbox
 from app.models.task_record import TaskRecord
 from app.models.user import User
+from app.datahub.errors import DataHubError, DataHubErrorCode
 from app.services.task_execution import (
     TaskExecutionFenced,
     TaskExecutionInputError,
@@ -36,6 +37,29 @@ def _task(db) -> int:
     db.flush()
     db.commit()
     return int(task.id)
+
+
+@pytest.mark.asyncio
+async def test_runner_serializes_enum_error_code_and_safe_datahub_message(test_db):
+    """Task errors expose the stable enum value and user-safe message."""
+    _, session_factory = test_db
+    db = session_factory()
+    task_id = _task(db)
+    db.close()
+
+    async def execute(_context):
+        raise DataHubError(DataHubErrorCode.EMPTY_INVALID, "数据源返回空数据")
+
+    runner = TaskExecutionRunner(session_factory, heartbeat_interval_seconds=60)
+    with pytest.raises(DataHubError):
+        await runner.run(task_id, execute, lambda *_args: None)
+
+    check = session_factory()
+    task = check.get(TaskRecord, task_id)
+    assert task.status == "failed"
+    assert task.error == "empty_invalid: 数据源返回空数据"
+    assert "DataHubErrorCode" not in task.error
+    check.close()
 
 
 @pytest.mark.asyncio
@@ -675,6 +699,32 @@ async def test_domain_error_is_stable_and_redacted(test_db):
     assert check.error == "provider_unavailable: 模型服务暂时不可用"
     assert "sk-secret" not in (check.error or "")
     assert "private" not in (check.error or "")
+
+
+@pytest.mark.asyncio
+async def test_arbitrary_exception_message_is_not_persisted(test_db):
+    """An exception's free-form ``message`` attribute may contain provider secrets."""
+    _, session_factory = test_db
+    db = session_factory()
+    task_id = _task(db)
+    db.close()
+
+    class ProviderDetailError(Exception):
+        code = "provider_error"
+        message = "provider secret"
+
+    async def execute(_context):
+        raise ProviderDetailError("upstream traceback with api key")
+
+    runner = TaskExecutionRunner(session_factory)
+    with pytest.raises(ProviderDetailError):
+        await runner.run(task_id, execute, lambda db, task, result: None)
+
+    check = session_factory().get(TaskRecord, task_id)
+    assert check.status == "failed"
+    assert check.error == "provider_error: 任务执行失败"
+    assert "provider secret" not in (check.error or "")
+    assert "api key" not in (check.error or "")
 
 
 @pytest.mark.asyncio

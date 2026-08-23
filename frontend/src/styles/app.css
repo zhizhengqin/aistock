@@ -371,6 +371,8 @@ input, select, textarea { font-family: inherit; }
   .market-treemap .echarts-for-react > div { min-height: 360px !important; }
   .treemap-detail { gap: 8px; }
   .mini-grid { grid-template-columns: 1fr; }
+  .analyst-step-grid { grid-template-columns: 1fr; }
+  .analysis-chart .echarts-for-react { height: 300px !important; }
   .bars { gap: 6px; overflow-x: auto; }
   .bar-col { min-width: 48px; }
   .pill { min-height: 44px; padding-inline: 14px; }
@@ -404,6 +406,20 @@ details[open] summary { margin-bottom: 8px; }
 details .full-report { font-size: 14px; color: var(--fg-secondary); margin: 0; white-space: pre-wrap; }
 .obs-list { margin: 8px 0 0; padding-left: 18px; font-size: 14px; color: var(--fg-secondary); }
 .obs-list li { padding: 4px 0; }
+.analysis-progress-panel, .analysis-snapshot, .analysis-snapshot-placeholder, .analyst-card, .analysis-chart { min-width: 0; }
+.analyst-step-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.analyst-card { overflow: hidden; }
+.analyst-card h3 { min-width: 0; overflow-wrap: anywhere; }
+.analyst-result { overflow-wrap: anywhere; }
+.analyst-score { color: var(--fg); font-weight: 600; }
+.analyst-status { white-space: nowrap; }
+.analyst-status-waiting { color: var(--fg-secondary); }
+.analyst-status-analyzing { color: var(--info); }
+.analyst-status-completed { color: var(--down); }
+.analyst-status-failed, .analyst-status-unknown { color: var(--up); }
+.compact-list { margin: 4px 0 0; padding-left: 18px; }
+.compact-list li { padding: 2px 0; }
+.analysis-chart .echarts-for-react { max-width: 100%; min-width: 0; }
 
 /* ============ 主力选股页（源自 main-force.html 局部样式） ============ */
 .excluded-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 14px; }

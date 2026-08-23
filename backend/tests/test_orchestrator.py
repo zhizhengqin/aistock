@@ -18,6 +18,7 @@ from app.schemas.llm_outputs import (
     ChiefDecisionOutput,
     FundamentalAnalysisOutput,
     NewsAnalysisOutput,
+    RiskAnalysisOutput,
     SentimentAnalysisOutput,
     TechnicalAnalysisOutput,
 )
@@ -58,6 +59,9 @@ class _StructuredLlm:
             },
             SentimentAnalysisOutput: {
                 "sentiment_score": 65, "indicators": "RSI偏强", "assessment": "情绪回暖",
+            },
+            RiskAnalysisOutput: {
+                "risk_level": "中等风险", "risk_score": 42, "analysis": "波动可控", "advice": "设置止损",
             },
             ChiefDecisionOutput: {
                 "rating": "持有", "target_price": 110, "stop_loss": 90, "confidence": 72,
@@ -138,7 +142,8 @@ async def test_orchestrator_full_report_structure():
     assert report["stock_name"] == "贵州茅台"
     assert "indicators" in report
     assert "ma" in report["indicators"]
-    assert set(report["analysts"]) == {"technical", "fundamental", "capital", "news", "sentiment"}
+    assert set(report["analysts"]) == {"technical", "fundamental", "capital", "news", "sentiment", "risk"}
+    assert len(report["kline"]) == 60
     assert report["decision"]["rating"] == "持有"
     assert "target_price" in report["decision"]
     assert "disclaimer" in report

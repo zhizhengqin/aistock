@@ -7,22 +7,43 @@ from datetime import date, datetime
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from pydantic import BaseModel
+
 from app.datahub.contracts import Capability
 from app.datahub.errors import DataHubError, DataHubErrorCode
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any] | None:
+    """Normalize one provider row at the consumer boundary.
+
+    Pydantic models are iterable over ``(field, value)`` pairs, which is not
+    the row protocol used by the validators.  Convert them before any caller
+    is allowed to use mapping methods such as ``get``.
+    """
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="python")
+    return value if isinstance(value, Mapping) else None
 
 
 def _iter_rows(payload: Any) -> list[Mapping[str, Any]]:
     if payload is None:
         return []
+    # Pydantic models implement ``__iter__`` over field tuples.  Treat a
+    # singleton model as one typed row before considering generic iterables;
+    # otherwise a valid snapshot/financial/flow model is mistaken for an
+    # empty payload.
+    if isinstance(payload, BaseModel):
+        row = _as_mapping(payload)
+        return [row] if row is not None else []
     if isinstance(payload, Mapping):
         # Some single-row providers return a dictionary.  A nested list is
         # treated as rows when the conventional ``data`` key is present.
         nested = payload.get("data")
         if isinstance(nested, list):
-            return [row for row in nested if isinstance(row, Mapping)]
+            return [row for item in nested if (row := _as_mapping(item)) is not None]
         return [payload]
     if isinstance(payload, Iterable) and not isinstance(payload, (str, bytes)):
-        return [row for row in payload if isinstance(row, Mapping) or hasattr(row, "model_dump")]
+        return [row for item in payload if (row := _as_mapping(item)) is not None]
     return []
 
 
@@ -55,8 +76,6 @@ def validate_payload(capability: Capability | str, payload: Any) -> int:
     fields = required.get(capability, ())
     normalised_rows: list[Mapping[str, Any]] = []
     for row in rows:
-        if hasattr(row, "model_dump"):
-            row = row.model_dump()
         normalised_rows.append(row)
         missing = [field for field in fields if row.get(field) in (None, "")]
         if missing:

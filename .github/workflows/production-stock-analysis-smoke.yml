@@ -1,0 +1,224 @@
+name: 生产股票分析冒烟
+
+on:
+  workflow_dispatch:
+    inputs:
+      stock_code:
+        description: "六位股票代码"
+        required: true
+        default: "300139"
+        type: string
+      user_id:
+        description: "已存在且启用的用户 ID"
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: 生产股票分析冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH 提交并轮询股票分析
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          STOCK_CODE: ${{ inputs.stock_code }}
+          USER_ID: ${{ inputs.user_id }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: STOCK_CODE,USER_ID
+          script: |
+            set -eu
+            case "${STOCK_CODE:-}" in
+              ''|*[!0-9]*)
+                echo '股票代码必须只包含数字' >&2
+                exit 64
+                ;;
+            esac
+            if [ "${#STOCK_CODE}" -ne 6 ]; then
+              echo '股票代码必须是六位数字' >&2
+              exit 64
+            fi
+            case "${USER_ID:-}" in
+              ''|*[!0-9]*)
+                echo '用户 ID 必须是正整数' >&2
+                exit 64
+                ;;
+            esac
+
+            cd /opt/aistock
+            compose='docker compose --env-file deploy/.env -f deploy/docker-compose.yml'
+
+            $compose exec -T worker python - "$STOCK_CODE" "$USER_ID" <<'PY'
+            import re
+            import sys
+            import time
+
+            from sqlalchemy import select
+
+            from app.core.database import SessionLocal
+            from app.models.analysis_report import AnalysisReport
+            from app.models.llm_execution import LlmCallAttempt
+            from app.models.task_record import TaskRecord
+            from app.models.user import User
+            from app.services.task_submission import (
+                TaskSubmission,
+                TaskSubmissionError,
+                TaskSubmissionService,
+            )
+
+
+            EXPECTED_STEPS = frozenset(
+                {
+                    "stock.technical.v1",
+                    "stock.fundamental.v1",
+                    "stock.capital.v1",
+                    "stock.news.v1",
+                    "stock.sentiment.v1",
+                    "stock.risk.v1",
+                    "stock.chief.v1",
+                }
+            )
+            TERMINAL_STATUSES = frozenset({"success", "failed", "failed_unknown"})
+            POLL_TIMEOUT_SECONDS = 240
+
+
+            def fail(code: object) -> None:
+                safe_code = str(code).split(":", 1)[0].strip().lower()
+                if not re.fullmatch(r"[a-z0-9_]+", safe_code):
+                    safe_code = "internal"
+                print(f"冒烟失败: {safe_code}")
+                raise SystemExit(1)
+
+
+            def submit(stock_code: str, user_id: int) -> int:
+                db = SessionLocal()
+                try:
+                    active_user = db.execute(
+                        select(User.id).where(
+                            User.id == user_id,
+                            User.is_active.is_(True),
+                        )
+                    ).scalar_one_or_none()
+                    if active_user is None:
+                        fail("user_not_found_or_inactive")
+
+                    result = TaskSubmissionService(db).submit(
+                        TaskSubmission(
+                            task_type="stock_analysis",
+                            user_id=user_id,
+                            feature=None,
+                            feature_cost=0,
+                            args={"stock_code": stock_code, "user_id": user_id},
+                            input_snapshot={"stock_code": stock_code},
+                            prompt_version="stock-analysis-v2",
+                            requires_llm=True,
+                        )
+                    )
+                    task_id = result.task.id
+                    print(f"已提交生产冒烟任务: task_id={task_id}")
+                    return task_id
+                except TaskSubmissionError as exc:
+                    fail(exc.code)
+                except Exception:
+                    fail("internal")
+                finally:
+                    db.close()
+
+
+            def poll(task_id: int, user_id: int) -> None:
+                deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
+                last_summary = None
+                while time.monotonic() < deadline:
+                    db = SessionLocal()
+                    try:
+                        task_row = db.execute(
+                            select(
+                                TaskRecord.status,
+                                TaskRecord.progress,
+                                TaskRecord.error,
+                                TaskRecord.result_json,
+                            ).where(
+                                TaskRecord.id == task_id,
+                                TaskRecord.user_id == user_id,
+                            )
+                        ).one_or_none()
+                        if task_row is None:
+                            fail("task_not_found")
+
+                        status, progress, error, result_json = task_row
+                        completed_steps = set(
+                            db.execute(
+                                select(LlmCallAttempt.step_key)
+                                .where(
+                                    LlmCallAttempt.task_id == task_id,
+                                    LlmCallAttempt.status == "success",
+                                    LlmCallAttempt.result_schema_version.is_not(None),
+                                    LlmCallAttempt.result_schema_version != "",
+                                    LlmCallAttempt.step_key.in_(EXPECTED_STEPS),
+                                )
+                                .distinct()
+                            ).scalars()
+                        )
+                        summary = (status, progress, len(completed_steps))
+                        if summary != last_summary:
+                            print(
+                                f"任务进度：状态 {status}，进度 {progress}%，"
+                                f"已完成结构化步骤 {len(completed_steps)}/7"
+                            )
+                            last_summary = summary
+
+                        if status in TERMINAL_STATUSES:
+                            if status != "success":
+                                fail(error or status)
+                            if progress < 90:
+                                fail("progress_incomplete")
+                            if completed_steps != EXPECTED_STEPS:
+                                fail("llm_steps_incomplete")
+                            if not isinstance(result_json, dict):
+                                fail("report_missing")
+                            report_id = result_json.get("report_id")
+                            if (
+                                isinstance(report_id, bool)
+                                or not isinstance(report_id, int)
+                                or report_id <= 0
+                            ):
+                                fail("report_missing")
+                            report = db.get(AnalysisReport, report_id)
+                            if report is None or report.user_id != user_id:
+                                fail("report_user_mismatch")
+                            print(
+                                f"冒烟成功: task_id={task_id}, "
+                                "7 个结构化步骤和最终报告已验证"
+                            )
+                            return
+                    except Exception:
+                        fail("internal")
+                    finally:
+                        db.close()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(2, remaining))
+
+                fail("timeout")
+
+
+            stock_code = sys.argv[1]
+            try:
+                user_id = int(sys.argv[2])
+            except (TypeError, ValueError):
+                fail("invalid_user_id")
+            if not stock_code.isdigit() or len(stock_code) != 6:
+                fail("invalid_stock_code")
+            if user_id <= 0:
+                fail("invalid_user_id")
+
+            task_id = submit(stock_code, user_id)
+            poll(task_id, user_id)
+            PY

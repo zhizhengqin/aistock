@@ -1,6 +1,8 @@
 import asyncio
 
 from arq.connections import RedisSettings
+from app.models import llm_config as _llm_config_model  # noqa: F401
+from app.models import user as _user_model  # noqa: F401
 from app.tasks.analysis import analyze_stock_task
 from app.tasks.main_force import main_force_task
 from app.tasks.sector_analysis import sector_analysis_task

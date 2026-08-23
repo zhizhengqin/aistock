@@ -1,6 +1,9 @@
 """arq WorkerSettings + scheduler wiring for the production worker container."""
 import asyncio
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -36,6 +39,34 @@ def test_worker_registers_all_tasks():
 def test_worker_has_lifecycle_hooks():
     assert callable(getattr(WorkerSettings, "on_startup", None))
     assert callable(getattr(WorkerSettings, "on_shutdown", None))
+
+
+def test_worker_import_resolves_foreign_keys_in_an_isolated_process():
+    """Importing only the worker module must load every FK target model."""
+    script = """
+from app.tasks.queue import WorkerSettings  # noqa: F401
+from app.models.base import Base
+
+missing = []
+for table in Base.metadata.tables.values():
+    for foreign_key in table.foreign_keys:
+        try:
+            foreign_key.column
+        except Exception as exc:
+            missing.append(f"{table.name}.{foreign_key.parent.name}: {type(exc).__name__}")
+
+if missing:
+    print("\\n".join(missing))
+    raise SystemExit(1)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_worker_compose_healthcheck_uses_arq_worker_probe():

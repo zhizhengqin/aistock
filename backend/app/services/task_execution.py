@@ -233,6 +233,42 @@ class TaskExecutionRunner:
             return self.session_factory, False
         return self.session_factory(), True
 
+    def _mark_early_claim_failure(self, task_id: int) -> None:
+        """Persist a safe terminal error when claiming fails before context creation."""
+        try:
+            db, owned = self._session()
+        except Exception:
+            return
+        try:
+            now = self.clock()
+            result = db.execute(
+                update(TaskRecord)
+                .where(TaskRecord.id == task_id, TaskRecord.status == "pending")
+                .values(
+                    status="failed",
+                    error="task_execution_failed: 任务执行失败",
+                    finished_at=now,
+                    heartbeat_at=now,
+                    execution_token=None,
+                    lease_expires_at=None,
+                )
+            )
+            if result.rowcount == 1:
+                db.commit()
+            else:
+                db.rollback()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        finally:
+            if owned:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+
     def _fence_started_attempts(self, db: Session, task: TaskRecord, now: datetime) -> bool:
         """Conservatively terminate provider work before reclaiming a lease.
 
@@ -628,7 +664,15 @@ class TaskExecutionRunner:
     ) -> Any | None:
         """Run one claimed task; duplicate/terminal deliveries return ``None``."""
         fence_event = asyncio.Event()
-        claim = self._claim(task_id, fence_event=fence_event)
+        try:
+            claim = self._claim(task_id, fence_event=fence_event)
+        except Exception:
+            try:
+                self._mark_early_claim_failure(task_id)
+            except Exception:
+                # Preserve the original claim error when the safety write fails.
+                pass
+            raise
         context = claim.context
         if context is None:
             return None

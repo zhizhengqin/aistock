@@ -181,6 +181,91 @@ class MutableClock:
 
 
 @pytest.mark.asyncio
+async def test_claim_exception_marks_pending_task_failed_without_exposing_exception(test_db, monkeypatch):
+    _, session_factory = test_db
+    clock = MutableClock()
+    db = session_factory()
+    task_id = _task(db)
+    db.close()
+
+    def broken_claim(_runner, _task_id, *, fence_event=None):
+        raise RuntimeError("database secret from claim")
+
+    monkeypatch.setattr(TaskExecutionRunner, "_claim", broken_claim)
+    runner = TaskExecutionRunner(session_factory, clock=clock)
+
+    async def execute(_context):
+        raise AssertionError("claim failure must happen before business execution")
+
+    with pytest.raises(RuntimeError, match="database secret from claim"):
+        await runner.run(task_id, execute, lambda *_args: None)
+
+    check = session_factory()
+    task = check.get(TaskRecord, task_id)
+    assert task.status == "failed"
+    assert task.error == "task_execution_failed: 任务执行失败"
+    assert task.finished_at.replace(tzinfo=timezone.utc) == clock()
+    assert task.heartbeat_at.replace(tzinfo=timezone.utc) == clock()
+    assert task.execution_token is None
+    assert task.lease_expires_at is None
+    check.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "success"])
+async def test_claim_exception_does_not_overwrite_non_pending_task(test_db, monkeypatch, status):
+    _, session_factory = test_db
+    db = session_factory()
+    task_id = _task(db)
+    task = db.get(TaskRecord, task_id)
+    task.status = status
+    task.error = "existing error"
+    db.commit()
+    db.close()
+
+    def broken_claim(_runner, _task_id, *, fence_event=None):
+        raise RuntimeError("claim unavailable")
+
+    monkeypatch.setattr(TaskExecutionRunner, "_claim", broken_claim)
+    runner = TaskExecutionRunner(session_factory)
+
+    with pytest.raises(RuntimeError, match="claim unavailable"):
+        await runner.run(task_id, lambda _context: None, lambda *_args: None)
+
+    check = session_factory()
+    task = check.get(TaskRecord, task_id)
+    assert task.status == status
+    assert task.error == "existing error"
+    check.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_persistence_failure_does_not_replace_original_exception(test_db, monkeypatch):
+    _, session_factory = test_db
+    db = session_factory()
+    task_id = _task(db)
+    db.close()
+
+    def broken_claim(_runner, _task_id, *, fence_event=None):
+        raise RuntimeError("original claim failure")
+
+    called = False
+
+    def broken_persist(_runner, _task_id):
+        nonlocal called
+        called = True
+        raise RuntimeError("persistence failure")
+
+    monkeypatch.setattr(TaskExecutionRunner, "_claim", broken_claim)
+    monkeypatch.setattr(TaskExecutionRunner, "_mark_early_claim_failure", broken_persist, raising=False)
+    runner = TaskExecutionRunner(session_factory)
+
+    with pytest.raises(RuntimeError, match="original claim failure"):
+        await runner.run(task_id, lambda _context: None, lambda *_args: None)
+    assert called is True
+
+
+@pytest.mark.asyncio
 async def test_duplicate_wrapper_delivery_executes_once(test_db):
     """Two deliveries for one task have one durable claim and one execution."""
     _, session_factory = test_db

@@ -1,0 +1,65 @@
+name: 生产失败任务状态修复
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "任务 ID（仅数字）"
+        required: true
+        type: string
+      confirmation:
+        description: "请输入 REPAIR_FAILED_TASK 以确认"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    name: 修复生产失败任务状态
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH 执行受保护的状态修复
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: TASK_ID,CONFIRMATION
+          script: |
+            set -eu
+            case "${TASK_ID:-}" in
+              ''|*[!0-9]*)
+                echo '任务 ID 必须只包含数字' >&2
+                exit 64
+                ;;
+            esac
+            if [ "${CONFIRMATION:-}" != "REPAIR_FAILED_TASK" ]; then
+              echo '确认口令不正确，已拒绝修复' >&2
+              exit 64
+            fi
+
+            cd /opt/aistock
+            compose='docker compose --env-file deploy/.env -f deploy/docker-compose.yml'
+
+            echo '=== 校验 ARQ result key ==='
+            result_exists="$($compose exec -T redis redis-cli EXISTS "arq:result:task:${TASK_ID}")"
+            if [ "$result_exists" != "1" ]; then
+              echo 'ARQ result 不存在，已拒绝修复' >&2
+              exit 1
+            fi
+
+            echo '=== 原子更新任务状态 ==='
+            repaired="$($compose exec -T postgres psql -v ON_ERROR_STOP=1 -qAt -U aistock -d aistock \
+              -c "UPDATE task_records AS t SET status='failed', error='task_execution_failed: 任务执行失败', finished_at=NOW(), heartbeat_at=NOW(), execution_token=NULL, lease_expires_at=NULL FROM task_outbox AS o WHERE t.id=${TASK_ID}::integer AND o.task_id=t.id AND t.status='pending' AND o.status='delivered' RETURNING t.id,t.task_type,t.status,t.progress,t.finished_at;")"
+            if [ -z "$repaired" ]; then
+              echo '未找到满足 pending、delivered 条件的任务，未执行修复' >&2
+              exit 1
+            fi
+
+            echo '=== 修复结果（白名单字段） ==='
+            echo "$repaired"

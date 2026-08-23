@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import pytest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.datahub.contracts import (
     Capability,
@@ -12,6 +12,7 @@ from app.datahub.contracts import (
     NewsItem,
     StockSnapshot,
 )
+from app.datahub.errors import DataHubError, DataHubErrorCode
 
 from app.schemas.llm_outputs import (
     CapitalAnalysisOutput,
@@ -40,7 +41,11 @@ class _Context:
 
 
 class _StructuredLlm:
+    def __init__(self):
+        self.calls = []
+
     async def execute_json(self, **kwargs):
+        self.calls.append(kwargs)
         output_type = kwargs["output_type"]
         payloads = {
             TechnicalAnalysisOutput: {
@@ -176,3 +181,50 @@ async def test_orchestrator_missing_data_graceful():
     assert "decision" in report
     assert "analysts" in report
     assert report["indicators"]["ma"] == {} or report["indicators"]["ma"].get("MA5") is None
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_degrades_optional_data_and_marks_prompts():
+    context = _context()
+    unavailable = DataHubError(DataHubErrorCode.INTERNAL, "provider detail must not escape")
+    with patch(
+        "app.services.analysis_orchestrator.get_stock_info",
+        new=AsyncMock(side_effect=unavailable),
+    ), patch("app.services.analysis_orchestrator.get_stock_kline", return_value=_kline_result()), \
+        patch(
+            "app.services.analysis_orchestrator.get_stock_financial_summary",
+            new=AsyncMock(side_effect=unavailable),
+        ), patch(
+            "app.services.analysis_orchestrator.get_stock_capital_flow",
+            new=AsyncMock(side_effect=unavailable),
+        ), patch("app.services.analysis_orchestrator.get_stock_news_titles", return_value=_result(
+            Capability.STOCK_NEWS,
+            [NewsItem(title="业绩预增公告", content="营收稳健", date=_DATA_AT)],
+        )):
+        report = await run_full_analysis("600519", 1, context, None)
+
+    assert len(context.llm.calls) == 7
+    assert set(report["analysts"]) == {"technical", "fundamental", "capital", "news", "sentiment", "risk"}
+    assert report["stock_info"] == {
+        "price": None,
+        "change_pct": None,
+        "pe_ttm": None,
+        "pb": None,
+        "market_cap": None,
+        "industry": None,
+    }
+    assert report["data_warnings"] == [
+        "实时行情数据暂不可用，价格、涨跌幅和行业不得推算或编造",
+        "财务数据暂不可用，财务指标不得推算或编造",
+        "资金流数据暂不可用，资金指标不得推算或编造",
+    ]
+
+    prompts_by_step = {
+        call["step_key"]: call["messages"][0]["content"]
+        for call in context.llm.calls
+    }
+    assert "最新价 数据暂不可用" in prompts_by_step["stock.technical.v1"]
+    assert "营收：数据暂不可用" in prompts_by_step["stock.fundamental.v1"]
+    assert "近20日主力净流入：数据暂不可用" in prompts_by_step["stock.capital.v1"]
+    assert "不得推算或编造" in prompts_by_step["stock.risk.v1"]
+    assert "0.00亿" not in "\n".join(prompts_by_step.values())

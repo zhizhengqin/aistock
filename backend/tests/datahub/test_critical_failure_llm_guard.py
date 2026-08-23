@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.datahub.errors import DataHubError, DataHubErrorCode
+from app.datahub.contracts import Capability, DataQuality, DataResult, StockSnapshot
 from app.services.analysis_orchestrator import run_full_analysis
 from app.services.dragon_tiger_orchestrator import run_dragon_tiger_analysis
 from app.services.main_force_orchestrator import run_main_force_selection
@@ -22,9 +24,25 @@ async def _raise_critical(*_args, **_kwargs):
 
 
 @pytest.mark.asyncio
-async def test_stock_critical_data_failure_makes_zero_llm_calls():
+async def test_stock_kline_critical_data_failure_makes_zero_llm_calls():
     context = FakeContext(StructuredLLM())
-    with patch("app.services.analysis_orchestrator.get_stock_info", new=AsyncMock(side_effect=_raise_critical)):
+    data_at = datetime.now(timezone.utc)
+    info = DataResult(
+        data=StockSnapshot(
+            code="600519.SS",
+            name="贵州茅台",
+            price=1685.5,
+            change_pct=1.32,
+            industry="白酒",
+            data_at=data_at,
+        ),
+        capability=Capability.STOCK_SNAPSHOT,
+        provider="fixture",
+        data_at=data_at,
+        quality=DataQuality(valid=True, rows=1),
+    )
+    with patch("app.services.analysis_orchestrator.get_stock_info", new=AsyncMock(return_value=info)), \
+        patch("app.services.analysis_orchestrator.get_stock_kline", new=AsyncMock(side_effect=_raise_critical)):
         with pytest.raises(DataHubError):
             await run_full_analysis("600519", 1, context, None)
     assert context.llm.calls == []

@@ -82,8 +82,9 @@ jobs:
 
 
             async def main(task_id: str) -> None:
-                pool = await create_pool(get_redis_settings())
+                pool = None
                 try:
+                    pool = await create_pool(get_redis_settings())
                     info = await Job(f"task:{task_id}", redis=pool).result_info()
                     if info is None:
                         print("has_result: false")
@@ -96,13 +97,82 @@ jobs:
                     print(f"finish_time: {info.finish_time}")
                     if not info.success:
                         print(f"result_type: {type(info.result).__name__}")
+                except Exception as exc:
+                    print(f"result_info_error_type: {type(exc).__name__}")
                 finally:
-                    closed = pool.close()
-                    if inspect.isawaitable(closed):
-                        await closed
+                    if pool is not None:
+                        close = getattr(pool, "aclose", None) or getattr(pool, "close", None)
+                        if close is not None:
+                            try:
+                                closed = close()
+                                if inspect.isawaitable(closed):
+                                    await closed
+                            except Exception as exc:
+                                print(f"result_info_close_error_type: {type(exc).__name__}")
 
 
             asyncio.run(main(sys.argv[1]))
+            PY
+
+            echo '=== LLM 结构校验摘要 ==='
+            $compose exec -T worker python - "$TASK_ID" <<'PY'
+            import sys
+
+            from pydantic import ValidationError
+            from sqlalchemy import select
+
+            from app.core.database import SessionLocal
+            from app.models.llm_execution import LlmCallAttempt
+            from app.schemas.llm_outputs import ChiefDecisionOutput
+
+
+            def _loc(value) -> str:
+                return ".".join(str(part) for part in value) or "<root>"
+
+
+            def main(task_id: int) -> None:
+                session = SessionLocal()
+                try:
+                    rows = session.execute(
+                        select(
+                            LlmCallAttempt.attempt_no,
+                            LlmCallAttempt.status,
+                            LlmCallAttempt.result_json,
+                        )
+                        .where(
+                            LlmCallAttempt.task_id == task_id,
+                            LlmCallAttempt.step_key == "stock.chief.v1",
+                        )
+                        .order_by(LlmCallAttempt.attempt_no.desc())
+                    ).all()
+                    if not rows:
+                        print("has_attempt: false")
+                        return
+
+                    for attempt_no, status, result_json in rows:
+                        try:
+                            ChiefDecisionOutput.model_validate(result_json)
+                        except ValidationError as exc:
+                            print(f"attempt_no: {attempt_no}")
+                            print(f"status: {status}")
+                            for error in exc.errors():
+                                input_value = error.get("input")
+                                validation_loc = _loc(error.get("loc", ()))
+                                print(f"validation_loc: {validation_loc}")
+                                print(f"validation_type: {error.get('type', 'unknown')}")
+                                print(f"input_type: {type(input_value).__name__}")
+                                print(f"input_repr: {repr(input_value)[:120]}")
+                        else:
+                            print(f"attempt_no: {attempt_no}")
+                            print(f"status: {status}")
+                            print("schema: valid")
+                except Exception as exc:
+                    print(f"llm_summary_error_type: {type(exc).__name__}")
+                finally:
+                    session.close()
+
+
+            main(int(sys.argv[1]))
             PY
 
             echo '=== Worker 最近 20 分钟日志（最多 300 行） ==='

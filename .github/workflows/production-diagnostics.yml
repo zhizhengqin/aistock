@@ -1,0 +1,55 @@
+name: 生产任务只读诊断
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "任务 ID（仅数字）"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: 诊断生产任务
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH 读取生产任务状态
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          task_id: ${{ inputs.task_id }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: task_id
+          script: |
+            set -eu
+            case "${task_id:-}" in
+              ''|*[!0-9]*)
+                echo '任务 ID 必须只包含数字' >&2
+                exit 64
+                ;;
+            esac
+
+            cd /opt/aistock
+            compose='docker compose --env-file deploy/.env -f deploy/docker-compose.yml'
+
+            echo '=== 容器状态 ==='
+            $compose ps
+
+            echo '=== 任务记录 ==='
+            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$task_id" -U aistock -d aistock \
+              -c "SELECT id, task_type, status, progress, started_at, finished_at FROM task_records WHERE id = :'task_id'::integer;"
+
+            echo '=== 任务 outbox ==='
+            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$task_id" -U aistock -d aistock \
+              -c "SELECT status, attempts, available_at, locked_at, last_error FROM task_outbox WHERE task_id = :'task_id'::integer;"
+
+            echo '=== ARQ 队列长度 ==='
+            $compose exec -T redis redis-cli LLEN arq:queue
+
+            echo '=== Worker 最近 20 分钟日志（最多 300 行） ==='
+            $compose logs --since=20m --tail=300 worker

@@ -48,8 +48,26 @@ jobs:
             $compose exec -T postgres psql -v ON_ERROR_STOP=1 -U aistock -d aistock \
               -c "SELECT status, attempts, available_at, locked_at, last_error FROM task_outbox WHERE task_id = ${TASK_ID}::integer;"
 
-            echo '=== ARQ 队列长度 ==='
-            $compose exec -T redis redis-cli LLEN arq:queue
+            echo '=== ARQ 队列类型 ==='
+            $compose exec -T redis redis-cli TYPE arq:queue
+
+            echo '=== ARQ sorted set 队列数量 ==='
+            $compose exec -T redis redis-cli ZCARD arq:queue
+
+            echo '=== 任务在 ARQ 队列中的排名（从 0 开始） ==='
+            $compose exec -T redis redis-cli ZRANK arq:queue "task:${TASK_ID}"
+
+            echo '=== ARQ job key 是否存在 ==='
+            $compose exec -T redis redis-cli EXISTS "arq:job:task:${TASK_ID}"
+
+            echo '=== ARQ job key TTL（毫秒） ==='
+            $compose exec -T redis redis-cli PTTL "arq:job:task:${TASK_ID}"
+
+            echo '=== ARQ result key 是否存在 ==='
+            $compose exec -T redis redis-cli EXISTS "arq:result:task:${TASK_ID}"
+
+            echo '=== ARQ result key TTL（毫秒） ==='
+            $compose exec -T redis redis-cli PTTL "arq:result:task:${TASK_ID}"
 
             echo '=== Worker 最近 20 分钟日志（最多 300 行） ==='
             $compose logs --since=20m --tail=300 worker

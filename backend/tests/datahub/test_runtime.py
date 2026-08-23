@@ -303,9 +303,99 @@ async def test_eastmoney_stock_kline_daily_fixture_parses_to_kline_bars():
     assert query["fields2"] == "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
 
 
+@pytest.mark.asyncio
+async def test_sina_stock_kline_daily_fixture_parses_to_kline_bars():
+    from app.datahub.contracts import KlineBar
+    from app.datahub.providers.sina import SinaProvider
+
+    class Response:
+        content = (
+            b'var kline=[{"day":"2026-08-17","open":"9.090","high":"9.090",'
+            b'"low":"8.980","close":"9.040","volume":"57152651"}];'
+        )
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, params=None, **kwargs):
+            self.calls.append((url, params, kwargs))
+            return Response()
+
+    client = Client()
+    result = await SinaProvider(http_client=client).fetch(
+        Capability.STOCK_KLINE_DAILY,
+        {"code": "600000.SS", "days": 5},
+    )
+
+    assert isinstance(result, DataResult)
+    assert result.provider == "sina"
+    assert isinstance(result.data[0], KlineBar)
+    assert result.data[0].close == 9.04
+    assert result.data[0].volume == 57152651
+    assert result.data_at == datetime(2026, 8, 17, tzinfo=timezone.utc)
+    url, query, request = client.calls[0]
+    assert url == "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20kline=/CN_MarketDataService.getKLineData"
+    assert query["symbol"] == "sh600000"
+    assert query["scale"] == 240
+    assert query["ma"] == "no"
+    assert query["datalen"] == 5
+    assert request["headers"]["Referer"] == "https://stock.finance.sina.com.cn/"
+
+
+@pytest.mark.asyncio
+async def test_sina_stock_kline_daily_empty_fixture_raises_empty_invalid():
+    from app.datahub.providers.sina import SinaProvider
+
+    class Response:
+        content = b"var kline=[];"
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def get(self, url, params=None, **kwargs):
+            return Response()
+
+    with pytest.raises(DataHubError) as exc_info:
+        await SinaProvider(http_client=Client()).fetch(
+            Capability.STOCK_KLINE_DAILY,
+            {"code": "600000.SS", "days": 5},
+        )
+
+    assert exc_info.value.code is DataHubErrorCode.EMPTY_INVALID
+
+
+@pytest.mark.asyncio
+async def test_sina_stock_kline_daily_malformed_fixture_raises_schema_changed():
+    from app.datahub.providers.sina import SinaProvider
+
+    class Response:
+        content = b"var kline=not-json;"
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def get(self, url, params=None, **kwargs):
+            return Response()
+
+    with pytest.raises(DataHubError) as exc_info:
+        await SinaProvider(http_client=Client()).fetch(
+            Capability.STOCK_KLINE_DAILY,
+            {"code": "600000.SS", "days": 5},
+        )
+
+    assert exc_info.value.code is DataHubErrorCode.SCHEMA_CHANGED
+
+
 def test_stock_kline_route_and_registry_declare_eastmoney_fallback():
     from app.datahub.platform import default_routes
     from app.datahub.registry import PROVIDER_REGISTRY
 
-    assert default_routes()[Capability.STOCK_KLINE_DAILY].providers == ["tencent", "eastmoney", "tdx"]
+    assert default_routes()[Capability.STOCK_KLINE_DAILY].providers == ["tencent", "eastmoney", "sina", "tdx"]
     assert Capability.STOCK_KLINE_DAILY in PROVIDER_REGISTRY["eastmoney"].capabilities
+    assert Capability.STOCK_KLINE_DAILY in PROVIDER_REGISTRY["sina"].capabilities

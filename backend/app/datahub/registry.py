@@ -85,6 +85,7 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
             Capability.MARKET_BOARD_CONSTITUENTS,
             Capability.STOCK_SNAPSHOT,
             Capability.STOCK_FINANCIALS,
+            Capability.STOCK_KLINE_DAILY,
         ),
         enabled_by_default=True,
         update_frequency="盘中实时/盘后",

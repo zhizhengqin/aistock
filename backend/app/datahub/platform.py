@@ -32,7 +32,7 @@ def default_routes() -> dict[Capability, RouteDefinition]:
         Capability.MARKET_BOARD_QUOTES: RouteDefinition(providers=["eastmoney", "sina"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.MARKET_BOARD_CONSTITUENTS: RouteDefinition(providers=["eastmoney", "sina"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.STOCK_SNAPSHOT: RouteDefinition(providers=["tencent", "sina"], ttl_seconds=30, stale_ttl_seconds=900),
-        Capability.STOCK_KLINE_DAILY: RouteDefinition(providers=["tencent", "eastmoney", "tdx"], ttl_seconds=300, stale_ttl_seconds=86400),
+        Capability.STOCK_KLINE_DAILY: RouteDefinition(providers=["tencent", "eastmoney", "sina", "tdx"], ttl_seconds=300, stale_ttl_seconds=86400),
         Capability.STOCK_FINANCIALS: RouteDefinition(providers=["sina"], ttl_seconds=3600, stale_ttl_seconds=604800),
         Capability.STOCK_FUND_FLOW: RouteDefinition(providers=["eastmoney"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.STOCK_NEWS: RouteDefinition(providers=["rss", "eastmoney"], ttl_seconds=1800, stale_ttl_seconds=86400),

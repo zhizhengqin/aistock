@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.datahub.contracts import BoardConstituent, BoardQuote, Capability, DataResult, FinancialSummary, MarketIndex, StockSnapshot
+from app.datahub.contracts import BoardConstituent, BoardQuote, Capability, DataResult, FinancialSummary, KlineBar, MarketIndex, StockSnapshot
 from app.datahub.errors import DataHubError, DataHubErrorCode
 from app.datahub.providers.base import ProviderAdapter, translate_provider_error
 from app.datahub.providers.ticker import normalise_ticker, vendor_symbol
@@ -19,6 +19,7 @@ from app.datahub.validators import validate_payload
 class SinaProvider(ProviderAdapter):
     name = "sina"
     BASE_URL = "https://hq.sinajs.cn/list="
+    KLINE_URL = "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20kline=/CN_MarketDataService.getKLineData"
     BOARD_URLS = {
         "industry": "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php",
         "theme": "https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class",
@@ -30,6 +31,7 @@ class SinaProvider(ProviderAdapter):
         Capability.MARKET_BOARD_CONSTITUENTS,
         Capability.STOCK_SNAPSHOT,
         Capability.STOCK_FINANCIALS,
+        Capability.STOCK_KLINE_DAILY,
     }
 
     def __init__(self, *, http_client: Any | None = None, limiter=None) -> None:
@@ -42,6 +44,8 @@ class SinaProvider(ProviderAdapter):
             raise DataHubError(DataHubErrorCode.UNSUPPORTED, "新浪接口暂不支持该数据能力", provider=self.name)
         values = params.get("codes") or [params.get("code") or params.get("stock_code") or "000001.SS"]
         try:
+            if capability is Capability.STOCK_KLINE_DAILY:
+                return await self._fetch_kline(params)
             if capability is Capability.STOCK_FINANCIALS:
                 return await self._fetch_financials(params)
             if capability is Capability.MARKET_BOARD_QUOTES:
@@ -66,6 +70,61 @@ class SinaProvider(ProviderAdapter):
             raise
         except Exception as exc:
             raise translate_provider_error(exc, provider=self.name) from None
+
+    async def _fetch_kline(self, params: dict[str, Any]) -> DataResult:
+        code = params.get("code") or params.get("stock_code") or params.get("ts_code")
+        if not code:
+            raise DataHubError(DataHubErrorCode.VALIDATION, "缺少股票代码", provider=self.name)
+        symbol = vendor_symbol(code)
+        days = max(1, min(int(params.get("days", 120)), 500))
+        text = await self.run_sync(
+            lambda: self._get_text_url(
+                self.KLINE_URL,
+                params={"symbol": symbol, "scale": 240, "ma": "no", "datalen": days},
+            )
+        )
+        payload = _parse_json_payload(text)
+        if not isinstance(payload, list):
+            raise DataHubError(DataHubErrorCode.SCHEMA_CHANGED, "新浪日 K 响应格式发生变化", provider=self.name)
+        if not payload:
+            raise DataHubError(DataHubErrorCode.EMPTY_INVALID, "新浪日 K 返回空数据", provider=self.name)
+
+        rows: list[KlineBar] = []
+        for raw in payload:
+            if not isinstance(raw, dict):
+                raise DataHubError(DataHubErrorCode.SCHEMA_CHANGED, "新浪日 K 响应格式发生变化", provider=self.name)
+            day = raw.get("day")
+            missing = [field for field in ("day", "open", "high", "low", "close") if raw.get(field) in (None, "")]
+            if missing:
+                raise DataHubError(DataHubErrorCode.SCHEMA_CHANGED, "新浪日 K 字段发生变化", provider=self.name)
+            data_at = _period_time(str(day)[:10])
+            open_price = _maybe_number(raw.get("open"))
+            high = _maybe_number(raw.get("high"))
+            low = _maybe_number(raw.get("low"))
+            close = _maybe_number(raw.get("close"))
+            volume = _maybe_number(raw.get("volume")) if raw.get("volume") not in (None, "") else 0.0
+            if data_at is None or any(value is None for value in (open_price, high, low, close, volume)):
+                raise DataHubError(DataHubErrorCode.SCHEMA_CHANGED, "新浪日 K 数值字段无法解析", provider=self.name)
+            rows.append(
+                KlineBar(
+                    date=day,
+                    open=open_price,
+                    close=close,
+                    high=high,
+                    low=low,
+                    volume=volume,
+                    data_at=data_at,
+                )
+            )
+        count = validate_payload(Capability.STOCK_KLINE_DAILY, rows)
+        data_at = max(row.data_at for row in rows if row.data_at is not None)
+        return DataResult(
+            data=rows,
+            capability=Capability.STOCK_KLINE_DAILY,
+            provider=self.name,
+            data_at=data_at,
+            quality={"valid": True, "rows": count},
+        )
 
     def _fetch_board_quotes_sync(self, params: dict[str, Any]) -> tuple[list[BoardQuote], datetime]:
         kind = _validated_kind(params.get("kind"))

@@ -7,6 +7,8 @@ rendered by a product page.
 
 from __future__ import annotations
 
+import math
+from decimal import Decimal
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -74,7 +76,39 @@ class SentimentAnalysisOutput(_StrictOutput):
     assessment: NonBlankText
 
 
+def _positive_number_text(value) -> tuple[float, str]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("必须是有限正数")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError("必须是有限正数")
+    text = format(Decimal(str(value)), "f").rstrip("0").rstrip(".")
+    return number, text
+
+
 class ChiefDecisionOutput(_StrictOutput):
+    @field_validator("entry_range", mode="before")
+    @classmethod
+    def normalize_entry_range(cls, value):
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ValueError("entry_range 必须是非空字符串或两个有限正数")
+        low, high = value
+        low_number, low_text = _positive_number_text(low)
+        high_number, high_text = _positive_number_text(high)
+        if low_number > high_number:
+            raise ValueError("entry_range 的低值不能高于高值")
+        return f"{low_text}-{high_text}"
+
+    @field_validator("take_profit", mode="before")
+    @classmethod
+    def normalize_take_profit(cls, value):
+        if isinstance(value, str):
+            return value
+        _, text = _positive_number_text(value)
+        return text
+
     rating: Literal["买入", "持有", "卖出"]
     target_price: PositiveNumber | None = None
     stop_loss: PositiveNumber | None = None

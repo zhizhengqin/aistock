@@ -23,7 +23,7 @@ from app.schemas.llm_outputs import (
     SentimentAnalysisOutput,
     TechnicalAnalysisOutput,
 )
-from app.services.analysis_orchestrator import run_full_analysis
+from app.services.analysis_orchestrator import _build_chief_prompt, run_full_analysis
 
 
 class _Context:
@@ -114,6 +114,13 @@ def _kline_result(rows: int = 120):
         ],
         rows=rows,
     )
+
+
+def test_chief_prompt_requires_string_range_fields():
+    content = _build_chief_prompt([])[0]["content"]
+
+    assert 'entry_range(最终必须为字符串，格式如"50.5-52.5")' in content
+    assert 'take_profit(最终必须为字符串，格式如"55.57")' in content
 
 
 @pytest.mark.asyncio

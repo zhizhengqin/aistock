@@ -202,7 +202,7 @@ def _build_chief_prompt(reports: list[dict], data_warnings: list[str] | None = N
 {reports_text}
 
 只返回一个 JSON 对象，且只能包含字段：rating(买入/持有/卖出), target_price(可选正数), stop_loss(可选正数), confidence(0-100),
-entry_range(入场区间), take_profit(止盈目标), holding_period(持有期限), position_size(仓位建议),
+entry_range(最终必须为字符串，格式如"50.5-52.5"), take_profit(最终必须为字符串，格式如"55.57"), holding_period(持有期限), position_size(仓位建议),
 risk_warning(风险提示), key_watchpoints(字符串数组), meeting_summary(会议总结)。""" + (
         "\n数据可用性提醒：" + "；".join(data_warnings) + "\n缺失数据不得推算或编造。\n"
         if data_warnings else ""

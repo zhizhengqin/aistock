@@ -202,6 +202,43 @@ def test_output_rejects_missing_extra_wrong_and_blank_values():
         ChiefDecisionOutput.model_validate(payload)
 
 
+def test_chief_normalizes_numeric_entry_and_take_profit_values():
+    payload = _chief() | {
+        "entry_range": [50.5, 52.5],
+        "take_profit": 55.57,
+    }
+
+    result = ChiefDecisionOutput.model_validate(payload)
+
+    assert result.entry_range == "50.5-52.5"
+    assert result.take_profit == "55.57"
+    assert result.model_dump(mode="json")["entry_range"] == "50.5-52.5"
+    assert result.model_dump(mode="json")["take_profit"] == "55.57"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [50.5, 52.5, 54.5],
+        [52.5, 50.5],
+        [0, 52.5],
+        [-1, 52.5],
+        [50.5, math.nan],
+        [True, 52.5],
+        {"low": 50.5, "high": 52.5},
+    ],
+)
+def test_chief_rejects_invalid_numeric_entry_range(value):
+    with pytest.raises(ValidationError):
+        ChiefDecisionOutput.model_validate(_chief() | {"entry_range": value})
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, math.nan, math.inf, [55.57]])
+def test_chief_rejects_invalid_numeric_take_profit(value):
+    with pytest.raises(ValidationError):
+        ChiefDecisionOutput.model_validate(_chief() | {"take_profit": value})
+
+
 @pytest.mark.parametrize(
     ("model", "field", "value"),
     [

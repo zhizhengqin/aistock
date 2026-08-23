@@ -203,6 +203,16 @@ def _optional_int(value: Any) -> int | None:
     return int(number) if number is not None else None
 
 
+def _cloud_weight(row: Any) -> float:
+    market_cap = _optional_float(_row_value(row, "market_cap"))
+    if market_cap is not None and market_cap > 0:
+        return market_cap
+    turnover = _optional_float(_row_value(row, "turnover"))
+    if turnover is not None and turnover > 0:
+        return turnover
+    return 1.0
+
+
 def _trade_date(value: Any) -> str | None:
     if value is None:
         return None
@@ -354,21 +364,21 @@ class HotspotService:
         if kind == "theme":
             filtered.sort(
                 key=lambda row: (
-                    _optional_float(_row_value(row, "market_cap")) is None,
-                    -(_optional_float(_row_value(row, "market_cap")) or 0),
+                    -_cloud_weight(row),
                     str(_row_value(row, "board_code") or ""),
                 )
             )
             filtered = filtered[: max(1, min(int(limit), 80))]
         nodes = []
-        for row in sorted(filtered, key=lambda item: str(_row_value(item, "board_code") or "")):
+        ordered = filtered if kind == "theme" else sorted(filtered, key=lambda item: str(_row_value(item, "board_code") or ""))
+        for row in ordered:
             cap = _optional_float(_row_value(row, "market_cap"))
             nodes.append(
                 MarketCloudNode(
                     code=str(_row_value(row, "board_code") or ""),
                     name=str(_row_value(row, "board_name") or ""),
                     kind=kind,
-                    value=cap if cap is not None and cap > 0 else 1.0,
+                    value=_cloud_weight(row),
                     change_pct=_optional_float(_row_value(row, "change_pct")),
                     market_cap=cap,
                     data_at=_row_value(row, "data_at"),

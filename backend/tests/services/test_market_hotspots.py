@@ -192,7 +192,7 @@ async def test_incompatible_future_history_hides_trend_and_warns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_theme_cloud_places_missing_market_cap_after_non_null_caps(monkeypatch):
+async def test_theme_cloud_uses_stable_area_weight_order_when_market_caps_tie(monkeypatch):
     result = DataResult(
         data=[quote("A", 1, 100, cap=None), quote("B", 2, 100, cap=100)],
         capability=Capability.MARKET_BOARD_QUOTES,
@@ -202,7 +202,28 @@ async def test_theme_cloud_places_missing_market_cap_after_non_null_caps(monkeyp
     )
     monkeypatch.setattr("app.services.market_hotspots.get_market_board_quotes", lambda kind: _resolved(result))
     payload = await HotspotService(SimpleNamespace(), snapshot_store=SimpleNamespace(history=lambda *a, **k: [])).get_market_cloud("theme", limit=1)
-    assert [node.code for node in payload.nodes] == ["B"]
+    assert [node.code for node in payload.nodes] == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_market_cloud_area_weight_prefers_market_cap_then_turnover_then_equal_weight(monkeypatch):
+    result = DataResult(
+        data=[
+            quote("B", 1, 100, cap=100),
+            quote("A", 2, 500, cap=None),
+            quote("C", -1, None, cap=None),
+        ],
+        capability=Capability.MARKET_BOARD_QUOTES,
+        provider="eastmoney",
+        data_at=NOW,
+        quality=DataQuality(valid=True, rows=3),
+    )
+    monkeypatch.setattr("app.services.market_hotspots.get_market_board_quotes", lambda kind: _resolved(result))
+
+    payload = await HotspotService(SimpleNamespace(), snapshot_store=SimpleNamespace(history=lambda *a, **k: [])).get_market_cloud("theme", limit=3)
+
+    assert [node.code for node in payload.nodes] == ["A", "B", "C"]
+    assert [node.value for node in payload.nodes] == [500, 100, 1]
 
 
 @pytest.mark.asyncio

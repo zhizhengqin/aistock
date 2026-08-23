@@ -41,12 +41,12 @@ jobs:
             $compose ps
 
             echo '=== 任务记录 ==='
-            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$TASK_ID" -U aistock -d aistock \
-              -c "SELECT id, task_type, status, progress, started_at, finished_at FROM task_records WHERE id = :'task_id'::integer;"
+            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -U aistock -d aistock \
+              -c "SELECT id, task_type, status, progress, started_at, finished_at FROM task_records WHERE id = ${TASK_ID}::integer;"
 
             echo '=== 任务 outbox ==='
-            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -v task_id="$TASK_ID" -U aistock -d aistock \
-              -c "SELECT status, attempts, available_at, locked_at, last_error FROM task_outbox WHERE task_id = :'task_id'::integer;"
+            $compose exec -T postgres psql -v ON_ERROR_STOP=1 -U aistock -d aistock \
+              -c "SELECT status, attempts, available_at, locked_at, last_error FROM task_outbox WHERE task_id = ${TASK_ID}::integer;"
 
             echo '=== ARQ 队列长度 ==='
             $compose exec -T redis redis-cli LLEN arq:queue

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.datahub.contracts import BoardConstituent, BoardQuote, Capability, DataResult, FinancialSummary, KlineBar, MarketIndex, StockSnapshot
+from app.datahub.contracts import BoardConstituent, BoardQuote, Capability, DataResult, FinancialSummary, FundFlow, KlineBar, MarketIndex, StockSnapshot
 from app.datahub.errors import DataHubError, DataHubErrorCode
 from app.datahub.providers.base import ProviderAdapter, translate_provider_error
 from app.datahub.providers.ticker import normalise_ticker, vendor_symbol
@@ -20,6 +20,7 @@ class SinaProvider(ProviderAdapter):
     name = "sina"
     BASE_URL = "https://hq.sinajs.cn/list="
     KLINE_URL = "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20kline=/CN_MarketDataService.getKLineData"
+    FUND_FLOW_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_qsfx_zjlrqs"
     BOARD_URLS = {
         "industry": "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php",
         "theme": "https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class",
@@ -31,6 +32,7 @@ class SinaProvider(ProviderAdapter):
         Capability.MARKET_BOARD_CONSTITUENTS,
         Capability.STOCK_SNAPSHOT,
         Capability.STOCK_FINANCIALS,
+        Capability.STOCK_FUND_FLOW,
         Capability.STOCK_KLINE_DAILY,
     }
 
@@ -48,6 +50,8 @@ class SinaProvider(ProviderAdapter):
                 return await self._fetch_kline(params)
             if capability is Capability.STOCK_FINANCIALS:
                 return await self._fetch_financials(params)
+            if capability is Capability.STOCK_FUND_FLOW:
+                return await self._fetch_fund_flow(params)
             if capability is Capability.MARKET_BOARD_QUOTES:
                 typed, data_at = await self.run_sync(lambda: self._fetch_board_quotes_sync(params))
                 count = validate_payload(capability, typed)
@@ -234,6 +238,67 @@ class SinaProvider(ProviderAdapter):
         count = validate_payload(Capability.STOCK_FINANCIALS, [typed])
         return DataResult(data=typed, capability=Capability.STOCK_FINANCIALS, provider=self.name, data_at=typed.data_at, quality={"valid": True, "rows": count})
 
+    async def _fetch_fund_flow(self, params: dict[str, Any]) -> DataResult:
+        code = params.get("code") or params.get("stock_code") or params.get("ts_code")
+        if not code:
+            raise DataHubError(DataHubErrorCode.VALIDATION, "缺少股票代码", provider=self.name)
+        days = max(1, min(int(params.get("days", 20)), 120))
+        text = await self.run_sync(
+            lambda: self._get_text_url(
+                self.FUND_FLOW_URL,
+                params={"page": 1, "num": days, "sort": "opendate", "asc": 0, "daima": vendor_symbol(code)},
+            )
+        )
+        payload = _parse_json_payload(text)
+        if not isinstance(payload, list) or not payload:
+            raise DataHubError(DataHubErrorCode.EMPTY_INVALID, "新浪日资金流返回空数据", provider=self.name)
+        rows: list[FundFlow] = []
+        for raw in payload:
+            if not isinstance(raw, dict):
+                continue
+            data_at = _period_time(str(raw.get("opendate") or raw.get("date") or "")[:10])
+            if data_at is None:
+                continue
+            net_amount = raw.get("netamount")
+            if net_amount is None:
+                net_amount = raw.get("net_amount")
+            rows.append(
+                FundFlow(
+                    code=normalise_ticker(code),
+                    net_main_flow=_maybe_number(net_amount),
+                    net_super_large=None,
+                    net_large=None,
+                    net_medium=None,
+                    net_small=None,
+                    daily_flows=[raw],
+                    data_at=data_at,
+                )
+            )
+        if not rows:
+            raise DataHubError(DataHubErrorCode.EMPTY_INVALID, "新浪日资金流没有可解析记录", provider=self.name)
+        count = validate_payload(Capability.STOCK_FUND_FLOW, rows)
+        aggregate = FundFlow(
+            code=rows[-1].code,
+            net_main_flow=_sum_optional(rows, "net_main_flow"),
+            net_super_large=None,
+            net_large=None,
+            net_medium=None,
+            net_small=None,
+            daily_flows=[flow for row in rows for flow in row.daily_flows],
+            data_at=max(row.data_at for row in rows if row.data_at is not None),
+        )
+        return DataResult(
+            data=aggregate,
+            capability=Capability.STOCK_FUND_FLOW,
+            provider=self.name,
+            data_at=aggregate.data_at,
+            quality={
+                "valid": True,
+                "rows": count,
+                "missing_fields": ["net_super_large", "net_large", "net_medium", "net_small"],
+            },
+        )
+
     def _get_text(self, query: str) -> str:
         return self._get_text_url(f"{self.BASE_URL}{query}")
 
@@ -264,7 +329,9 @@ class SinaProvider(ProviderAdapter):
             if hasattr(response, "raise_for_status"):
                 response.raise_for_status()
             content = getattr(response, "content", None)
-            return bytes(content).decode("gbk", errors="replace") if content is not None else str(getattr(response, "text", ""))
+            if content:
+                return bytes(content).decode("gbk", errors="replace")
+            return str(getattr(response, "text", ""))
         finally:
             if close and hasattr(client, "close"):
                 client.close()
@@ -368,7 +435,7 @@ def _optional_text(value: Any) -> str | None:
 
 
 def _maybe_number(value: Any) -> float | None:
-    text = str(value or "").strip()
+    text = "" if value is None else str(value).strip()
     if not text or text in {"-", "--", "null", "None"}:
         return None
     try:
@@ -439,6 +506,11 @@ def _period_time(value: str) -> datetime | None:
         return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
+
+
+def _sum_optional(rows: list[FundFlow], field: str) -> float | None:
+    values = [getattr(row, field) for row in rows if getattr(row, field) is not None]
+    return round(sum(values), 6) if values else None
 
 
 def _first_number(values: dict[str, Any], names: tuple[str, ...]) -> float:

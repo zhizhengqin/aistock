@@ -65,6 +65,54 @@ def test_empty_public_config_keeps_previous_public_settings(service):
     assert row.public_config_json == {"timeout": 10, "capability": "kpl.limit_list"}
 
 
+def test_new_multi_field_credentials_require_all_required_fields(service):
+    with pytest.raises(DataHubError) as error:
+        service.save_config(
+            "kpl_native",
+            public_config={},
+            credentials={"token": "fake-token"},
+            expected_version=None,
+            actor_id=1,
+        )
+
+    assert error.value.code.value == "validation"
+    assert "UserID" in error.value.message
+
+
+def test_partial_multi_field_update_merges_saved_credentials_and_hints_secret(service):
+    service.save_config(
+        "kpl_native",
+        public_config={},
+        credentials={"user_id": "fake-user", "token": "fake-token"},
+        expected_version=None,
+        actor_id=1,
+    )
+
+    updated = service.save_config(
+        "kpl_native",
+        public_config={},
+        credentials={"user_id": "fake-user-2"},
+        expected_version=1,
+        actor_id=1,
+    )
+
+    assert service.load_credentials("kpl_native") == {"user_id": "fake-user-2", "token": "fake-token"}
+    assert updated.key_hint == "...oken"
+
+
+def test_save_config_rejects_credential_keys_not_declared_by_registry(service):
+    with pytest.raises(DataHubError) as error:
+        service.save_config(
+            "kpl_native",
+            public_config={},
+            credentials={"unexpected": "fake-value"},
+            expected_version=None,
+            actor_id=1,
+        )
+
+    assert error.value.code.value == "validation"
+
+
 def test_fixed_route_rejects_disabled_provider_before_probe(service):
     with pytest.raises(DataHubError) as error:
         service.save_route(

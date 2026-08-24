@@ -10,16 +10,19 @@ import {
   testSavedDataSource,
   type DataSource,
   type DataSourceRoute,
+  type CredentialField,
 } from '../../api/dataHub'
 import { errMsg } from '../../utils/errors'
 
 type CredentialState = Record<string, string>
+type ProviderOperationResult = { kind: 'success' | 'error'; message: string }
 
 const CAPABILITY_LABELS: Record<string, string> = {
   'market.indices': '大盘指数',
   'market.board_quotes': '板块行情',
   'market.board_constituents': '板块成分股',
   'stock.snapshot': '个股实时行情',
+  'stock.profile': '公司资料',
   'stock.kline.daily': '日K线',
   'stock.financials': '财务摘要',
   'stock.fund_flow': '个股资金流',
@@ -37,6 +40,10 @@ const CAPABILITY_LABELS: Record<string, string> = {
   'kpl.limit_ladder': '开盘啦连板梯队',
   'kpl.strong_sectors': '开盘啦强势板块',
   'market.auction_open': '竞价开盘',
+  'kpl_native.stock_tags': '开盘啦原生股票标签',
+  'kpl_native.plate_ranking': '开盘啦原生板块排行',
+  'kpl_native.plate_constituents': '开盘啦原生板块成分',
+  'kpl_native.stock_ranking': '开盘啦原生股票排行',
 }
 
 function capabilityLabel(capability: string): string {
@@ -45,6 +52,19 @@ function capabilityLabel(capability: string): string {
 
 function isTokenField(field: string): boolean {
   return /token|key|secret|password/i.test(field)
+}
+
+function normalizeCredentialField(field: CredentialField | string): CredentialField {
+  if (typeof field === 'string') {
+    return {
+      key: field,
+      label: field === 'token' ? 'Token' : field,
+      secret: isTokenField(field),
+      required: false,
+      help: '',
+    }
+  }
+  return field
 }
 
 function probeLabel(source: DataSource): string {
@@ -57,10 +77,27 @@ export default function DataSourcesView() {
   const [sources, setSources] = useState<DataSource[]>([])
   const [routes, setRoutes] = useState<DataSourceRoute[]>([])
   const [credentials, setCredentials] = useState<Record<string, CredentialState>>({})
-  const [pending, setPending] = useState<string | null>(null)
-  const [notice, setNotice] = useState('')
+  const [pending, setPending] = useState<Record<string, string>>({})
+  const [operationResults, setOperationResults] = useState<Record<string, ProviderOperationResult | undefined>>({})
   const [error, setError] = useState('')
   const [selectedCapabilities, setSelectedCapabilities] = useState<Record<string, string>>({})
+
+  const isProviderPending = (provider: string) => Boolean(pending[provider])
+  const hasPending = Object.keys(pending).length > 0
+  const beginOperation = (provider: string, operation: string) => {
+    setPending((current) => ({ ...current, [provider]: operation }))
+    setOperationResults((current) => ({ ...current, [provider]: undefined }))
+  }
+  const endOperation = (provider: string) => {
+    setPending((current) => {
+      const next = { ...current }
+      delete next[provider]
+      return next
+    })
+  }
+  const setOperationResult = (provider: string, result: ProviderOperationResult) => {
+    setOperationResults((current) => ({ ...current, [provider]: result }))
+  }
 
   const refresh = useCallback(async () => {
     setError('')
@@ -89,10 +126,8 @@ export default function DataSourcesView() {
   }
 
   const runTest = async (source: DataSource) => {
-    if (pending) return
-    setPending(`test:${source.provider}`)
-    setNotice('')
-    setError('')
+    if (isProviderPending(source.provider)) return
+    beginOperation(source.provider, 'test')
     const values = credentials[source.provider] || {}
     const capability = selectedCapabilities[source.provider] || source.capabilities[0]
     try {
@@ -101,71 +136,73 @@ export default function DataSourcesView() {
       const result = !useSavedProbe
         ? await testDataSource({ provider: source.provider, public_config: { capability }, credentials: values })
         : await testSavedDataSource(source.provider, capability)
-      setNotice(`${source.display_name} 测试完成：${result.status === 'ok' ? `获取 ${String(result.rows ?? 0)} 行` : '未通过'}`)
+      setOperationResult(source.provider, {
+        kind: result.status === 'ok' ? 'success' : 'error',
+        message: `${source.display_name} 测试完成：${result.status === 'ok' ? `获取 ${String(result.rows ?? 0)} 行` : String(result.message || '未通过')}`,
+      })
       await refresh()
     } catch (cause) {
-      setError(errMsg(cause, `${source.display_name} 测试失败`))
+      setOperationResult(source.provider, { kind: 'error', message: errMsg(cause, `${source.display_name} 测试失败`) })
     } finally {
       clearCredentials(source.provider)
-      setPending(null)
+      endOperation(source.provider)
     }
   }
 
   const save = async (source: DataSource) => {
-    if (pending) return
-    setPending(`save:${source.provider}`)
-    setNotice('')
-    setError('')
+    if (isProviderPending(source.provider)) return
+    beginOperation(source.provider, 'save')
     const values = credentials[source.provider] || {}
     try {
       const result = source.version > 0
         ? await patchDataSource(source.provider, { credentials: values, expected_version: source.version })
         : await saveDataSource({ provider: source.provider, credentials: values })
       setSources((current) => current.map((item) => item.provider === source.provider ? result : item))
-      setNotice(`${source.display_name} 配置已保存`)
+      setOperationResult(source.provider, { kind: 'success', message: `${source.display_name} 配置已保存` })
     } catch (cause) {
       if ((cause as any)?.response?.status === 409) await refresh()
-      setError(errMsg(cause, '保存配置失败，请刷新后重试'))
+      setOperationResult(source.provider, { kind: 'error', message: errMsg(cause, '保存配置失败，请刷新后重试') })
     } finally {
       clearCredentials(source.provider)
-      setPending(null)
+      endOperation(source.provider)
     }
   }
 
   const toggle = async (source: DataSource) => {
-    if (pending || source.version <= 0) return
-    setPending(`toggle:${source.provider}`)
+    if (isProviderPending(source.provider) || source.version <= 0) return
+    beginOperation(source.provider, 'toggle')
     try {
       const result = await setDataSourceEnabled(source.provider, !source.enabled, source.version)
       setSources((current) => current.map((item) => item.provider === source.provider ? result : item))
-      setNotice(`${source.display_name} 已${result.enabled ? '启用' : '停用'}`)
+      setOperationResult(source.provider, { kind: 'success', message: `${source.display_name} 已${result.enabled ? '启用' : '停用'}` })
     } catch (cause) {
       if ((cause as any)?.response?.status === 409) await refresh()
-      setError(errMsg(cause, '切换数据源失败'))
+      setOperationResult(source.provider, { kind: 'error', message: errMsg(cause, '切换数据源失败') })
     } finally {
-      setPending(null)
+      endOperation(source.provider)
     }
   }
 
   const updateRoute = async (route: DataSourceRoute, mode: 'auto' | 'fixed') => {
-    if (pending) return
-    setPending(`route:${route.capability}`)
+    const operationKey = `route:${route.capability}`
+    if (hasPending) return
+    beginOperation(operationKey, 'route')
     try {
       const providers = mode === 'fixed' ? route.providers.slice(0, 1) : route.providers
       if (!providers.length) throw new Error('至少选择一个可用数据源')
       const result = await saveDataSourceRoute(route.capability, { mode, providers, expected_version: route.version || null })
       setRoutes((current) => current.map((item) => item.capability === route.capability ? { ...item, ...result, provider_options: item.provider_options } : item))
-      setNotice(`${capabilityLabel(route.capability)} 路由已更新`)
+      setOperationResult(operationKey, { kind: 'success', message: `${capabilityLabel(route.capability)} 路由已更新` })
     } catch (cause) {
       if ((cause as any)?.response?.status === 409) await refresh()
-      setError(errMsg(cause, '能力路由更新失败'))
+      setOperationResult(operationKey, { kind: 'error', message: errMsg(cause, '能力路由更新失败') })
     } finally {
-      setPending(null)
+      endOperation(operationKey)
     }
   }
 
   const toggleRouteProvider = async (route: DataSourceRoute, provider: string, checked: boolean) => {
-    if (pending) return
+    if (hasPending) return
     const option = route.provider_options?.find((item) => item.provider === provider)
     if (option?.selectable === false && checked) return
     const current = route.providers
@@ -179,34 +216,36 @@ export default function DataSourcesView() {
         : current.filter((item) => item !== provider)
       if (!providers.length) return
     }
-    setPending(`route:${route.capability}`)
+    const operationKey = `route:${route.capability}`
+    beginOperation(operationKey, 'route')
     try {
       const result = await saveDataSourceRoute(route.capability, { mode: route.mode, providers, expected_version: route.version || null })
       setRoutes((items) => items.map((item) => item.capability === route.capability ? { ...item, ...result, provider_options: item.provider_options } : item))
-      setNotice(`${capabilityLabel(route.capability)} 数据源选择已更新`)
+      setOperationResult(operationKey, { kind: 'success', message: `${capabilityLabel(route.capability)} 数据源选择已更新` })
     } catch (cause) {
       if ((cause as any)?.response?.status === 409) await refresh()
-      setError(errMsg(cause, '数据源选择更新失败'))
+      setOperationResult(operationKey, { kind: 'error', message: errMsg(cause, '数据源选择更新失败') })
     } finally {
-      setPending(null)
+      endOperation(operationKey)
     }
   }
 
   const moveProvider = async (route: DataSourceRoute, index: number, delta: number) => {
     const target = index + delta
-    if (pending || target < 0 || target >= route.providers.length) return
+    if (hasPending || target < 0 || target >= route.providers.length) return
     const providers = [...route.providers]
     ;[providers[index], providers[target]] = [providers[target], providers[index]]
-    setPending(`order:${route.capability}`)
+    const operationKey = `route:${route.capability}`
+    beginOperation(operationKey, 'route')
     try {
       const result = await saveDataSourceRoute(route.capability, { mode: route.mode, providers, expected_version: route.version || null })
       setRoutes((current) => current.map((item) => item.capability === route.capability ? { ...item, ...result, provider_options: item.provider_options } : item))
-      setNotice(`${capabilityLabel(route.capability)} 首选来源顺序已更新`)
+      setOperationResult(operationKey, { kind: 'success', message: `${capabilityLabel(route.capability)} 首选来源顺序已更新` })
     } catch (cause) {
       if ((cause as any)?.response?.status === 409) await refresh()
-      setError(errMsg(cause, '来源顺序更新失败'))
+      setOperationResult(operationKey, { kind: 'error', message: errMsg(cause, '来源顺序更新失败') })
     } finally {
-      setPending(null)
+      endOperation(operationKey)
     }
   }
 
@@ -218,9 +257,8 @@ export default function DataSourcesView() {
             <h2 className="card-title" style={{ marginBottom: 4 }}>数据源配置</h2>
             <p className="caption" style={{ margin: 0 }}>由平台注册表统一解释能力、费用、鉴权和风险；凭证只在本次操作中使用。</p>
           </div>
-          <button className="btn btn-ghost" onClick={() => void refresh()} disabled={Boolean(pending)}>刷新状态</button>
+          <button className="btn btn-ghost" onClick={() => void refresh()} disabled={hasPending}>刷新状态</button>
         </div>
-        {notice && <p className="test-result up" role="status">{notice}</p>}
         {error && <p className="test-result datahub-error" role="alert">{error}</p>}
       </section>
 
@@ -235,7 +273,7 @@ export default function DataSourcesView() {
             <p className="caption" style={{ margin: '4px 0' }}>能力：{source.capabilities.map((capability) => `${capabilityLabel(capability)}（${capability}）`).join('、')}</p>
             <p className="caption" style={{ margin: '4px 0' }}>费用：{source.fee_type} · 更新：{source.update_frequency}</p>
             <p className="caption" style={{ margin: '4px 0' }}>风险：{source.risk_note}</p>
-            {source.available === false && <p className="test-result down" role="status">暂不可用：{source.unavailable_reason || '尚未接入可验证生产接口'}</p>}
+            {source.available === false && <p className="test-result datahub-error" role="status">暂不可用：{source.unavailable_reason || '尚未接入可验证生产接口'}</p>}
             <p className="caption" style={{ margin: '8px 0' }}>{probeLabel(source)}{source.key_hint ? ` · 凭证 ${source.key_hint}` : ''}</p>
             {source.capabilities.length > 0 && <div className="field mt8">
               <label htmlFor={`${source.provider}-capability`}>测试能力</label>
@@ -243,24 +281,28 @@ export default function DataSourcesView() {
                 {source.capabilities.map((capability) => <option key={capability} value={capability}>{capabilityLabel(capability)}（{capability}）</option>)}
               </select>
             </div>}
-            {source.credential_fields.map((field) => (
-              <div className="field mt8" key={field}>
-                <label htmlFor={`${source.provider}-${field}`}>{field === 'token' ? 'Token' : field}</label>
+            {source.credential_fields.map((rawField) => {
+              const field = normalizeCredentialField(rawField)
+              return <div className="field mt8" key={field.key}>
+                <label htmlFor={`${source.provider}-${field.key}`}>{field.label}</label>
+                {field.required && <span className="caption">（必填）</span>}
                 <input
-                  id={`${source.provider}-${field}`}
+                  id={`${source.provider}-${field.key}`}
                   className="input mono"
-                  type={isTokenField(field) ? 'password' : 'text'}
-                  value={credentials[source.provider]?.[field] || ''}
-                  placeholder={source.key_hint ? '已配置，留空保持不变' : `请输入${field}`}
-                  onChange={(event) => setCredential(source.provider, field, event.target.value)}
+                  type={field.secret || isTokenField(field.key) ? 'password' : 'text'}
+                  value={credentials[source.provider]?.[field.key] || ''}
+                  placeholder={source.key_hint ? '已配置，留空保持不变' : `请输入${field.label}`}
+                  onChange={(event) => setCredential(source.provider, field.key, event.target.value)}
                 />
+                {field.help && <span className="caption">{field.help}</span>}
               </div>
-            ))}
+            })}
             <div className="flex mt16 wrap">
-              <button className="btn btn-dark" onClick={() => void save(source)} disabled={Boolean(pending) || source.available === false}>{pending === `save:${source.provider}` ? '保存中…' : '保存配置'}</button>
-              <button className="btn btn-ghost" onClick={() => void runTest(source)} disabled={Boolean(pending) || source.available === false}>{pending === `test:${source.provider}` ? '测试中…' : '测试连接'}</button>
-              <button className="btn-text" onClick={() => void toggle(source)} disabled={Boolean(pending) || source.version <= 0 || source.available === false}>{source.enabled ? '停用' : '启用'}</button>
+              <button className="btn btn-dark" onClick={() => void save(source)} disabled={isProviderPending(source.provider) || source.available === false}>{pending[source.provider] === 'save' ? '保存中…' : '保存配置'}</button>
+              <button className="btn btn-ghost" onClick={() => void runTest(source)} disabled={isProviderPending(source.provider) || source.available === false}>{pending[source.provider] === 'test' ? '测试中…' : '测试连接'}</button>
+              <button className="btn-text" onClick={() => void toggle(source)} disabled={isProviderPending(source.provider) || source.version <= 0 || source.available === false}>{source.enabled ? '停用' : '启用'}</button>
             </div>
+            {operationResults[source.provider] && <p className={`test-result ${operationResults[source.provider]?.kind === 'success' ? 'datahub-success' : 'datahub-error'}`} role="status">{operationResults[source.provider]?.message}</p>}
           </section>
         ))}
         {sources.length === 0 && <div className="empty" style={{ gridColumn: '1/-1' }}>{error || '加载中…'}</div>}
@@ -275,8 +317,11 @@ export default function DataSourcesView() {
             <tbody>{routes.map((route) => <tr key={route.capability}>
               <td><span>{capabilityLabel(route.capability)}</span><div className="caption mono">{route.capability}</div></td>
               <td><span className="badge">{route.mode === 'auto' ? '自动' : '固定'}</span></td>
-              <td className="small"><div>{route.providers.join(' → ')}</div><div className="flex mt8" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>{(route.provider_options || []).map((option) => { const active = route.providers.includes(option.provider); const index = route.providers.indexOf(option.provider); return <label key={option.provider} className="caption" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={active} disabled={Boolean(pending) || option.selectable === false || (route.mode === 'fixed' && active)} onChange={(event) => void toggleRouteProvider(route, option.provider, event.target.checked)} />{option.display_name}（{option.provider}）{option.available === false ? `：${option.unavailable_reason || '不可用'}` : !option.enabled ? '：未启用' : ''}{active && route.mode === 'auto' && <><button className="btn-text" disabled={Boolean(pending) || index === 0} onClick={() => void moveProvider(route, index, -1)} aria-label={`${option.provider} 上移`}>↑</button><button className="btn-text" disabled={Boolean(pending) || index === route.providers.length - 1} onClick={() => void moveProvider(route, index, 1)} aria-label={`${option.provider} 下移`}>↓</button></>}</label> })}</div></td>
-              <td className="flex"><button className="btn-text" disabled={Boolean(pending)} onClick={() => void updateRoute(route, route.mode === 'auto' ? 'fixed' : 'auto')}>{route.mode === 'auto' ? '改为固定' : '改为自动'}</button></td>
+              <td className="small"><div>{route.providers.join(' → ')}</div><div className="flex mt8" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>{(route.provider_options || []).map((option) => { const active = route.providers.includes(option.provider); const index = route.providers.indexOf(option.provider); return <label key={option.provider} className="caption" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={active} disabled={hasPending || option.selectable === false || (route.mode === 'fixed' && active)} onChange={(event) => void toggleRouteProvider(route, option.provider, event.target.checked)} />{option.display_name}（{option.provider}）{option.available === false ? `：${option.unavailable_reason || '不可用'}` : !option.enabled ? '：未启用' : ''}{active && route.mode === 'auto' && <><button className="btn-text" disabled={hasPending || index === 0} onClick={() => void moveProvider(route, index, -1)} aria-label={`${option.provider} 上移`}>↑</button><button className="btn-text" disabled={hasPending || index === route.providers.length - 1} onClick={() => void moveProvider(route, index, 1)} aria-label={`${option.provider} 下移`}>↓</button></>}</label> })}</div></td>
+              <td className="flex" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+                <button className="btn-text" disabled={hasPending} onClick={() => void updateRoute(route, route.mode === 'auto' ? 'fixed' : 'auto')}>{route.mode === 'auto' ? '改为固定' : '改为自动'}</button>
+                {operationResults[`route:${route.capability}`] && <p className={`test-result ${operationResults[`route:${route.capability}`]?.kind === 'success' ? 'datahub-success' : 'datahub-error'}`} role="status">{operationResults[`route:${route.capability}`]?.message}</p>}
+              </td>
             </tr>)}</tbody>
           </table>
         </div>

@@ -141,20 +141,22 @@ async def disable_data_source(provider: str, expected_version: int = Query(...),
 @router.post("/admin/data-sources/test")
 async def test_data_source(req: DataSourceUpsert, admin: User = Depends(get_admin_user), db: Session = Depends(get_db)):
     try:
-        provider = _make_provider(req.provider, req.credentials)
+        service = _service(db)
+        credentials = service.merge_credentials(req.provider, req.credentials)
+        provider = _make_provider(req.provider, credentials)
         capability = Capability(req.public_config.get("capability") or get_provider(req.provider).capabilities[0])
         probe = await provider.probe(capability)
         fingerprint = None
-        if req.credentials:
-            values = {str(key): str(value) for key, value in req.credentials.items() if value}
+        if credentials:
+            values = {str(key): str(value) for key, value in credentials.items() if value}
             if values:
                 fingerprint = credential_fingerprint(json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-        _service(db).record_probe(
+        service.record_probe(
             ProbeRecord(provider=req.provider, capability=capability.value, status=probe.status, rows=probe.rows, latency_ms=probe.latency_ms, error_code=probe.error_code, safe_sample=probe.safe_sample, fingerprint=fingerprint),
             actor_id=admin.id,
         )
         if probe.status != "ok":
-            return JSONResponse(status_code=503, content={"code": probe.error_code or "probe_failed", "message": "数据源测试失败", "data": {"status": probe.status, "rows": probe.rows, "latency_ms": probe.latency_ms}})
+            return JSONResponse(status_code=503, content={"code": probe.error_code or "probe_failed", "message": probe.message or "数据源测试失败", "data": {"status": probe.status, "rows": probe.rows, "latency_ms": probe.latency_ms}})
         return success(data={"provider": req.provider, "capability": capability.value, "status": probe.status, "rows": probe.rows, "latency_ms": probe.latency_ms, "sample": probe.safe_sample}, message="数据源连接正常")
     except DataHubError as exc:
         return _failure(exc)
@@ -240,7 +242,7 @@ def _make_provider(provider: str, credentials: dict[str, str]):
     if provider == "tushare":
         return TushareProvider(token=token)
     if provider == "kpl_native":
-        return KplNativeProvider(token=token)
+        return KplNativeProvider(token=token, user_id=credentials.get("user_id", ""))
     adapters = {
         "akshare": AkshareProvider,
         "tencent": TencentProvider,

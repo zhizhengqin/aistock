@@ -1,9 +1,10 @@
 import asyncio
+import inspect
 import json
 from datetime import datetime, timezone
 
 from app.datahub.consumer import (
-    get_stock_info, get_stock_kline, get_stock_financial_summary,
+    get_stock_info, get_stock_profile, get_stock_kline, get_stock_financial_summary,
     get_stock_capital_flow, get_stock_news_titles,
 )
 from app.datahub.consumer import kline_dataframe, records
@@ -73,6 +74,10 @@ def _unavailable_financial(stock_code: str) -> dict:
         "debt_ratio": None,
         "data_at": None,
     }
+
+
+def _unavailable_profile(stock_code: str) -> dict:
+    return {"code": stock_code, "name": stock_code, "industry": None, "data_at": None}
 
 
 def _unavailable_capital_flow(stock_code: str) -> dict:
@@ -214,6 +219,21 @@ async def _set_progress(context, value: int) -> None:
     await context.set_progress(value)
 
 
+async def _invoke(fetcher, *args):
+    """Call a consumer while keeping test doubles and async consumers uniform."""
+
+    value = fetcher(*args)
+    return await value if inspect.isawaitable(value) else value
+
+
+def _merge_snapshot_valuation(snapshot: dict, financial: dict) -> dict:
+    merged = dict(financial)
+    for field in ("pe_ttm", "pb", "market_cap"):
+        if snapshot.get(field) is not None:
+            merged[field] = snapshot[field]
+    return merged
+
+
 async def _execute_step(context, step_key: str, messages: list[dict], output_type):
     """Execute one typed step through the task-scoped model service."""
 
@@ -227,42 +247,83 @@ async def _execute_step(context, step_key: str, messages: list[dict], output_typ
     )
 
 
+def _raise_unexpected_collection_error(result) -> None:
+    """Only provider-level DataHubError may degrade to unavailable data."""
+
+    if isinstance(result, BaseException) and not isinstance(result, DataHubError):
+        raise result
+
+
 async def run_full_analysis(stock_code: str, user_id: int, task, db) -> dict:
     """Run a stock report with the task's locked structured model service."""
 
     context = task
     await _set_progress(context, 20)
 
-    # 1. Collect data
+    # 1. Collect independent inputs concurrently.  K-line is the only
+    # critical input; every other capability is isolated and represented as
+    # unavailable when its own provider fails.
     data_warnings: list[str] = []
-    try:
-        info = (await get_stock_info(stock_code)).data.model_dump(mode="json")
-    except DataHubError:
-        info = _unavailable_stock_info(stock_code)
-        data_warnings.append("实时行情数据暂不可用，价格、涨跌幅和行业不得推算或编造")
+    collected = await asyncio.gather(
+        _invoke(get_stock_info, stock_code),
+        _invoke(get_stock_profile, stock_code),
+        _invoke(get_stock_kline, stock_code, 120),
+        _invoke(get_stock_financial_summary, stock_code),
+        _invoke(get_stock_capital_flow, stock_code, 20),
+        _invoke(get_stock_news_titles, stock_code, 10),
+        return_exceptions=True,
+    )
+    info_result, profile_result, kline_result, financial_result, flow_result, news_result = collected
 
-    kline_result = await get_stock_kline(stock_code, 120)
+    # K-line is critical.  Other capabilities may degrade only for an
+    # explicit DataHubError; programming errors and cancellation must escape.
+    if isinstance(info_result, BaseException):
+        _raise_unexpected_collection_error(info_result)
+        info = _unavailable_stock_info(stock_code)
+        data_warnings.append("实时行情数据暂不可用，价格、涨跌幅不得推算或编造")
+    else:
+        info = info_result.data.model_dump(mode="json")
+
+    if isinstance(kline_result, BaseException):
+        raise kline_result
     kline_rows = records(kline_result)
     kline_df = kline_dataframe(kline_result)
-    try:
-        financial = (await get_stock_financial_summary(stock_code)).data.model_dump(mode="json")
-    except DataHubError:
+
+    if isinstance(profile_result, BaseException):
+        _raise_unexpected_collection_error(profile_result)
+        profile = _unavailable_profile(stock_code)
+        data_warnings.append("行业资料暂不可用，行业信息不得推算或编造")
+    else:
+        profile = profile_result.data.model_dump(mode="json")
+        if profile.get("name"):
+            info["name"] = profile["name"]
+    # Industry is a low-frequency profile field.  Do not reuse a stale or
+    # provider-specific snapshot classification when the profile is missing.
+    info["industry"] = profile.get("industry") or None
+
+    if isinstance(financial_result, BaseException):
+        _raise_unexpected_collection_error(financial_result)
         financial = _unavailable_financial(stock_code)
         data_warnings.append("财务数据暂不可用，财务指标不得推算或编造")
+    else:
+        financial = financial_result.data.model_dump(mode="json")
+    financial = _merge_snapshot_valuation(info, financial)
 
-    try:
-        capital_flow = (await get_stock_capital_flow(stock_code, 20)).data.model_dump(mode="json")
-    except DataHubError:
+    if isinstance(flow_result, BaseException):
+        _raise_unexpected_collection_error(flow_result)
         capital_flow = _unavailable_capital_flow(stock_code)
         data_warnings.append("资金流数据暂不可用，资金指标不得推算或编造")
+    else:
+        capital_flow = flow_result.data.model_dump(mode="json")
 
-    try:
-        news = [item.model_dump(mode="json") for item in (await get_stock_news_titles(stock_code, 10)).data]
-    except Exception:
+    if isinstance(news_result, BaseException):
+        _raise_unexpected_collection_error(news_result)
         # News is optional. Preserve a visible warning while allowing the
         # critical quote/K-line/financial/flow inputs to reach the analysts.
         news = []
         data_warnings.append("新闻数据暂不可用，新闻分析不得推算或编造")
+    else:
+        news = [item.model_dump(mode="json") for item in news_result.data]
 
     await _set_progress(context, 40)
 

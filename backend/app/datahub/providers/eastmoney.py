@@ -20,6 +20,7 @@ from app.datahub.contracts import (
     NewsItem,
     SectorFlow,
     SectorQuote,
+    StockProfile,
     ShareholderSummary,
 )
 from app.datahub.errors import DataHubError, DataHubErrorCode
@@ -36,12 +37,13 @@ class EastmoneyProvider(ProviderAdapter):
         Capability.MARKET_BOARD_QUOTES,
         Capability.MARKET_BOARD_CONSTITUENTS,
         Capability.STOCK_FUND_FLOW,
+        Capability.STOCK_PROFILE,
         Capability.MARKET_FUND_FLOW_RANK,
         Capability.STOCK_SHAREHOLDERS,
         Capability.SECTOR_REALTIME,
         Capability.SECTOR_FUND_FLOW,
         Capability.STOCK_KLINE_DAILY,
-    Capability.DRAGON_TIGER_LIST,
+        Capability.DRAGON_TIGER_LIST,
         Capability.DRAGON_TIGER_SEATS,
         Capability.STOCK_NEWS,
         Capability.SECTOR_KLINE,
@@ -65,11 +67,23 @@ class EastmoneyProvider(ProviderAdapter):
                 raise DataHubError(DataHubErrorCode.STALE_INVALID, "东方财富响应缺少可信时间戳", provider=self.name)
             if capability is Capability.STOCK_FUND_FLOW:
                 aggregate = _aggregate_fund_flow(typed)
-                return DataResult(data=aggregate, capability=capability, provider=self.name, data_at=data_at, quality={"valid": True, "rows": count})
+                return DataResult(
+                    data=aggregate,
+                    capability=capability,
+                    provider=self.name,
+                    data_at=data_at,
+                    quality={"valid": True, "rows": count, "missing_fields": _missing_flow_fields(aggregate)},
+                )
             if capability is Capability.STOCK_SHAREHOLDERS:
                 aggregate = _aggregate_shareholders(typed)
                 return DataResult(data=aggregate, capability=capability, provider=self.name, data_at=data_at, quality={"valid": True, "rows": count})
-            return DataResult(data=typed, capability=capability, provider=self.name, data_at=data_at, quality={"valid": True, "rows": count})
+            return DataResult(
+                data=typed[0] if capability is Capability.STOCK_PROFILE and typed else typed,
+                capability=capability,
+                provider=self.name,
+                data_at=data_at,
+                quality={"valid": True, "rows": count},
+            )
         except DataHubError:
             raise
         except Exception as exc:
@@ -203,7 +217,27 @@ def _typed_rows(capability: Capability, rows: list[dict[str, Any]], params: dict
         elif capability is Capability.MARKET_FUND_FLOW_RANK:
             output.append(FundFlowRankItem(code=code, name=name, net_main_flow=flow, change_pct=change, net_main_pct=_num(row.get("f184", row.get("net_main_pct", 0))), data_at=row_time))
         elif capability is Capability.STOCK_FUND_FLOW:
-            output.append(FundFlow(code=code, net_main_flow=flow or _num(row.get("net_main_flow", 0)), net_super_large=_num(row.get("f66", row.get("net_super_large", 0))), net_large=_num(row.get("f72", row.get("net_large", 0))), net_medium=_num(row.get("f78", row.get("net_medium", 0))), net_small=_num(row.get("f84", row.get("net_small", 0))), daily_flows=[row], data_at=row_time))
+            output.append(
+                FundFlow(
+                    code=code,
+                    net_main_flow=_optional_num(row.get("net_main_flow", row.get("f62"))),
+                    net_super_large=_optional_num(row.get("net_super_large", row.get("f66"))),
+                    net_large=_optional_num(row.get("net_large", row.get("f72"))),
+                    net_medium=_optional_num(row.get("net_medium", row.get("f78"))),
+                    net_small=_optional_num(row.get("net_small", row.get("f84"))),
+                    daily_flows=[row],
+                    data_at=row_time,
+                )
+            )
+        elif capability is Capability.STOCK_PROFILE:
+            output.append(
+                StockProfile(
+                    code=normalise_ticker(row.get("code") or row.get("f57") or params.get("code")),
+                    name=str(row.get("name") or row.get("f58") or code),
+                    industry=_optional_text(row.get("industry", row.get("f127"))),
+                    data_at=row_time,
+                )
+            )
         elif capability is Capability.STOCK_SHAREHOLDERS:
             latest = _int(row.get("latest", row.get("HOLDER_NUM", row.get("f2"))))
             previous = _int(row.get("previous", row.get("HOLDER_NUM_PREV")))
@@ -249,11 +283,11 @@ def _aggregate_fund_flow(rows: list[FundFlow]) -> FundFlow:
     last = rows[-1]
     return FundFlow(
         code=last.code,
-        net_main_flow=round(sum(item.net_main_flow for item in rows), 6),
-        net_super_large=round(sum(item.net_super_large for item in rows), 6),
-        net_large=round(sum(item.net_large for item in rows), 6),
-        net_medium=round(sum(item.net_medium for item in rows), 6),
-        net_small=round(sum(item.net_small for item in rows), 6),
+        net_main_flow=_sum_optional(rows, "net_main_flow"),
+        net_super_large=_sum_optional(rows, "net_super_large"),
+        net_large=_sum_optional(rows, "net_large"),
+        net_medium=_sum_optional(rows, "net_medium"),
+        net_small=_sum_optional(rows, "net_small"),
         daily_flows=[flow for item in rows for flow in item.daily_flows],
         data_at=max((item.data_at for item in rows if item.data_at), default=None),
     )
@@ -295,6 +329,11 @@ def _endpoint(capability: Capability, params: dict[str, Any]) -> tuple[str, dict
         daily = days > 1 or str(params.get("period", "")).lower() in {"day", "daily", "120d"}
         url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get" if daily else "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get"
         return url, {"secid": f"{market}.{plain}", "klt": "101" if daily else "1", "lmt": str(days), "fields1": "f1,f2,f3,f7", "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"}
+    if capability is Capability.STOCK_PROFILE:
+        return "https://push2.eastmoney.com/api/qt/stock/get", {
+            "secid": f"{market}.{plain}",
+            "fields": "f57,f58,f127,f124",
+        }
     if capability is Capability.STOCK_NEWS:
         keyword = str(params.get("keyword") or params.get("source") or plain or "A股")
         inner = json.dumps({"uid": "", "keyword": keyword, "type": ["cmsArticleWebOld"], "client": "web", "clientType": "web", "clientVersion": "curr", "param": {"cmsArticleWebOld": {"searchScope": "default", "sort": "default", "pageIndex": 1, "pageSize": int(params.get("limit", 20)), "preTag": "", "postTag": ""}}}, separators=(",", ":"))
@@ -410,6 +449,19 @@ def _num(value: Any) -> float:
         return float(str(value).replace(",", "")) if value not in (None, "", "-") else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+def _sum_optional(rows: list[FundFlow], field: str) -> float | None:
+    values = [getattr(row, field) for row in rows if getattr(row, field) is not None]
+    return round(sum(values), 6) if values else None
+
+
+def _missing_flow_fields(flow: FundFlow) -> list[str]:
+    return [
+        field
+        for field in ("net_main_flow", "net_super_large", "net_large", "net_medium", "net_small")
+        if getattr(flow, field) is None
+    ]
 
 
 def _int(value: Any) -> int | None:

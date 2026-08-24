@@ -73,6 +73,7 @@ def _decode_cache_value(value: Any) -> Any:
             SectorFlow,
             SectorQuote,
             ShareholderSummary,
+            StockProfile,
             StockSnapshot,
         )
 
@@ -84,6 +85,7 @@ def _decode_cache_value(value: Any) -> Any:
                 Capability.MARKET_BOARD_QUOTES: list[BoardQuote],
                 Capability.MARKET_BOARD_CONSTITUENTS: list[BoardConstituent],
                 Capability.STOCK_SNAPSHOT: StockSnapshot,
+                Capability.STOCK_PROFILE: StockProfile,
                 Capability.STOCK_KLINE_DAILY: list[KlineBar],
                 Capability.STOCK_FINANCIALS: FinancialSummary,
                 Capability.STOCK_FUND_FLOW: FundFlow,
@@ -101,6 +103,10 @@ def _decode_cache_value(value: Any) -> Any:
                 Capability.KPL_LIMIT_LADDER: list[KplLimitLadder],
                 Capability.KPL_STRONG_SECTORS: list[KplStrongSector],
                 Capability.MARKET_AUCTION_OPEN: list[AuctionOpen],
+                Capability.KPL_NATIVE_STOCK_TAGS: dict[str, Any],
+                Capability.KPL_NATIVE_PLATE_RANKING: dict[str, Any],
+                Capability.KPL_NATIVE_PLATE_CONSTITUENTS: dict[str, Any],
+                Capability.KPL_NATIVE_STOCK_RANKING: dict[str, Any],
             }
             return DataResult[models[capability]].model_validate(value)
         except Exception:

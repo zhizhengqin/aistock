@@ -23,6 +23,7 @@ class Capability(str, Enum):
     MARKET_BOARD_QUOTES = "market.board_quotes"
     MARKET_BOARD_CONSTITUENTS = "market.board_constituents"
     STOCK_SNAPSHOT = "stock.snapshot"
+    STOCK_PROFILE = "stock.profile"
     STOCK_KLINE_DAILY = "stock.kline.daily"
     STOCK_FINANCIALS = "stock.financials"
     STOCK_FUND_FLOW = "stock.fund_flow"
@@ -40,6 +41,10 @@ class Capability(str, Enum):
     KPL_LIMIT_LADDER = "kpl.limit_ladder"
     KPL_STRONG_SECTORS = "kpl.strong_sectors"
     MARKET_AUCTION_OPEN = "market.auction_open"
+    KPL_NATIVE_STOCK_TAGS = "kpl_native.stock_tags"
+    KPL_NATIVE_PLATE_RANKING = "kpl_native.plate_ranking"
+    KPL_NATIVE_PLATE_CONSTITUENTS = "kpl_native.plate_constituents"
+    KPL_NATIVE_STOCK_RANKING = "kpl_native.stock_ranking"
 
 
 class Freshness(str, Enum):
@@ -193,7 +198,18 @@ class StockSnapshot(BaseModel):
     pe_ttm: float | None = None
     pb: float | None = None
     market_cap: float | None = None
+    float_market_cap: float | None = None
+    pe_static: float | None = None
     industry: str = ""
+    data_at: datetime | None = None
+
+
+class StockProfile(BaseModel):
+    """Low-frequency company identity and classification data."""
+
+    code: str = Field(min_length=4, max_length=16)
+    name: str = ""
+    industry: str | None = None
     data_at: datetime | None = None
 
 
@@ -223,11 +239,11 @@ class FinancialSummary(BaseModel):
 
 class FundFlow(BaseModel):
     code: str = ""
-    net_main_flow: float = 0
-    net_super_large: float = 0
-    net_large: float = 0
-    net_medium: float = 0
-    net_small: float = 0
+    net_main_flow: float | None = None
+    net_super_large: float | None = None
+    net_large: float | None = None
+    net_medium: float | None = None
+    net_small: float | None = None
     daily_flows: list[dict[str, Any]] = Field(default_factory=list)
     data_at: datetime | None = None
 

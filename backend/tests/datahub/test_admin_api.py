@@ -1,6 +1,14 @@
 from tests.conftest import client
 
 
+def _kpl_probe_provider(result):
+    class Provider:
+        async def probe(self, capability, params=None):
+            return result
+
+    return Provider()
+
+
 def _auth_admin(client, test_db):
     from app.core.security import create_access_token, hash_password
     from app.models.user import User
@@ -49,3 +57,65 @@ def test_route_api_rejects_unsupported_provider_for_capability(client, test_db):
         json={"mode": "fixed", "providers": ["tushare"], "expected_version": None},
     )
     assert response.status_code == 422
+
+
+def test_temporary_probe_overlays_non_empty_credentials_on_saved_values(client, test_db, monkeypatch):
+    _auth_admin(client, test_db)
+    saved = client.post(
+        "/api/admin/data-sources",
+        json={
+            "provider": "kpl_native",
+            "public_config": {},
+            "credentials": {"user_id": "fake-user", "token": "fake-token"},
+        },
+    )
+    assert saved.status_code == 200
+
+    captured = {}
+
+    def make_provider(provider, credentials):
+        captured.update(credentials)
+        from app.datahub.providers.base import ProbeResult
+
+        return _kpl_probe_provider(ProbeResult(status="ok", rows=1))
+
+    monkeypatch.setattr("app.api.admin_datahub._make_provider", make_provider)
+    response = client.post(
+        "/api/admin/data-sources/test",
+        json={
+            "provider": "kpl_native",
+            "public_config": {"capability": "kpl_native.stock_tags"},
+            "credentials": {"token": "fake-token-2"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {"user_id": "fake-user", "token": "fake-token-2"}
+
+
+def test_probe_503_exposes_safe_chinese_authentication_reason(client, test_db, monkeypatch):
+    _auth_admin(client, test_db)
+    from app.datahub.providers.base import ProbeResult
+
+    monkeypatch.setattr(
+        "app.api.admin_datahub._make_provider",
+        lambda provider, credentials: _kpl_probe_provider(
+            ProbeResult(
+                status="error",
+                error_code="authentication_failed",
+                message="开盘啦未登录或凭证无效",
+            )
+        ),
+    )
+    response = client.post(
+        "/api/admin/data-sources/test",
+        json={
+            "provider": "kpl_native",
+            "public_config": {"capability": "kpl_native.stock_tags"},
+            "credentials": {"user_id": "fake-user", "token": "fake-token"},
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "开盘啦未登录或凭证无效"
+    assert "provider_detail" not in response.text

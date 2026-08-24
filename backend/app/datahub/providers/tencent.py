@@ -168,7 +168,22 @@ def _parse_quote(symbol: str, fields: list[str]) -> dict[str, Any] | None:
             local = datetime(*[int(value or 0) for value in match.groups()], tzinfo=ZoneInfo("Asia/Shanghai"))
             data_at = local.astimezone(timezone.utc)
             break
-    return {"code": code, "name": fields[1] or code, "price": price, "change_pct": change_pct, "data_at": data_at}
+    # Tencent's quote protocol is positional.  Keep these indexes explicit:
+    # 39 PE(TTM), 44 float market cap (亿元), 45 total market cap (亿元),
+    # 46 PB and 52 static PE.  Do not infer by shifting fields when a vendor
+    # adds an optional value near the end of the record.
+    return {
+        "code": code,
+        "name": fields[1] or code,
+        "price": price,
+        "change_pct": change_pct,
+        "pe_ttm": _number_or_none(fields, 39),
+        "market_cap": _number_or_none(fields, 45),
+        "float_market_cap": _number_or_none(fields, 44),
+        "pb": _number_or_none(fields, 46),
+        "pe_static": _number_or_none(fields, 52),
+        "data_at": data_at,
+    }
 
 
 def _latest_time(rows: list[Any]) -> datetime | None:
@@ -194,6 +209,19 @@ def _number(value: Any) -> float:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _number_or_none(fields: list[str], index: int) -> float | None:
+    if index >= len(fields):
+        return None
+    value = fields[index]
+    if value in (None, "", "-", "--"):
+        return None
+    try:
+        number = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
 __all__ = ["TencentProvider"]

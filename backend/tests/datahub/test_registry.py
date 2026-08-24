@@ -16,8 +16,18 @@ def test_kpl_native_provider_is_present_but_disabled_by_default():
     kpl = get_provider("kpl_native")
     assert kpl.enabled_by_default is False
     assert kpl.auth_type == "token"
-    assert Capability.MARKET_AUCTION_OPEN in kpl.capabilities
-    assert providers_for(Capability.MARKET_AUCTION_OPEN)[0].name == "kpl_native"
+    assert Capability.KPL_NATIVE_STOCK_TAGS in kpl.capabilities
+    assert providers_for(Capability.KPL_NATIVE_STOCK_TAGS)[0].name == "kpl_native"
+
+
+def test_tushare_and_native_kpl_credential_help_is_explicitly_distinct():
+    tushare = get_provider("tushare")
+    native = get_provider("kpl_native")
+
+    assert "不是开盘啦原生 Token" in tushare.credential_fields[0].help
+    assert "只提供 Tushare 的 kpl_* 数据集" in tushare.description
+    assert "不能填 Tushare Token" in native.description
+    assert "不能填 Tushare Token" in native.credential_fields[1].help
 
 
 def test_registry_contains_all_twenty_first_phase_capabilities():

@@ -31,12 +31,22 @@ if (!process.env.QA_BASE_URL) {
 
 const browser = await chromium.launch({ headless: true })
 function envelope(data, message = 'ok') { return { code: 0, message, data } }
-const sources = [{
-  id: null, provider: 'tushare', display_name: 'Tushare Pro', description: 'Token 盘后数据',
-  capabilities: ['kpl.limit_list'], auth_type: 'token', credential_fields: ['token'], fee_type: '积分/付费',
-  update_frequency: '盘后', risk_note: '逐能力探测', enabled: false, version: 0, key_hint: null,
-  fingerprint: null, last_probe_status: null, last_probe_at: null, last_probe_latency_ms: null,
-}]
+const sources = [
+  {
+    id: null, provider: 'kpl_native', display_name: '开盘啦原生', description: '实验性原生接口',
+    capabilities: ['kpl_native.stock_tags'], auth_type: 'token', credential_fields: [
+      { key: 'user_id', label: 'UserID', secret: false, required: true, help: '需要合法账号 UserID' },
+      { key: 'token', label: 'Token', secret: true, required: true, help: '需要合法账号 Token' },
+    ], fee_type: '需合法账号', update_frequency: '盘中', risk_note: '实验性，需账号实测', enabled: false, version: 0, key_hint: null,
+    fingerprint: null, last_probe_status: null, last_probe_at: null, last_probe_latency_ms: null,
+  },
+  {
+    id: null, provider: 'sina', display_name: '新浪财经', description: '公开备用来源',
+    capabilities: ['market.indices'], auth_type: 'none', credential_fields: [], fee_type: '免费',
+    update_frequency: '盘中', risk_note: '字段按响应', enabled: true, version: 0, key_hint: null,
+    fingerprint: null, last_probe_status: null, last_probe_at: null, last_probe_latency_ms: null,
+  },
+]
 const routes = [{ capability: 'market.indices', mode: 'auto', providers: ['tencent', 'akshare'], contract_version: '1.0', version: 0 }, { capability: 'market.board_quotes', mode: 'auto', providers: ['eastmoney'], contract_version: '1.0', version: 0 }]
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
@@ -49,6 +59,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       if (path === '/api/admin/stats') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ total_users: 1, active_users: 1, admin_count: 1, active_plans: 1, total_usage_count: 0 })) })
       if (path === '/api/admin/data-sources') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ items: sources })) })
       if (path === '/api/admin/data-source-routes') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ items: routes })) })
+      if (path === '/api/admin/data-sources/test') {
+        const body = route.request().postDataJSON() || {}
+        const data = body.provider === 'kpl_native'
+          ? { status: 'error', rows: 0, message: '未登录或凭证无效' }
+          : { status: 'ok', rows: 3 }
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope(data)) })
+      }
       if (path === '/api/stocks/market-indices') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...envelope([{ code: '000001', name: '上证指数', price: 3000, change_pct: 1 }]), meta: { freshness: 'stale', provider: '腾讯财经', data_at: '2026-08-22T07:30:00Z' } }) })
       if (path === '/api/stocks/market-hotspots') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...envelope({ kind: new URL(route.request().url()).searchParams.get('kind') || 'industry', items: [] }), meta: { freshness: 'stale', provider: '历史快照', trade_date: '2026-08-22' } }) })
       if (path === '/api/stocks/market-cloud') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(envelope({ kind: 'industry', nodes: [] })) })
@@ -67,11 +84,26 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
   await page.goto(`${baseURL}/admin`, { waitUntil: 'networkidle' })
   await page.getByRole('button', { name: '数据源配置' }).click()
   if (!realApi) {
-    await page.getByText('Tushare Pro').waitFor()
-    await page.getByLabel('Token').fill('secret-e2e-token')
-    await page.getByRole('button', { name: '测试连接' }).click()
-    await page.waitForFunction(() => document.querySelector('#tushare-token')?.value === '')
-    if (await page.getByLabel('Token').inputValue() !== '') failures.push(`${viewport.width}px Token was not cleared`)
+    const kplCard = page.locator('section.card').filter({ hasText: '开盘啦原生' }).first()
+    const sinaCard = page.locator('section.card').filter({ hasText: '新浪财经' }).first()
+    await kplCard.getByLabel('UserID').waitFor()
+    await kplCard.getByRole('button', { name: '测试连接' }).click()
+    const kplResult = kplCard.getByRole('status').filter({ hasText: '未登录或凭证无效' })
+    await kplResult.waitFor()
+    if (await sinaCard.getByRole('status').count()) failures.push(`${viewport.width}px KPL result leaked into Sina card`)
+    const kplButtons = kplCard.locator('.flex.mt16 button')
+    const kplLastButtonBox = await kplButtons.last().boundingBox()
+    const kplResultBox = await kplResult.boundingBox()
+    if (!kplLastButtonBox || !kplResultBox || kplResultBox.y <= kplLastButtonBox.y) failures.push(`${viewport.width}px KPL result is not below its buttons`)
+
+    await sinaCard.getByRole('button', { name: '测试连接' }).click()
+    const sinaResult = sinaCard.getByRole('status').filter({ hasText: /获取 3 行/ })
+    await sinaResult.waitFor()
+    if (!(await kplCard.getByRole('status').filter({ hasText: '未登录或凭证无效' }).count())) failures.push(`${viewport.width}px KPL result disappeared or crossed cards`)
+    const sinaButtons = sinaCard.locator('.flex.mt16 button')
+    const sinaLastButtonBox = await sinaButtons.last().boundingBox()
+    const sinaResultBox = await sinaResult.boundingBox()
+    if (!sinaLastButtonBox || !sinaResultBox || sinaResultBox.y <= sinaLastButtonBox.y) failures.push(`${viewport.width}px Sina result is not below its buttons`)
   } else {
     // Real mode exercises a real backend probe without mutating route state.
     // Sina is a free independent source and its card is deterministic; the

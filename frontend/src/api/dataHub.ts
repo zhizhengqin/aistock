@@ -2,6 +2,14 @@ import client from './client'
 
 export type Freshness = 'fresh' | 'stale'
 
+export interface CredentialField {
+  key: string
+  label: string
+  secret: boolean
+  required: boolean
+  help: string
+}
+
 export interface DataSource {
   id: string | null
   provider: string
@@ -9,7 +17,7 @@ export interface DataSource {
   description: string
   capabilities: string[]
   auth_type: string
-  credential_fields: string[]
+  credential_fields: CredentialField[]
   fee_type: string
   update_frequency: string
   risk_note: string

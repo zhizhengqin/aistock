@@ -221,7 +221,8 @@ async def test_orchestrator_degrades_optional_data_and_marks_prompts():
         "industry": None,
     }
     assert report["data_warnings"] == [
-        "实时行情数据暂不可用，价格、涨跌幅和行业不得推算或编造",
+        "实时行情数据暂不可用，价格、涨跌幅不得推算或编造",
+        "行业资料暂不可用，行业信息不得推算或编造",
         "财务数据暂不可用，财务指标不得推算或编造",
         "资金流数据暂不可用，资金指标不得推算或编造",
     ]

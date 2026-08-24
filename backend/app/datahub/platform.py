@@ -32,9 +32,10 @@ def default_routes() -> dict[Capability, RouteDefinition]:
         Capability.MARKET_BOARD_QUOTES: RouteDefinition(providers=["eastmoney", "sina"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.MARKET_BOARD_CONSTITUENTS: RouteDefinition(providers=["eastmoney", "sina"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.STOCK_SNAPSHOT: RouteDefinition(providers=["tencent", "sina"], ttl_seconds=30, stale_ttl_seconds=900),
+        Capability.STOCK_PROFILE: RouteDefinition(providers=["eastmoney"], ttl_seconds=3600, stale_ttl_seconds=604800),
         Capability.STOCK_KLINE_DAILY: RouteDefinition(providers=["tencent", "eastmoney", "sina", "tdx"], ttl_seconds=300, stale_ttl_seconds=86400),
         Capability.STOCK_FINANCIALS: RouteDefinition(providers=["sina"], ttl_seconds=3600, stale_ttl_seconds=604800),
-        Capability.STOCK_FUND_FLOW: RouteDefinition(providers=["eastmoney"], ttl_seconds=300, stale_ttl_seconds=3600),
+        Capability.STOCK_FUND_FLOW: RouteDefinition(providers=["eastmoney", "sina"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.STOCK_NEWS: RouteDefinition(providers=["rss", "eastmoney"], ttl_seconds=1800, stale_ttl_seconds=86400),
         Capability.MARKET_FUND_FLOW_RANK: RouteDefinition(providers=["eastmoney"], ttl_seconds=300, stale_ttl_seconds=3600),
         Capability.STOCK_SHAREHOLDERS: RouteDefinition(providers=["eastmoney"], ttl_seconds=86400, stale_ttl_seconds=604800),
@@ -49,6 +50,10 @@ def default_routes() -> dict[Capability, RouteDefinition]:
         Capability.KPL_LIMIT_LADDER: RouteDefinition(providers=["tushare"], ttl_seconds=1800, stale_ttl_seconds=86400),
         Capability.KPL_STRONG_SECTORS: RouteDefinition(providers=["tushare"], ttl_seconds=1800, stale_ttl_seconds=86400),
         Capability.MARKET_AUCTION_OPEN: RouteDefinition(providers=["tushare"], ttl_seconds=60, stale_ttl_seconds=900),
+        Capability.KPL_NATIVE_STOCK_TAGS: RouteDefinition(providers=["kpl_native"], ttl_seconds=300, stale_ttl_seconds=3600),
+        Capability.KPL_NATIVE_PLATE_RANKING: RouteDefinition(providers=["kpl_native"], ttl_seconds=300, stale_ttl_seconds=3600),
+        Capability.KPL_NATIVE_PLATE_CONSTITUENTS: RouteDefinition(providers=["kpl_native"], ttl_seconds=300, stale_ttl_seconds=3600),
+        Capability.KPL_NATIVE_STOCK_RANKING: RouteDefinition(providers=["kpl_native"], ttl_seconds=300, stale_ttl_seconds=3600),
     }
 
 
@@ -73,7 +78,7 @@ def build_router(
         "rss": RssProvider(limiter=limiter),
     }
     providers["tushare"] = TushareProvider(token=tushare_token, limiter=limiter)
-    providers["kpl_native"] = KplNativeProvider(token=kpl_token, limiter=limiter)
+    providers["kpl_native"] = KplNativeProvider(token=kpl_token, user_id="", limiter=limiter)
     if cache is None:
         if redis_client is None:
             try:

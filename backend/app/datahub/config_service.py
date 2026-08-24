@@ -46,7 +46,7 @@ class DataSourceView:
     description: str
     capabilities: list[str]
     auth_type: str
-    credential_fields: list[str]
+    credential_fields: list[dict[str, Any]]
     fee_type: str
     update_frequency: str
     risk_note: str
@@ -72,7 +72,59 @@ class DataHubConfigService:
         self.db = db
         self.cipher = CredentialCipher.from_key(encryption_key, key_id=encryption_key_id)
 
-    def _serialize_credentials(self, credentials: dict[str, str]) -> tuple[str | None, str | None, str | None]:
+    def _credential_values(self, credentials: dict[str, str]) -> dict[str, str]:
+        return {str(key): str(value) for key, value in credentials.items() if value not in (None, "")}
+
+    def _validate_credential_keys(self, provider: str, credentials: dict[str, str]) -> None:
+        definition = get_provider(provider)
+        allowed = {field.key for field in definition.credential_fields}
+        unknown = sorted(set(credentials) - allowed)
+        if unknown:
+            raise DataHubError(DataHubErrorCode.VALIDATION, "凭据字段不受该数据源支持")
+
+    def _validate_required_credentials(self, provider: str, credentials: dict[str, str]) -> None:
+        definition = get_provider(provider)
+        missing = [
+            field.label
+            for field in definition.credential_fields
+            if field.required and not credentials.get(field.key)
+        ]
+        if missing:
+            raise DataHubError(DataHubErrorCode.VALIDATION, f"请完整填写必填凭据：{'、'.join(missing)}")
+
+    def _decrypt_row_credentials(self, row: DataSourceConfig | None) -> dict[str, str]:
+        if row is None or not row.encrypted_credentials:
+            return {}
+        try:
+            payload = json.loads(row.encrypted_credentials)
+            envelope = CredentialEnvelope(**payload)
+            plaintext = self.cipher.decrypt(envelope, aad=b"datahub:credentials:v1")
+            value = json.loads(plaintext)
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            raise DataHubError(DataHubErrorCode.AUTHENTICATION_FAILED, "数据源凭据无法解密") from None
+
+    def _prepare_credentials(
+        self,
+        provider: str,
+        credentials: dict[str, str],
+        row: DataSourceConfig | None,
+    ) -> dict[str, str]:
+        self._validate_credential_keys(provider, credentials)
+        merged = self._decrypt_row_credentials(row)
+        merged.update(self._credential_values(credentials))
+        self._validate_credential_keys(provider, merged)
+        self._validate_required_credentials(provider, merged)
+        return merged
+
+    def merge_credentials(self, provider: str, credentials: dict[str, str]) -> dict[str, str]:
+        """Merge a temporary probe's non-empty fields with saved credentials."""
+
+        get_provider(provider)
+        row = self.db.scalar(select(DataSourceConfig).where(DataSourceConfig.provider == provider))
+        return self._prepare_credentials(provider, credentials, row)
+
+    def _serialize_credentials(self, provider: str, credentials: dict[str, str]) -> tuple[str | None, str | None, str | None]:
         values = {str(key): str(value) for key, value in credentials.items() if value}
         if not values:
             return None, None, None
@@ -80,8 +132,10 @@ class DataHubConfigService:
         envelope = self.cipher.encrypt(plaintext, aad=b"datahub:credentials:v1")
         encoded = json.dumps(asdict(envelope), ensure_ascii=False, sort_keys=True)
         fingerprint = credential_fingerprint(plaintext)
-        first_secret = next(iter(values.values()))
-        return encoded, fingerprint, key_hint(first_secret)
+        definition = get_provider(provider)
+        secret_keys = [field.key for field in definition.credential_fields if field.secret]
+        hint_value = next((values[key] for key in secret_keys if values.get(key)), next(iter(values.values())))
+        return encoded, fingerprint, key_hint(hint_value)
 
     def _view(self, provider: str, row: DataSourceConfig | None) -> DataSourceView:
         definition = get_provider(provider)
@@ -92,7 +146,7 @@ class DataHubConfigService:
             description=definition.description,
             capabilities=[cap.value for cap in definition.capabilities],
             auth_type=definition.auth_type,
-            credential_fields=list(definition.credential_fields),
+            credential_fields=[field.model_dump(mode="json") for field in definition.credential_fields],
             fee_type=definition.fee_type,
             update_frequency=definition.update_frequency,
             risk_note=definition.risk_note,
@@ -119,16 +173,7 @@ class DataHubConfigService:
     def load_credentials(self, provider: str) -> dict[str, str]:
         """Decrypt a provider credential only for the duration of a probe/call."""
         row = self.db.scalar(select(DataSourceConfig).where(DataSourceConfig.provider == provider))
-        if row is None or not row.encrypted_credentials:
-            return {}
-        try:
-            payload = json.loads(row.encrypted_credentials)
-            envelope = CredentialEnvelope(**payload)
-            plaintext = self.cipher.decrypt(envelope, aad=b"datahub:credentials:v1")
-            value = json.loads(plaintext)
-            return value if isinstance(value, dict) else {}
-        except Exception:
-            raise DataHubError(DataHubErrorCode.AUTHENTICATION_FAILED, "数据源凭据无法解密") from None
+        return self._decrypt_row_credentials(row)
 
     def save_config(
         self,
@@ -147,6 +192,7 @@ class DataHubConfigService:
             .execution_options(populate_existing=True)
         )
         created = row is None
+        merged_credentials = self._prepare_credentials(provider, credentials, row)
         if row is None:
             if expected_version not in (None, 0):
                 raise DataHubConflict()
@@ -161,7 +207,7 @@ class DataHubConfigService:
             raise DataHubConflict()
         if public_config is not None:
             row.public_config_json = public_config
-        encrypted, fingerprint, hint = self._serialize_credentials(credentials)
+        encrypted, fingerprint, hint = self._serialize_credentials(provider, merged_credentials)
         if encrypted is not None:
             row.encrypted_credentials = encrypted
             row.fingerprint = fingerprint

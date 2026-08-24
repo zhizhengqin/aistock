@@ -82,6 +82,40 @@ def test_strategy_filter_excludes_shareholder_increase():
     assert "股东户数" in excluded[0]["reason"]
 
 
+def test_strategy_filter_excludes_missing_60d_flow_with_explicit_reason():
+    candidates = [{
+        "code": "000001",
+        "name": "X",
+        "market_cap": 200,
+        "change_pct_20d": 5,
+        "net_main_flow_60d": None,
+        "shareholder": {"change_pct": -3},
+    }]
+
+    passed, excluded = _strategy_filter(candidates)
+
+    assert passed == []
+    assert len(excluded) == 1
+    assert "60日主力净流入数据缺失" in excluded[0]["reason"]
+
+
+def test_strategy_filter_excludes_missing_market_cap_with_explicit_reason():
+    candidates = [{
+        "code": "000001",
+        "name": "X",
+        "market_cap": None,
+        "change_pct_20d": 5,
+        "net_main_flow_60d": 1e9,
+        "shareholder": {"change_pct": -3},
+    }]
+
+    passed, excluded = _strategy_filter(candidates)
+
+    assert passed == []
+    assert len(excluded) == 1
+    assert "流通市值数据缺失" in excluded[0]["reason"]
+
+
 @pytest.mark.asyncio
 async def test_main_force_full_report_structure():
     mock_candidates = [

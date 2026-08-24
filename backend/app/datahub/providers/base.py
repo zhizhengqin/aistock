@@ -18,6 +18,7 @@ class ProbeResult:
     latency_ms: int = 0
     error_code: str | None = None
     safe_sample: dict[str, Any] | None = None
+    message: str = ""
 
 
 class ProviderAdapter:
@@ -53,6 +54,7 @@ class ProviderAdapter:
                 status="error",
                 latency_ms=round((time.perf_counter() - started) * 1000),
                 error_code=exc.code.value,
+                message=exc.message,
             )
         except Exception:
             # Probes are an operator-facing health check.  Never leak an
@@ -61,6 +63,7 @@ class ProviderAdapter:
                 status="error",
                 latency_ms=round((time.perf_counter() - started) * 1000),
                 error_code=DataHubErrorCode.INTERNAL.value,
+                message="数据源请求失败，请稍后重试",
             )
 
 
@@ -88,6 +91,7 @@ def capability_probe_params(capability: Capability | str) -> dict[str, Any]:
         return {"codes": ["000001.SS", "399001.SZ", "399006.SZ", "000300.SS", "000688.SS"]}
     if capability in {
         Capability.STOCK_SNAPSHOT,
+        Capability.STOCK_PROFILE,
         Capability.STOCK_FINANCIALS,
         Capability.STOCK_SHAREHOLDERS,
     }:
@@ -123,6 +127,14 @@ def capability_probe_params(capability: Capability | str) -> dict[str, Any]:
         Capability.KPL_STRONG_SECTORS,
         Capability.MARKET_AUCTION_OPEN,
     }:
+        return {"trade_date": trade_date}
+    if capability is Capability.KPL_NATIVE_STOCK_TAGS:
+        return {"stock_code": "600000.SS", "trade_date": trade_date}
+    if capability is Capability.KPL_NATIVE_PLATE_RANKING:
+        return {"trade_date": trade_date}
+    if capability is Capability.KPL_NATIVE_PLATE_CONSTITUENTS:
+        return {"plate_id": 801314, "trade_date": trade_date}
+    if capability is Capability.KPL_NATIVE_STOCK_RANKING:
         return {"trade_date": trade_date}
     return {}
 

@@ -41,12 +41,18 @@ def _strategy_filter(candidates: list[dict]) -> tuple[list[dict], list[dict]]:
     excluded = []
     for c in candidates:
         reasons = []
-        if c.get("market_cap", 0) > 0 and c["market_cap"] < STRATEGY_FILTERS["min_market_cap"]:
-            reasons.append(f"流通市值{c['market_cap']:.1f}亿 < {STRATEGY_FILTERS['min_market_cap']}亿")
+        market_cap = c.get("market_cap")
+        if market_cap is None:
+            reasons.append("流通市值数据缺失")
+        elif market_cap > 0 and market_cap < STRATEGY_FILTERS["min_market_cap"]:
+            reasons.append(f"流通市值{market_cap:.1f}亿 < {STRATEGY_FILTERS['min_market_cap']}亿")
         if c.get("change_pct_20d", 0) > STRATEGY_FILTERS["max_20d_change_pct"]:
             reasons.append(f"20日涨幅{c['change_pct_20d']:.1f}% > {STRATEGY_FILTERS['max_20d_change_pct']}%")
-        if c.get("net_main_flow_60d", 0) < STRATEGY_FILTERS["min_60d_net_flow"]:
-            reasons.append(f"60日净流入{c['net_main_flow_60d']/1e8:.2f}亿 < 0")
+        net_main_flow_60d = c.get("net_main_flow_60d")
+        if net_main_flow_60d is None:
+            reasons.append("60日主力净流入数据缺失")
+        elif net_main_flow_60d < STRATEGY_FILTERS["min_60d_net_flow"]:
+            reasons.append(f"60日净流入{net_main_flow_60d/1e8:.2f}亿 < 0")
         gdhs = c.get("shareholder", {})
         if gdhs.get("change_pct", 0) > 0:
             reasons.append(f"股东户数增加{gdhs['change_pct']:.1f}%，筹码趋于分散")
@@ -83,7 +89,7 @@ async def _enrich_candidate(c: dict) -> dict:
         "shareholder": gdhs,
         # DataHub's monetary contract is yuan.  Keep that unit across
         # consumers; presentation converts to 亿 only inside Chinese text.
-        "net_main_flow_60d": flow_60d.get("net_main_flow", 0),
+        "net_main_flow_60d": flow_60d.get("net_main_flow"),
     }
 
 

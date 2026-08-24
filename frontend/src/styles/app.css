@@ -251,6 +251,7 @@ input, select, textarea { font-family: inherit; }
 .status-banner.stale { color: var(--hold); border-color: var(--hold); background: var(--hold-bg); }
 .status-banner.down { color: var(--down); border-color: var(--down); background: var(--down-bg); }
 .status-banner.datahub-error, .test-result.datahub-error { color: var(--error); border-color: var(--error); background: var(--error-bg); }
+.status-banner.datahub-success, .test-result.datahub-success { color: var(--down); border-color: var(--down); background: var(--down-bg); }
 
 /* 涨跌条形(填充式数据编码) */
 .bars { display: flex; align-items: flex-end; gap: 12px; height: 240px; padding-top: 16px; }

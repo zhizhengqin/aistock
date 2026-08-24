@@ -63,6 +63,10 @@ async def get_stock_info(code: str) -> DataResult:
     return await _fetch(Capability.STOCK_SNAPSHOT, {"code": code})
 
 
+async def get_stock_profile(code: str) -> DataResult:
+    return await _fetch(Capability.STOCK_PROFILE, {"code": code})
+
+
 async def get_stock_kline(code: str, days: int = 120) -> DataResult:
     return await _fetch(Capability.STOCK_KLINE_DAILY, {"code": code, "days": days})
 

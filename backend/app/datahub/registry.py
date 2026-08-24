@@ -19,7 +19,7 @@ class ProviderDefinition(BaseModel):
     display_name: str
     description: str
     auth_type: str = "none"
-    credential_fields: tuple[str, ...] = ()
+    credential_fields: tuple["CredentialField", ...] = ()
     capabilities: tuple[Capability, ...]
     enabled_by_default: bool = False
     fee_type: str = "免费"
@@ -28,6 +28,18 @@ class ProviderDefinition(BaseModel):
     available: bool = True
     unavailable_reason: str | None = None
     probe_examples: dict[str, str] = Field(default_factory=dict)
+
+
+class CredentialField(BaseModel):
+    """Structured, secret-safe metadata used to render provider credentials."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str
+    label: str
+    secret: bool = False
+    required: bool = False
+    help: str = ""
 
 
 def _definition(**kwargs) -> ProviderDefinition:
@@ -61,6 +73,7 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
             Capability.MARKET_BOARD_QUOTES,
             Capability.MARKET_BOARD_CONSTITUENTS,
             Capability.STOCK_FUND_FLOW,
+            Capability.STOCK_PROFILE,
             Capability.MARKET_FUND_FLOW_RANK,
             Capability.STOCK_SHAREHOLDERS,
             Capability.SECTOR_REALTIME,
@@ -85,6 +98,7 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
             Capability.MARKET_BOARD_CONSTITUENTS,
             Capability.STOCK_SNAPSHOT,
             Capability.STOCK_FINANCIALS,
+            Capability.STOCK_FUND_FLOW,
             Capability.STOCK_KLINE_DAILY,
         ),
         enabled_by_default=True,
@@ -114,9 +128,9 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
     "tushare": _definition(
         name="tushare",
         display_name="Tushare Pro",
-        description="Token 付费数据服务，提供开盘啦盘后榜单、题材和竞价能力。",
+        description="Token 付费数据服务，Token 来自 Tushare Pro 控制台；只提供 Tushare 的 kpl_* 数据集，不是开盘啦原生接口。",
         auth_type="token",
-        credential_fields=("token",),
+        credential_fields=(CredentialField(key="token", label="Token", secret=True, required=True, help="来自 Tushare Pro 控制台的 Token；只用于 Tushare 的 kpl_* 数据集，不是开盘啦原生 Token。"),),
         capabilities=(
             Capability.KPL_LIMIT_LIST,
             Capability.KPL_CONCEPTS,
@@ -137,23 +151,23 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
     "kpl_native": _definition(
         name="kpl_native",
         display_name="开盘啦原生",
-        description="使用管理员提供的合法 Token 调用开盘啦盘中接口，默认关闭。",
+        description="实验性开盘啦原生协议适配，仅使用开盘啦合法账号 UserID + Token；不能填 Tushare Token，默认关闭。",
         auth_type="token",
-        credential_fields=("token",),
+        credential_fields=(
+            CredentialField(key="user_id", label="UserID", secret=False, required=True, help="开盘啦合法账号的 UserID；不能使用 Tushare 账号信息。"),
+            CredentialField(key="token", label="Token", secret=True, required=True, help="开盘啦合法账号 Token；不能填 Tushare Token，不会回显或写入日志。"),
+        ),
         capabilities=(
-            Capability.KPL_LIMIT_LIST,
-            Capability.KPL_CONCEPTS,
-            Capability.KPL_CONCEPT_CONSTITUENTS,
-            Capability.KPL_LIMIT_LADDER,
-            Capability.KPL_STRONG_SECTORS,
-            Capability.MARKET_AUCTION_OPEN,
+            Capability.KPL_NATIVE_STOCK_TAGS,
+            Capability.KPL_NATIVE_PLATE_RANKING,
+            Capability.KPL_NATIVE_PLATE_CONSTITUENTS,
+            Capability.KPL_NATIVE_STOCK_RANKING,
         ),
         enabled_by_default=False,
-        available=False,
-        unavailable_reason="参考协议仅验证 GetHQPlate 盘口标签，尚未映射到现有六项业务能力",
-        fee_type="需合法 Token",
+        available=True,
+        fee_type="需合法 UserID + Token",
         update_frequency="盘中实时",
-        risk_note="非官方协议可能变化；不自动抓取、破解或内置示例 Token。",
+        risk_note="实验性非官方协议，需合法账号逐能力实测；不自动抓取、破解或内置示例凭证。",
     ),
     "akshare": _definition(
         name="akshare",
@@ -163,8 +177,9 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
             capability
             for capability in Capability
             if not capability.value.startswith("kpl.")
+            and not capability.value.startswith("kpl_native.")
             and capability is not Capability.MARKET_AUCTION_OPEN
-            and capability not in {Capability.MARKET_BOARD_QUOTES, Capability.MARKET_BOARD_CONSTITUENTS}
+            and capability not in {Capability.MARKET_BOARD_QUOTES, Capability.MARKET_BOARD_CONSTITUENTS, Capability.STOCK_PROFILE}
         ),
         enabled_by_default=False,
         update_frequency="按请求",
@@ -185,12 +200,7 @@ def providers_for(capability: Capability | str) -> list[ProviderDefinition]:
         capability = Capability(capability)
     except ValueError:
         raise DataHubError(DataHubErrorCode.VALIDATION, "未知数据能力") from None
-    # Registry order is a deliberate default preference; native KPL comes
-    # first for live auction even though it remains disabled by default.
-    providers = [item for item in PROVIDER_REGISTRY.values() if capability in item.capabilities]
-    if capability is Capability.MARKET_AUCTION_OPEN:
-        providers.sort(key=lambda item: 0 if item.name == "kpl_native" else 1)
-    return providers
+    return [item for item in PROVIDER_REGISTRY.values() if capability in item.capabilities]
 
 
-__all__ = ["PROVIDER_REGISTRY", "ProviderDefinition", "get_provider", "providers_for"]
+__all__ = ["CredentialField", "PROVIDER_REGISTRY", "ProviderDefinition", "get_provider", "providers_for"]

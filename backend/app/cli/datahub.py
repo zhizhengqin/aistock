@@ -74,7 +74,7 @@ def _provider(provider: str, credentials: dict[str, str]):
     if provider == "tushare":
         return TushareProvider(token=token)
     if provider == "kpl_native":
-        return KplNativeProvider(token=token)
+        return KplNativeProvider(token=token, user_id=credentials.get("user_id", ""))
     adapters = {
         "akshare": AkshareProvider,
         "tencent": TencentProvider,
@@ -110,7 +110,8 @@ async def live_smoke_async(
     try:
         service = config_service_factory(session) if config_service_factory else DataHubConfigService(session, encryption_key=_encryption_key())
         credentials = service.load_credentials(provider)
-        if definition.auth_type != "none" and not any(credentials.values()):
+        required_keys = [field.key for field in definition.credential_fields if field.required]
+        if definition.auth_type != "none" and any(not credentials.get(key) for key in required_keys):
             return DataHubSmokeResult(0, provider, capability, "not_configured", "未配置凭证，跳过真实请求")
         adapter = provider_factory(provider, credentials)
         probe = await adapter.probe(capability_value)
